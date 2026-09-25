@@ -58,6 +58,30 @@ pub struct FunctionRecord {
     pub erosion_exact: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lines: Option<Vec<u32>>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub coupling: Option<CouplingRecord>,
+}
+
+/// A call whose target could not be resolved statically.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct UnresolvedCall {
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub reason: String,
+}
+
+/// Coupling evidence of one region.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct CouplingRecord {
+    pub resolved_fanout: u32,
+    pub resolved_dependencies: Vec<String>,
+    pub local_callees: Vec<String>,
+    /// Unresolved calls outside a static cycle make coupling unknown.
+    pub coupling_unknown: bool,
+    pub unresolved_calls: Vec<UnresolvedCall>,
+    pub in_static_cycle: bool,
+    /// Regions of the same file whose local callees name this region.
+    pub local_callers: Vec<String>,
 }
 
 /// Region inventory entry: qualified id plus a content hash of its lines.
@@ -69,6 +93,10 @@ pub struct RegionRecord {
     pub sha: String,
     #[serde(rename = "E")]
     pub erosion: Evidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_cycle: Option<bool>,
+    #[serde(rename = "C", skip_serializing_if = "Option::is_none")]
+    pub coupling: Option<Evidence>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -77,6 +105,8 @@ pub struct Burden {
     pub erosion: Evidence,
     #[serde(rename = "V", skip_serializing_if = "Option::is_none")]
     pub redundancy: Option<u32>,
+    #[serde(rename = "C", skip_serializing_if = "Option::is_none")]
+    pub coupling: Option<Evidence>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -156,6 +186,7 @@ pub struct Measurement {
     pub clone_groups: Vec<Vec<CloneOccurrence>>,
     pub clone_groups_normalized: Vec<Vec<CloneOccurrence>>,
     pub verbosity_findings: Vec<Finding>,
+    pub static_dependency_cycles: Vec<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_value_findings: Option<Vec<Finding>>,
     pub source_sha256: BTreeMap<String, String>,

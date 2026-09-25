@@ -208,7 +208,11 @@ pub fn walk_positions(source: &str) -> Result<Vec<(&'static str, u32, usize)>, P
             };
             let (line, col) = positions.lineno_col(n, paren)?;
             let kind = pyast::kind_name(n);
-            (!matches!(kind, "Constant" | "JoinedStr" | "TemplateStr" | "FormattedValue")).then_some((kind, line, col))
+            (!matches!(
+                kind,
+                "Constant" | "JoinedStr" | "TemplateStr" | "FormattedValue"
+            ))
+            .then_some((kind, line, col))
         })
         .collect())
 }
@@ -240,7 +244,12 @@ pub struct FileCoupling {
 /// Second pass: resolve imports and per-region dependencies against the
 /// project catalog. Re-parses the source; parsing is cheap next to holding
 /// every syntax tree of a scope in memory between passes.
-pub fn couple(source: &str, module: &str, is_package: bool, project: &coupling::Project) -> Result<FileCoupling, ParseFailure> {
+pub fn couple(
+    source: &str,
+    module: &str,
+    is_package: bool,
+    project: &coupling::Project,
+) -> Result<FileCoupling, ParseFailure> {
     let parsed = ruff_python_parser::parse_module(source).map_err(|e| ParseFailure {
         error: "SyntaxError",
         message: e.to_string(),
@@ -250,16 +259,25 @@ pub fn couple(source: &str, module: &str, is_package: bool, project: &coupling::
     let eligible = eligible_lines(parsed.tokens(), &index, collected.excluded);
     let regions = regions::assign(candidates(&collected.functions), &eligible, "<module>");
     let imports = coupling::resolve_imports(parsed.syntax(), module, is_package, project);
-    let (models, contexts) = coupling::class_models(parsed.syntax(), &imports.aliases, module, project);
+    let (models, contexts) =
+        coupling::class_models(parsed.syntax(), &imports.aliases, module, project);
     let positions = pyast::Positions::new(&index, parsed.tokens());
-    let ctx = coupling::ModuleContext { module, imports: &imports, project, positions: &positions, models: &models };
+    let ctx = coupling::ModuleContext {
+        module,
+        imports: &imports,
+        project,
+        positions: &positions,
+        models: &models,
+    };
     let per_region = regions
         .iter()
         .map(|region| {
             let (root, class) = match region.origin {
                 Some(i) => {
                     let f = &collected.functions[i];
-                    let class = contexts.get(&std::ptr::from_ref(f.node)).map(|&m| &models[m]);
+                    let class = contexts
+                        .get(&std::ptr::from_ref(f.node))
+                        .map(|&m| &models[m]);
                     (pyast::PyNode::Stmt(f.stmt), class)
                 }
                 None => (pyast::PyNode::Module(parsed.syntax()), None),
@@ -271,7 +289,10 @@ pub fn couple(source: &str, module: &str, is_package: bool, project: &coupling::
             rc
         })
         .collect();
-    Ok(FileCoupling { import_deps: imports.dependencies.clone(), regions: per_region })
+    Ok(FileCoupling {
+        import_deps: imports.dependencies.clone(),
+        regions: per_region,
+    })
 }
 
 /// `(def line, exact, normalized)` fingerprint of one function body.
@@ -321,6 +342,8 @@ fn records(
             sloc,
             sha: regions::content_sha(&src_lines, &region.lines),
             erosion: Evidence::Exact(mass),
+            in_cycle: None,
+            coupling: None,
         });
         functions.push(FunctionRecord {
             file: file.to_owned(),
@@ -331,6 +354,7 @@ fn records(
             erosion_mass: Some(mass),
             erosion_exact: None,
             lines: None,
+            coupling: None,
         });
     }
     FileMeasure {

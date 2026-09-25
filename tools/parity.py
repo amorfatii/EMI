@@ -32,18 +32,36 @@ CACHE = Path(os.environ.get("EMI_CORPUS_CACHE", Path.home() / ".cache" / "emi-de
 # Output groups implemented per adapter; extend as phases land. A group not
 # listed is not compared, so it cannot pass vacuously or fail prematurely.
 IMPLEMENTED = {
-    "python": {"redundancy"},
+    "python": {"redundancy", "coupling"},
     "js": {"redundancy"},
 }
 
 # Fields compared per record kind, by phase. Extend as phases land.
 FUNCTION_FIELDS = ("file", "function", "line", "sloc", "cc", "erosion_mass")
+COUPLING_FUNCTION_FIELDS = ("resolved_fanout", "resolved_dependencies", "local_callees",
+                            "coupling_unknown", "unresolved_calls", "in_static_cycle", "local_callers")
+COUPLING_REGION_FIELDS = ("in_cycle", "C")
 JS_FUNCTION_FIELDS = ("lines", "erosion_exact")
 REGION_FIELDS = ("file", "id", "sloc", "sha", "E")
 
 
+def canonical(value):
+    """JSON number types carry no meaning here: 12 and 12.0 compare equal."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: canonical(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [canonical(v) for v in value]
+    return value
+
+
+def dump(value) -> str:
+    return json.dumps(canonical(value), sort_keys=True)
+
+
 def pick(record: dict, fields) -> tuple:
-    return tuple(json.dumps(record.get(f), sort_keys=True) for f in fields)
+    return tuple(dump(record.get(f)) for f in fields)
 
 
 def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
@@ -123,20 +141,24 @@ def compare(golden: dict, got: dict, probe: str) -> list:
     want = golden["measurement"]
     report: list = []
     redundancy = "redundancy" in IMPLEMENTED[probe]
+    coupling = "coupling" in IMPLEMENTED[probe]
     compare_lists("components", want["components"], got["components"],
-                  lambda c: (c["id"], c["sloc"], json.dumps(c["burden"]["E"]),
-                             c["burden"].get("V") if redundancy else None), report)
+                  lambda c: (c["id"], c["sloc"], dump(c["burden"]["E"]),
+                             c["burden"].get("V") if redundancy else None,
+                             dump(c["burden"].get("C")) if coupling else None), report)
+    if coupling and dump(want["static_dependency_cycles"]) != dump(got.get("static_dependency_cycles")):
+        report.append(f"static_dependency_cycles differ: {want['static_dependency_cycles']} vs {got.get('static_dependency_cycles')}")
     if redundancy:
         compare_lists("verbosity_findings", want["verbosity_findings"], got["verbosity_findings"],
-                      lambda f: json.dumps(f, sort_keys=True), report)
-    fields = FUNCTION_FIELDS + (JS_FUNCTION_FIELDS if probe == "js" else ())
+                      lambda f: dump(f), report)
+    fields = FUNCTION_FIELDS + (JS_FUNCTION_FIELDS if probe == "js" else ()) + (COUPLING_FUNCTION_FIELDS if coupling else ())
     compare_lists("functions", want["functions"], got["functions"],
                   lambda f: pick(f, fields), report)
     compare_lists("regions", want["regions"], got["regions"],
-                  lambda r: pick(r, REGION_FIELDS), report)
+                  lambda r: pick(r, REGION_FIELDS + (COUPLING_REGION_FIELDS if coupling else ())), report)
     if redundancy and probe == "python":
         compare_lists("test_value_findings", want.get("test_value_findings", []),
-                      got.get("test_value_findings") or [], lambda f: json.dumps(f, sort_keys=True), report)
+                      got.get("test_value_findings") or [], lambda f: dump(f), report)
     for key in ("clone_groups", "clone_groups_normalized") if redundancy else ():
         if json.dumps(want[key]) != json.dumps(got.get(key)):
             report.append(f"{key}: {len(want[key])} expected, {len(got.get(key) or [])} got"

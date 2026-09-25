@@ -135,6 +135,7 @@ fn add_parsed(
             burden: Burden {
                 erosion: measure.erosion,
                 redundancy: None,
+                coupling: None,
             },
         });
         out.functions.extend(measure.functions);

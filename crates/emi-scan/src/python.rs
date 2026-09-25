@@ -6,10 +6,13 @@ use std::path::Path;
 use std::collections::{BTreeMap, BTreeSet};
 
 use emi_ir::clones::Grouper;
-use emi_ir::{Burden, Component, FileError, Finding, InventoryEntry, Measurement, pytext};
+use emi_ir::{
+    Burden, Component, Evidence, FileError, Finding, InventoryEntry, Measurement, pytext,
+};
 use emi_lang_python::FileMeasure;
 use rayon::prelude::*;
 
+use crate::python_coupling::{Product, apply, couple_all};
 use crate::walk::{self, ScopeFile};
 use crate::{OnSyntaxError, Options, ScanError, is_symlink, truncate};
 
@@ -43,7 +46,7 @@ pub fn is_test_file(rel: &str) -> bool {
 }
 
 enum Parsed {
-    Product(FileMeasure),
+    Product(FileMeasure, String),
     Test(Vec<Finding>),
 }
 
@@ -59,6 +62,7 @@ enum Outcome {
     Measured {
         sha: String,
         measure: FileMeasure,
+        source: String,
     },
     Test {
         sha: String,
@@ -102,7 +106,11 @@ fn measure_file(f: &ScopeFile, detect_tests: bool) -> Outcome {
         };
     }
     match emi_lang_python::measure(&f.rel, &source) {
-        Ok(measure) => Outcome::Measured { sha, measure },
+        Ok(measure) => Outcome::Measured {
+            sha,
+            measure,
+            source,
+        },
         Err(e) => parse_failed(sha, e),
     }
 }
@@ -186,9 +194,13 @@ impl Scan {
                 self.failed(&rel, "failed", error(&rel, stage, name, message));
                 Ok(None)
             }
-            Outcome::Measured { sha, measure } => {
+            Outcome::Measured {
+                sha,
+                measure,
+                source,
+            } => {
                 self.out.source_sha256.insert(rel, sha);
-                Ok(Some(Parsed::Product(measure)))
+                Ok(Some(Parsed::Product(measure, source)))
             }
             Outcome::Test { sha, findings } => {
                 self.out.source_sha256.insert(rel, sha);
@@ -198,41 +210,55 @@ impl Scan {
     }
 
     /// Add a parsed file: tests contribute test-value findings and an
-    /// inventory entry, product files with eligible lines become components.
-    fn add(&mut self, rel: &str, parsed: Parsed, tests: &mut Vec<(String, Vec<Finding>)>) {
-        let m = match parsed {
+    /// inventory entry; product files wait for the coupling pass.
+    fn add(
+        &mut self,
+        rel: &str,
+        parsed: Parsed,
+        tests: &mut Vec<(String, Vec<Finding>)>,
+        products: &mut Vec<Product>,
+    ) {
+        match parsed {
             Parsed::Test(findings) => {
                 self.inventory.push(entry(rel, "test-only", None));
                 tests.push((rel.to_owned(), findings));
-                return;
             }
-            Parsed::Product(m) => m,
-        };
-        let state = if m.sloc > 0 {
-            "measured"
-        } else {
-            "zero-eligible"
-        };
-        self.inventory.push(entry(rel, state, None));
-        if m.sloc == 0 {
-            return;
+            Parsed::Product(measure, source) => {
+                let state = if measure.sloc > 0 {
+                    "measured"
+                } else {
+                    "zero-eligible"
+                };
+                self.inventory.push(entry(rel, state, None));
+                products.push(Product {
+                    rel: rel.to_owned(),
+                    measure,
+                    source,
+                });
+            }
         }
+    }
+
+    /// Records of product files with eligible lines, in file order.
+    fn component(&mut self, rel: &str, mut m: FileMeasure, coupling: Evidence) {
         self.out.components.push(Component {
             id: rel.to_owned(),
             sloc: m.sloc,
             burden: Burden {
-                erosion: emi_ir::Evidence::Exact(m.erosion),
+                erosion: Evidence::Exact(m.erosion),
                 redundancy: None,
+                coupling: Some(coupling),
             },
         });
         for c in &m.clones {
             self.exact_clones.add(c.exact, rel, &c.body_lines);
             self.normalized_clones.add(c.normalized, rel, &c.body_lines);
         }
-        self.out.verbosity_findings.extend(m.findings);
-        self.rule_lines.insert(rel.to_owned(), m.rule_lines);
-        self.out.functions.extend(m.functions);
-        self.out.regions.extend(m.regions);
+        self.out.verbosity_findings.append(&mut m.findings);
+        self.rule_lines
+            .insert(rel.to_owned(), std::mem::take(&mut m.rule_lines));
+        self.out.functions.append(&mut m.functions);
+        self.out.regions.append(&mut m.regions);
     }
 
     /// V per component: clone and scored-rule lines, capped at component size.
@@ -309,10 +335,23 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     if parsed.is_empty() && scan.out.errors.is_empty() {
         return Err(ScanError::NoSources("no parseable Python source files"));
     }
-    let mut tests = Vec::new();
+    let (mut tests, mut products) = (Vec::new(), Vec::new());
     for (f, m) in parsed {
-        scan.add(&f.rel, m, &mut tests);
+        scan.add(&f.rel, m, &mut tests, &mut products);
     }
+    let coupled = couple_all(&mut products)?;
+    for (p, fc) in products.into_iter().zip(&coupled.files) {
+        if p.measure.sloc == 0 {
+            continue;
+        }
+        let mut measure = p.measure;
+        let in_cycle = coupled
+            .cycle_modules
+            .contains(&emi_lang_python::coupling::module_name(&p.rel));
+        let c = apply(&mut measure, fc, in_cycle);
+        scan.component(&p.rel, measure, c);
+    }
+    scan.out.static_dependency_cycles = coupled.cycles;
     // The oracle orders test-value findings by file name (string order).
     tests.sort_by(|a, b| a.0.cmp(&b.0));
     scan.out.test_value_findings = Some(tests.into_iter().flat_map(|(_, f)| f).collect());

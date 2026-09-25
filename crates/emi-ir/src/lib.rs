@@ -8,6 +8,6 @@ pub mod pytext;
 pub mod regions;
 
 pub use model::{
-    Burden, CloneOccurrence, Component, Evidence, FileError, Finding, FunctionRecord,
-    InventoryEntry, Measurement, RegionRecord,
+    Burden, CloneOccurrence, Component, CouplingRecord, Evidence, FileError, Finding,
+    FunctionRecord, InventoryEntry, Measurement, RegionRecord, UnresolvedCall,
 };

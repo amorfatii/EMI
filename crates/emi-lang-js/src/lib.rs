@@ -223,6 +223,8 @@ fn records(
             sloc,
             sha: regions::content_sha(&src_lines, &region.lines),
             erosion: evidence,
+            in_cycle: None,
+            coupling: None,
         });
         functions.push(FunctionRecord {
             file: file.to_owned(),
@@ -233,6 +235,7 @@ fn records(
             erosion_mass: mass,
             erosion_exact: Some(!unknown),
             lines: Some(region.lines.iter().copied().collect()),
+            coupling: None,
         });
     }
     let erosion = if unknown_sloc == 0 {

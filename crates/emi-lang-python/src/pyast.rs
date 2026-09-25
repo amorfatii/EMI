@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 
 use ruff_python_ast::token::{TokenKind, Tokens};
 use ruff_python_ast::{
-    self as ast, ElifElseClause, ExceptHandler, Expr, InterpolatedStringElement, Parameters, Pattern,
-    Stmt, TypeParam,
+    self as ast, ElifElseClause, ExceptHandler, Expr, InterpolatedStringElement, Parameters,
+    Pattern, Stmt, TypeParam,
 };
 use ruff_text_size::{Ranged, TextSize};
 
@@ -66,12 +66,24 @@ fn push_type_params<'a>(out: &mut Vec<PyNode<'a>>, tp: Option<&'a ast::TypeParam
     }
 }
 
-fn push_interpolations<'a>(out: &mut Vec<PyNode<'a>>, elements: &'a ast::InterpolatedStringElements) {
+fn push_interpolations<'a>(
+    out: &mut Vec<PyNode<'a>>,
+    elements: &'a ast::InterpolatedStringElements,
+) {
     for el in elements {
         if let InterpolatedStringElement::Interpolation(i) = el {
             out.push(PyNode::Interpolation(i));
         }
     }
+}
+
+fn try_children<'a>(t: &'a ast::StmtTry, out: &mut Vec<PyNode<'a>>) {
+    push_stmts(out, &t.body);
+    out.extend(t.handlers.iter().map(|h| match h {
+        ExceptHandler::ExceptHandler(h) => PyNode::Handler(h),
+    }));
+    push_stmts(out, &t.orelse);
+    push_stmts(out, &t.finalbody);
 }
 
 fn stmt_children<'a>(s: &'a Stmt, out: &mut Vec<PyNode<'a>>) {
@@ -140,14 +152,7 @@ fn stmt_children<'a>(s: &'a Stmt, out: &mut Vec<PyNode<'a>>) {
             push_expr(out, r.exc.as_deref());
             push_expr(out, r.cause.as_deref());
         }
-        Stmt::Try(t) => {
-            push_stmts(out, &t.body);
-            out.extend(t.handlers.iter().map(|h| match h {
-                ExceptHandler::ExceptHandler(h) => PyNode::Handler(h),
-            }));
-            push_stmts(out, &t.orelse);
-            push_stmts(out, &t.finalbody);
-        }
+        Stmt::Try(t) => try_children(t, out),
         Stmt::Assert(a) => {
             out.push(PyNode::Expr(&a.test));
             push_expr(out, a.msg.as_deref());
@@ -183,7 +188,12 @@ fn expr_children<'a>(e: &'a Expr, out: &mut Vec<PyNode<'a>>) {
             out.push(PyNode::Expr(&i.orelse));
         }
         Expr::Dict(d) => {
-            out.extend(d.items.iter().filter_map(|i| i.key.as_ref()).map(PyNode::Expr));
+            out.extend(
+                d.items
+                    .iter()
+                    .filter_map(|i| i.key.as_ref())
+                    .map(PyNode::Expr),
+            );
             out.extend(d.items.iter().map(|i| PyNode::Expr(&i.value)));
         }
         Expr::Set(s) => push_exprs(out, &s.elts),
@@ -245,11 +255,22 @@ fn arguments_children<'a>(p: &'a Parameters, out: &mut Vec<PyNode<'a>>) {
         out.push(PyNode::Arg(v));
     }
     out.extend(p.kwonlyargs.iter().map(|x| PyNode::Arg(&x.parameter)));
-    out.extend(p.kwonlyargs.iter().filter_map(|x| x.default.as_deref()).map(PyNode::Expr));
+    out.extend(
+        p.kwonlyargs
+            .iter()
+            .filter_map(|x| x.default.as_deref())
+            .map(PyNode::Expr),
+    );
     if let Some(k) = p.kwarg.as_deref() {
         out.push(PyNode::Arg(k));
     }
-    out.extend(p.posonlyargs.iter().chain(p.args.iter()).filter_map(|x| x.default.as_deref()).map(PyNode::Expr));
+    out.extend(
+        p.posonlyargs
+            .iter()
+            .chain(p.args.iter())
+            .filter_map(|x| x.default.as_deref())
+            .map(PyNode::Expr),
+    );
 }
 
 fn pattern_children<'a>(p: &'a Pattern, out: &mut Vec<PyNode<'a>>) {
@@ -263,7 +284,12 @@ fn pattern_children<'a>(p: &'a Pattern, out: &mut Vec<PyNode<'a>>) {
         Pattern::MatchClass(v) => {
             out.push(PyNode::Expr(&v.cls));
             out.extend(v.arguments.patterns.iter().map(PyNode::Pattern));
-            out.extend(v.arguments.keywords.iter().map(|k| PyNode::Pattern(&k.pattern)));
+            out.extend(
+                v.arguments
+                    .keywords
+                    .iter()
+                    .map(|k| PyNode::Pattern(&k.pattern)),
+            );
         }
         Pattern::MatchAs(v) => {
             if let Some(p) = v.pattern.as_deref() {
@@ -366,7 +392,11 @@ impl<'a> Positions<'a> {
                 _ => {}
             }
         }
-        Positions { index, tokens, close_of }
+        Positions {
+            index,
+            tokens,
+            close_of,
+        }
     }
 
     /// Extend `start` back over `(` tokens that close inside `[start, end)`:
@@ -390,7 +420,12 @@ impl<'a> Positions<'a> {
         let from = self.tokens.partition_point(|t| t.start() < after);
         self.tokens[from..]
             .iter()
-            .find(|t| matches!(t.kind(), TokenKind::Def | TokenKind::Async | TokenKind::Class))
+            .find(|t| {
+                matches!(
+                    t.kind(),
+                    TokenKind::Def | TokenKind::Async | TokenKind::Class
+                )
+            })
             .map_or(start, Ranged::start)
     }
 
@@ -425,7 +460,8 @@ pub fn generator_parens<'a>(nodes: &[PyNode<'a>]) -> Vec<(*const Expr, TextSize)
     let mut out = Vec::new();
     for n in nodes {
         if let PyNode::Expr(Expr::Call(c)) = n
-            && let ([arg @ Expr::Generator(g)], true) = (&*c.arguments.args, c.arguments.keywords.is_empty())
+            && let ([arg @ Expr::Generator(g)], true) =
+                (&*c.arguments.args, c.arguments.keywords.is_empty())
             && !g.parenthesized
         {
             out.push((std::ptr::from_ref(arg), c.arguments.start()));
