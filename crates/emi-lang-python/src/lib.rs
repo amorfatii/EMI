@@ -7,6 +7,7 @@ mod comments;
 pub mod dump;
 mod lines;
 pub mod rules;
+mod testvalue;
 
 use std::collections::BTreeSet;
 
@@ -178,6 +179,22 @@ fn verbosity(
         findings.push(Finding::new(file, hit.rule, hit.lines));
     }
     (findings, rule_lines)
+}
+
+/// Test-value findings of a test file (`empty-test`, `constant-assert`).
+/// Test files are not product source; only these diagnostics are kept.
+pub fn measure_test(file: &str, source: &str) -> Result<Vec<Finding>, ParseFailure> {
+    let parsed = ruff_python_parser::parse_module(source).map_err(|e| ParseFailure {
+        error: "SyntaxError",
+        message: e.to_string(),
+    })?;
+    let index = LineIndex::new(source);
+    Ok(testvalue::findings(
+        file,
+        parsed.syntax(),
+        parsed.tokens(),
+        &index,
+    ))
 }
 
 /// `(def line, exact, normalized)` fingerprint of one function body.

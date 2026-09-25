@@ -76,18 +76,11 @@ fn is_overload(d: &Decorator) -> bool {
     }
 }
 
-/// CPython's `lineno` for a statement: decorated definitions report the
-/// `def`/`class` keyword line, everything else its first token.
-pub fn stmt_line(stmt: &Stmt, tokens: &Tokens, index: &LineIndex) -> u32 {
-    let decorators = match stmt {
-        Stmt::FunctionDef(f) => &f.decorator_list,
-        Stmt::ClassDef(c) => &c.decorator_list,
-        _ => return index.line(stmt.start()),
-    };
-    let Some(last) = decorators.last() else {
-        return index.line(stmt.start());
-    };
-    let from = tokens.partition_point(|t| t.start() < last.end());
+/// Offset of a definition's keyword token (`def`, `async` or `class`) after
+/// its decorators, as CPython's `lineno` reports it.
+fn keyword_offset(decorators: &[Decorator], start: TextSize, tokens: &Tokens) -> TextSize {
+    let after = decorators.last().map_or(start, Ranged::end);
+    let from = tokens.partition_point(|t| t.start() < after);
     tokens[from..]
         .iter()
         .find(|t| {
@@ -96,7 +89,22 @@ pub fn stmt_line(stmt: &Stmt, tokens: &Tokens, index: &LineIndex) -> u32 {
                 TokenKind::Def | TokenKind::Async | TokenKind::Class
             )
         })
-        .map_or_else(|| index.line(stmt.start()), |t| index.line(t.start()))
+        .map_or(start, Ranged::start)
+}
+
+/// CPython `lineno` of a function definition (the `def`/`async` line).
+pub fn function_line(f: &StmtFunctionDef, tokens: &Tokens, index: &LineIndex) -> u32 {
+    index.line(keyword_offset(&f.decorator_list, f.start(), tokens))
+}
+
+/// CPython's `lineno` for a statement: decorated definitions report the
+/// `def`/`class` keyword line, everything else its first token.
+pub fn stmt_line(stmt: &Stmt, tokens: &Tokens, index: &LineIndex) -> u32 {
+    match stmt {
+        Stmt::FunctionDef(f) => function_line(f, tokens, index),
+        Stmt::ClassDef(c) => index.line(keyword_offset(&c.decorator_list, c.start(), tokens)),
+        _ => index.line(stmt.start()),
+    }
 }
 
 impl<'a> Collector<'a> {
@@ -124,19 +132,9 @@ impl<'a> Collector<'a> {
         }
     }
 
-    /// Offset of the `def` keyword, or of `async` for `async def`.
-    fn def_keyword(&self, f: &StmtFunctionDef) -> TextSize {
-        let after = f.decorator_list.last().map_or(f.start(), Ranged::end);
-        let from = self.tokens.partition_point(|t| t.start() < after);
-        self.tokens[from..]
-            .iter()
-            .find(|t| matches!(t.kind(), TokenKind::Def | TokenKind::Async))
-            .map_or(f.start(), Ranged::start)
-    }
-
     /// Record a definition; returns its name for the enclosing scope.
     fn function(&mut self, f: &'a StmtFunctionDef) -> String {
-        let def_line = self.line(self.def_keyword(f));
+        let def_line = function_line(f, self.tokens, self.index);
         let start_line = f
             .decorator_list
             .iter()

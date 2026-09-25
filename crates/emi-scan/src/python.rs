@@ -6,7 +6,7 @@ use std::path::Path;
 use std::collections::{BTreeMap, BTreeSet};
 
 use emi_ir::clones::Grouper;
-use emi_ir::{Burden, Component, FileError, InventoryEntry, Measurement, pytext};
+use emi_ir::{Burden, Component, FileError, Finding, InventoryEntry, Measurement, pytext};
 use emi_lang_python::FileMeasure;
 use rayon::prelude::*;
 
@@ -42,6 +42,11 @@ pub fn is_test_file(rel: &str) -> bool {
         .any(|p| matches!(*p, "tests" | "test"))
 }
 
+enum Parsed {
+    Product(FileMeasure),
+    Test(Vec<Finding>),
+}
+
 enum Outcome {
     Symlink,
     Unreadable(String, String),
@@ -55,9 +60,13 @@ enum Outcome {
         sha: String,
         measure: FileMeasure,
     },
+    Test {
+        sha: String,
+        findings: Vec<Finding>,
+    },
 }
 
-fn measure_file(f: &ScopeFile) -> Outcome {
+fn measure_file(f: &ScopeFile, detect_tests: bool) -> Outcome {
     if is_symlink(&f.path) {
         return Outcome::Symlink;
     }
@@ -80,14 +89,21 @@ fn measure_file(f: &ScopeFile) -> Outcome {
             };
         }
     };
+    let parse_failed = |sha, e: emi_lang_python::ParseFailure| Outcome::Failed {
+        sha,
+        stage: "parse",
+        error: e.error,
+        message: truncate(&e.message),
+    };
+    if detect_tests && is_test_file(&f.rel) {
+        return match emi_lang_python::measure_test(&f.rel, &source) {
+            Ok(findings) => Outcome::Test { sha, findings },
+            Err(e) => parse_failed(sha, e),
+        };
+    }
     match emi_lang_python::measure(&f.rel, &source) {
         Ok(measure) => Outcome::Measured { sha, measure },
-        Err(e) => Outcome::Failed {
-            sha,
-            stage: "parse",
-            error: e.error,
-            message: truncate(&e.message),
-        },
+        Err(e) => parse_failed(sha, e),
     }
 }
 
@@ -139,7 +155,7 @@ impl Scan {
         f: &ScopeFile,
         outcome: Outcome,
         raise: bool,
-    ) -> Result<Option<FileMeasure>, ScanError> {
+    ) -> Result<Option<Parsed>, ScanError> {
         let rel = f.rel.clone();
         match outcome {
             Outcome::Symlink if raise => Err(ScanError::Symlink(rel)),
@@ -172,18 +188,26 @@ impl Scan {
             }
             Outcome::Measured { sha, measure } => {
                 self.out.source_sha256.insert(rel, sha);
-                Ok(Some(measure))
+                Ok(Some(Parsed::Product(measure)))
+            }
+            Outcome::Test { sha, findings } => {
+                self.out.source_sha256.insert(rel, sha);
+                Ok(Some(Parsed::Test(findings)))
             }
         }
     }
 
-    /// Add a parsed file: tests go to the inventory only, product files with
-    /// eligible lines become components.
-    fn product(&mut self, rel: &str, m: FileMeasure, detect_tests: bool) {
-        if detect_tests && is_test_file(rel) {
-            self.inventory.push(entry(rel, "test-only", None));
-            return;
-        }
+    /// Add a parsed file: tests contribute test-value findings and an
+    /// inventory entry, product files with eligible lines become components.
+    fn add(&mut self, rel: &str, parsed: Parsed, tests: &mut Vec<(String, Vec<Finding>)>) {
+        let m = match parsed {
+            Parsed::Test(findings) => {
+                self.inventory.push(entry(rel, "test-only", None));
+                tests.push((rel.to_owned(), findings));
+                return;
+            }
+            Parsed::Product(m) => m,
+        };
         let state = if m.sloc > 0 {
             "measured"
         } else {
@@ -271,7 +295,10 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         rule_lines: BTreeMap::new(),
     };
     let selected = select(root, options, &mut scan);
-    let outcomes: Vec<Outcome> = selected.par_iter().map(measure_file).collect();
+    let outcomes: Vec<Outcome> = selected
+        .par_iter()
+        .map(|f| measure_file(f, options.detect_tests))
+        .collect();
     let raise = options.on_syntax_error == OnSyntaxError::Raise;
     let mut parsed = Vec::new();
     for (f, outcome) in selected.iter().zip(outcomes) {
@@ -282,9 +309,13 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     if parsed.is_empty() && scan.out.errors.is_empty() {
         return Err(ScanError::NoSources("no parseable Python source files"));
     }
+    let mut tests = Vec::new();
     for (f, m) in parsed {
-        scan.product(&f.rel, m, options.detect_tests);
+        scan.add(&f.rel, m, &mut tests);
     }
+    // The oracle orders test-value findings by file name (string order).
+    tests.sort_by(|a, b| a.0.cmp(&b.0));
+    scan.out.test_value_findings = Some(tests.into_iter().flat_map(|(_, f)| f).collect());
     let clone_lines = scan.finish_clones();
     scan.redundancy(&clone_lines);
     scan.inventory.sort_by(|a, b| a.file.cmp(&b.file));

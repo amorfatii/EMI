@@ -134,6 +134,9 @@ def compare(golden: dict, got: dict, probe: str) -> list:
                   lambda f: pick(f, fields), report)
     compare_lists("regions", want["regions"], got["regions"],
                   lambda r: pick(r, REGION_FIELDS), report)
+    if redundancy and probe == "python":
+        compare_lists("test_value_findings", want.get("test_value_findings", []),
+                      got.get("test_value_findings") or [], lambda f: json.dumps(f, sort_keys=True), report)
     for key in ("clone_groups", "clone_groups_normalized") if redundancy else ():
         if json.dumps(want[key]) != json.dumps(got.get(key)):
             report.append(f"{key}: {len(want[key])} expected, {len(got.get(key) or [])} got"
