@@ -1,0 +1,90 @@
+{
+  "schema": "emi-golden-corpus-0.1",
+  "tier_b_deferred": {
+    "n8n": "686k SLOC; product scope excludes tests/stories/ee by prose rules in benchmarks/js/n8n/manifest.json that must first become explicit globs",
+    "strapi": "249k SLOC; same reason (benchmarks/js/strapi/manifest.json)"
+  },
+  "backtests": [
+    {
+      "name": "express",
+      "commits": 40,
+      "allowance": 10.0,
+      "headrooms": [
+        10.0,
+        50.0,
+        100.0,
+        500.0
+      ],
+      "history_depth": 400
+    }
+  ],
+  "repos": [
+    {
+      "name": "commander",
+      "repository": "tj/commander.js",
+      "commit": "ba6d13ddb4243e5913367734f8c159089ffe7834",
+      "scope": "lib",
+      "probe": "js",
+      "manifest": "benchmarks/js/commander/manifest.json"
+    },
+    {
+      "name": "eslint",
+      "repository": "eslint/eslint",
+      "commit": "22b09f54f67a9512d4cea39ddbab9b6973d5c476",
+      "scope": "lib",
+      "probe": "js",
+      "manifest": "benchmarks/js/eslint/manifest.json"
+    },
+    {
+      "name": "express",
+      "repository": "expressjs/express",
+      "commit": "9a34acf03cb818ff3f8bc40e44176e277a25cbb9",
+      "scope": "lib",
+      "probe": "js",
+      "manifest": "benchmarks/js/express/manifest.json"
+    },
+    {
+      "name": "mocha",
+      "repository": "mochajs/mocha",
+      "commit": "2668e712ee733c93005323ce0218853171f57449",
+      "scope": "lib",
+      "probe": "js",
+      "manifest": "benchmarks/js/mocha/manifest.json"
+    },
+    {
+      "name": "parse-server",
+      "repository": "parse-community/parse-server",
+      "commit": "c433ae993fd84f7e72490b3fb54c2b4b8e5d55e7",
+      "scope": "src",
+      "probe": "js",
+      "manifest": "benchmarks/js/parse-server/manifest.json",
+      "options": {
+        "on_syntax_error": "record"
+      },
+      "note": "Flow type syntax in 3 files; recorded under errors, as in the benchmark manifest"
+    },
+    {
+      "name": "sails",
+      "repository": "balderdashy/sails",
+      "commit": "7b76422cc27823df033572bdda5c4910a68b697f",
+      "scope": "lib",
+      "probe": "js",
+      "manifest": "benchmarks/js/sails/manifest.json"
+    },
+    {
+      "name": "warehouse",
+      "repository": "pypa/warehouse",
+      "commit": "8aa1e9d75604e479057ec1f667ed8bd8a1636dd8",
+      "scope": "warehouse",
+      "probe": "python",
+      "manifest": "benchmarks/py/warehouse/manifest.json"
+    },
+    {
+      "name": "itsdangerous",
+      "local": "corpus/sources/itsdangerous",
+      "scope": "src",
+      "probe": "python",
+      "manifest": "benchmarks/itsdangerous/provenance.json"
+    }
+  ]
+}

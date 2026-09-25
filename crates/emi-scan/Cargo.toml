@@ -1,0 +1,21 @@
+[package]
+name = "emi-scan"
+description = "Scope enumeration and parallel measurement across language adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emi-ir.workspace = true
+emi-lang-python.workspace = true
+emi-lang-js.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

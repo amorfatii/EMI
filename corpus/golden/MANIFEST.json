@@ -1,0 +1,46 @@
+{
+  "files": {
+    "backtest-express.json.gz": {
+      "sha256": "654964c0c3061811bb17381959597994ebe01b2198ce003ac63caa872b7be390",
+      "bytes": 9627
+    },
+    "commander.json.gz": {
+      "sha256": "60189818c6f1e16655acf3517fe6c4f7f7dc94c1796feb28d1090f0729442348",
+      "bytes": 274258
+    },
+    "eslint.json.gz": {
+      "sha256": "999a174aa6a33d76588e71ce887f7857b1a2c7290e2324bd07a0f29523c25c64",
+      "bytes": 4504713
+    },
+    "express.json.gz": {
+      "sha256": "bf84121c7a9f41a3556f988e773f2d0e390e80f2821002c21a3c2f0df8e728e7",
+      "bytes": 111944
+    },
+    "itsdangerous.json.gz": {
+      "sha256": "c3df73230646a1b40fc770d92fe0037dd20fcaad5219276d1da79dbbe485288a",
+      "bytes": 55036
+    },
+    "mocha.json.gz": {
+      "sha256": "285c2459087249d9c5846df97ecae504be0e45df41bb1b26f08359e8e83ad65b",
+      "bytes": 746971
+    },
+    "parse-server.json.gz": {
+      "sha256": "da2a8ef30c49a749e947dbe73a3a6aa12c6a5f01fbc32add4915e6601b610584",
+      "bytes": 2899572
+    },
+    "sails.json.gz": {
+      "sha256": "e01e0d63acb009793a24ca83032c01808583a4f7cd2d4d4683a2345624411635",
+      "bytes": 864818
+    },
+    "warehouse.json.gz": {
+      "sha256": "78a24f1366518d21eb1c14ba057b50edf0ae782885e6a6174fe6bc0066e162d8",
+      "bytes": 3256327
+    }
+  },
+  "schema": "emi-golden-manifest-0.1",
+  "adapters": {
+    "python": "python-probe-0.12:token-sloc-no-docstrings:cc-ast:whole-body-clones-50t-6l:static-bindings-dispatch-evidence:tests-excluded-test-value:region-inventory:v-scored-clones-repline-core-rules:v-diagnostic-comments-weak-rules:len-check-zero-only:raw-bytes-hashes:pruned-walk:tarjan-scc:snapshot-inventory",
+    "js": "js-probe-0.10:line-sloc-no-comments-no-jsxtext-no-shebang:cc-ast:whole-body-clones-50t-6l-scope-wide:c-static-esm-cjs-require-graph:ts-fallback-js:const-arrow-locals:this-super-heritage:tsconfig-extends-diamond-star-subst-specificity:pkg-main-index:region-inventory:v-scored-clones-repline-core-rules:v-diagnostic-weak-rules:len-check-zero-only:tree-sitter-0.26.0:grammar-js-0.25.0:grammar-ts-0.23.2",
+    "calculator": "emi-0.3"
+  }
+}
