@@ -3,6 +3,9 @@
 use std::fs;
 use std::path::Path;
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use emi_ir::clones::Grouper;
 use emi_ir::{Burden, Component, FileError, Measurement, pytext};
 use emi_lang_js::FileMeasure;
 use rayon::prelude::*;
@@ -89,10 +92,19 @@ fn select(root: &Path, options: &Options, out: &mut Measurement) -> Vec<ScopeFil
         .collect()
 }
 
+/// Scope-wide accumulation across files.
+#[derive(Default)]
+struct Redundancy {
+    exact: Grouper,
+    normalized: Grouper,
+    rule_lines: BTreeMap<String, BTreeSet<u32>>,
+}
+
 /// Add a parsed file's records. Syntax errors abort in raise mode and are
 /// recorded (with the affected lines) otherwise.
 fn add_parsed(
     out: &mut Measurement,
+    red: &mut Redundancy,
     rel: &str,
     measure: FileMeasure,
     raise: bool,
@@ -110,6 +122,12 @@ fn add_parsed(
         out.errors
             .push(file_error(rel, "SyntaxError", message, Some(rows)));
     }
+    for c in &measure.clones {
+        red.exact.add(c.exact, rel, &c.body_lines);
+        red.normalized.add(c.normalized, rel, &c.body_lines);
+    }
+    out.verbosity_findings.extend(measure.findings);
+    red.rule_lines.insert(rel.to_owned(), measure.rule_lines);
     if measure.sloc > 0 {
         out.components.push(Component {
             id: rel.to_owned(),
@@ -139,6 +157,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     let raise = options.on_syntax_error == OnSyntaxError::Raise;
     let outcomes: Vec<Outcome> = selected.par_iter().map(measure_file).collect();
     let (mut fallbacks, mut measured) = (Vec::new(), 0usize);
+    let mut red = Redundancy::default();
     for (f, outcome) in selected.iter().zip(outcomes) {
         let rel = f.rel.clone();
         match outcome {
@@ -166,7 +185,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
                     fallbacks.push(rel.clone());
                 }
                 measured += 1;
-                add_parsed(&mut out, &rel, measure, raise)?;
+                add_parsed(&mut out, &mut red, &rel, measure, raise)?;
             }
         }
     }
@@ -179,5 +198,15 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         .sort_by(|a, b| (&a.file, &a.error, &a.message).cmp(&(&b.file, &b.error, &b.message)));
     fallbacks.sort();
     out.fallbacks = Some(fallbacks);
+    let mut clone_lines = BTreeMap::new();
+    out.clone_groups = red.exact.finish(&mut clone_lines);
+    out.clone_groups_normalized = red.normalized.finish(&mut clone_lines);
+    let empty = BTreeSet::new();
+    for c in &mut out.components {
+        let clones = clone_lines.get(&c.id).unwrap_or(&empty);
+        let rules = red.rule_lines.get(&c.id).unwrap_or(&empty);
+        // Unlike the Python adapter, JS redundancy is not capped at size.
+        c.burden.redundancy = Some(u32::try_from(clones.union(rules).count()).unwrap_or(u32::MAX));
+    }
     Ok(out)
 }

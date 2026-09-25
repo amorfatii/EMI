@@ -33,7 +33,7 @@ CACHE = Path(os.environ.get("EMI_CORPUS_CACHE", Path.home() / ".cache" / "emi-de
 # listed is not compared, so it cannot pass vacuously or fail prematurely.
 IMPLEMENTED = {
     "python": {"redundancy"},
-    "js": set(),
+    "js": {"redundancy"},
 }
 
 # Fields compared per record kind, by phase. Extend as phases land.

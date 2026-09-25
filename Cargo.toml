@@ -22,10 +22,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.10"
 hex = "0.4"
+regex = "1"
 thiserror = "2"
 
 # Measurement contract pins: changing any of these changes measurements and
-# requires a profile bump (see crates/emi-ir/src/profile.rs).
+# requires a profile bump (the PROFILE constants in the adapter crates).
 tree-sitter = "=0.26.2"
 tree-sitter-javascript = "=0.25.0"
 tree-sitter-typescript = "=0.23.2"

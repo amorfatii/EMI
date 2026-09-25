@@ -2,18 +2,21 @@
 //! semantics of the v0.5 `js_probe` (profile `js-probe-0.10`) on the same
 //! pinned tree-sitter grammars.
 
+mod clones;
 mod eligible;
 mod names;
 mod parse;
+pub mod rules;
 
 use std::collections::BTreeSet;
 
 use emi_ir::regions::{self, Candidate, Region};
-use emi_ir::{Evidence, FunctionRecord, RegionRecord, burden};
-use tree_sitter::Tree;
+use emi_ir::{Evidence, Finding, FunctionRecord, RegionRecord, burden, pytext};
+use tree_sitter::{Node, Tree};
 
 use crate::parse::{push_children, row};
 
+pub use crate::clones::CloneCandidate;
 pub use crate::parse::error_lines;
 
 /// Measurement profile of this adapter. It reproduces `js-probe-0.10`
@@ -32,6 +35,12 @@ pub struct FileMeasure {
     pub fallback: bool,
     /// Lines touched by syntax errors (regions on them report unknown erosion).
     pub error_lines: BTreeSet<u32>,
+    /// Whole-body clone candidates in region order.
+    pub clones: Vec<CloneCandidate>,
+    /// Waste, masking and repetition findings in the oracle's order.
+    pub findings: Vec<Finding>,
+    /// Eligible lines carrying V mass from scored rules.
+    pub rule_lines: BTreeSet<u32>,
 }
 
 const BRANCH_SINGLE: [&str; 8] = [
@@ -64,7 +73,8 @@ fn branch_events(tree: &Tree) -> Vec<(u32, u32)> {
     events
 }
 
-fn candidates(tree: &Tree, source: &[u8]) -> Vec<Candidate> {
+/// Region candidates and the function nodes their `origin` indexes.
+fn candidates<'t>(tree: &'t Tree, source: &[u8]) -> (Vec<Candidate>, Vec<Node<'t>>) {
     let mut found = Vec::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
@@ -73,8 +83,9 @@ fn candidates(tree: &Tree, source: &[u8]) -> Vec<Candidate> {
         }
         push_children(&mut stack, node);
     }
-    found
-        .into_iter()
+    let candidates = found
+        .iter()
+        .copied()
         .enumerate()
         .map(|(order, f)| {
             let (s, e) = (f.start_position(), f.end_position());
@@ -92,7 +103,56 @@ fn candidates(tree: &Tree, source: &[u8]) -> Vec<Candidate> {
                 origin: order,
             }
         })
-        .collect()
+        .collect();
+    (candidates, found)
+}
+
+/// Eligible lines of 25+ stripped characters whose text occurs more than once
+/// (lines split on `\n`, as the oracle does here).
+fn repeated_lines(source: &str, eligible: &BTreeSet<u32>) -> Vec<u32> {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut seen: std::collections::HashMap<&str, Vec<u32>> = std::collections::HashMap::new();
+    for &ln in eligible {
+        let text = lines.get(ln as usize - 1).map_or("", |t| pytext::strip(t));
+        if text.chars().count() >= 25 {
+            seen.entry(text).or_default().push(ln);
+        }
+    }
+    let mut repeated: Vec<u32> = seen
+        .into_values()
+        .filter(|v| v.len() > 1)
+        .flatten()
+        .collect();
+    repeated.sort_unstable();
+    repeated
+}
+
+/// Rule findings plus `rep-line`, and the eligible lines scored rules flag.
+fn findings(
+    file: &str,
+    source: &str,
+    tree: &Tree,
+    eligible: &BTreeSet<u32>,
+) -> (Vec<Finding>, BTreeSet<u32>) {
+    let mut hits = rules::findings(tree, source.as_bytes());
+    let repeated = repeated_lines(source, eligible);
+    if !repeated.is_empty() {
+        hits.push(rules::RuleHit {
+            rule: "rep-line",
+            lines: repeated,
+        });
+    }
+    let rule_lines = hits
+        .iter()
+        .filter(|h| rules::SCORING_RULES.contains(&h.rule))
+        .flat_map(|h| h.lines.iter().copied())
+        .filter(|l| eligible.contains(l))
+        .collect();
+    let findings = hits
+        .into_iter()
+        .map(|h| Finding::new(file, h.rule, h.lines))
+        .collect();
+    (findings, rule_lines)
 }
 
 /// Measure one file. `source` must already be universal-newline decoded,
@@ -110,17 +170,20 @@ pub fn measure(file: &str, source: &str) -> Option<FileMeasure> {
     // The root is `program` except after catastrophic error recovery, where
     // the oracle's naming yields `<anonymous>`; derive it the same way.
     let module_qname = names::qualified_name(tree.root_node(), bytes);
-    let regions = regions::assign(candidates(tree, bytes), &eligible, &module_qname);
+    let (candidates, nodes) = candidates(tree, bytes);
+    let regions = regions::assign(candidates, &eligible, &module_qname);
     let cc = regions::complexity(&regions, &branch_events(tree));
-    Some(records(
-        file,
-        source,
-        &eligible,
-        &regions,
-        &cc,
-        parsed.fallback,
-        bad,
-    ))
+    let clones = if eligible.is_empty() {
+        Vec::new()
+    } else {
+        clones::candidates(&regions, &nodes, &bad, bytes)
+    };
+    let mut measure = records(file, source, &eligible, &regions, &cc, parsed.fallback, bad);
+    measure.clones = clones;
+    if !eligible.is_empty() {
+        (measure.findings, measure.rule_lines) = findings(file, source, tree, &eligible);
+    }
+    Some(measure)
 }
 
 fn records(
@@ -187,6 +250,9 @@ fn records(
         regions: inventory,
         fallback,
         error_lines: bad,
+        clones: Vec::new(),
+        findings: Vec::new(),
+        rule_lines: BTreeSet::new(),
     }
 }
 

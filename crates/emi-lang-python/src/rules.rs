@@ -530,15 +530,7 @@ const DOC_STOPWORDS: &[&str] = &[
     "as", "at", "from", "that", "this", "it", "its", "given", "using", "into", "over",
 ];
 
-/// `set(re.findall(r"[a-z]+", text.lower()))`.
-fn words(text: &str) -> BTreeSet<String> {
-    let lower = text.to_lowercase();
-    lower
-        .split(|c: char| !c.is_ascii_lowercase())
-        .filter(|w| !w.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
+use emi_ir::pytext::lower_ascii_words as words;
 
 /// Every parameter name reachable from a signature, lambda defaults included.
 fn parameter_names(params: &Parameters) -> Vec<String> {

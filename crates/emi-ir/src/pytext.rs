@@ -81,6 +81,16 @@ pub fn universal_newlines(s: &str) -> String {
     out
 }
 
+/// `set(re.findall(r"[a-z]+", text.lower()))`: ASCII word runs of the
+/// Unicode-lowercased text.
+pub fn lower_ascii_words(text: &str) -> std::collections::BTreeSet<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_ascii_lowercase())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Lowercase hex SHA-256, as `hashlib.sha256(data).hexdigest()`.
 pub fn sha256_hex(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
