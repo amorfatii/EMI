@@ -1,11 +1,14 @@
 //! Python adapter. Reproduces the region, SLOC and complexity semantics of
 //! the v0.5 `python_probe` (profile `python-probe-0.12`) on ruff's parser.
 
+mod builtins;
 mod clones;
 mod collect;
 mod comments;
+pub mod coupling;
 pub mod dump;
 mod lines;
+pub mod pyast;
 pub mod rules;
 mod testvalue;
 
@@ -37,6 +40,8 @@ pub struct FileMeasure {
     pub findings: Vec<Finding>,
     /// Eligible lines carrying V mass from scored rules and repeated lines.
     pub rule_lines: BTreeSet<u32>,
+    /// Top-level declarations this module contributes to the catalog.
+    pub catalog: coupling::CatalogPart,
 }
 
 #[derive(Debug)]
@@ -133,6 +138,7 @@ pub fn measure(file: &str, source: &str) -> Result<FileMeasure, ParseFailure> {
     let cc = regions::complexity(&regions, &collected.events);
     let mut measure = records(file, source, &eligible, &regions, &cc);
     measure.clones = clones::candidates(&regions, &collected.functions, parsed.tokens(), &index);
+    measure.catalog = coupling::catalog_part(parsed.syntax());
     if !eligible.is_empty() {
         let hits = rules::findings(parsed.syntax(), parsed.tokens(), &index);
         (measure.findings, measure.rule_lines) =
@@ -181,6 +187,32 @@ fn verbosity(
     (findings, rule_lines)
 }
 
+/// `(kind, lineno, col)` of every positioned node in `ast.walk` order, for
+/// checking the CPython-shaped walk against CPython itself.
+pub fn walk_positions(source: &str) -> Result<Vec<(&'static str, u32, usize)>, ParseFailure> {
+    let parsed = ruff_python_parser::parse_module(source).map_err(|e| ParseFailure {
+        error: "SyntaxError",
+        message: e.to_string(),
+    })?;
+    let index = LineIndex::new(source);
+    let positions = pyast::Positions::new(&index, parsed.tokens());
+    let nodes = pyast::bfs(pyast::PyNode::Module(parsed.syntax()));
+    let parens: std::collections::HashMap<*const ruff_python_ast::Expr, _> =
+        pyast::generator_parens(&nodes).into_iter().collect();
+    Ok(nodes
+        .into_iter()
+        .filter_map(|n| {
+            let paren = match n {
+                pyast::PyNode::Expr(e) => parens.get(&std::ptr::from_ref(e)).copied(),
+                _ => None,
+            };
+            let (line, col) = positions.lineno_col(n, paren)?;
+            let kind = pyast::kind_name(n);
+            (!matches!(kind, "Constant" | "JoinedStr" | "TemplateStr" | "FormattedValue")).then_some((kind, line, col))
+        })
+        .collect())
+}
+
 /// Test-value findings of a test file (`empty-test`, `constant-assert`).
 /// Test files are not product source; only these diagnostics are kept.
 pub fn measure_test(file: &str, source: &str) -> Result<Vec<Finding>, ParseFailure> {
@@ -195,6 +227,51 @@ pub fn measure_test(file: &str, source: &str) -> Result<Vec<Finding>, ParseFailu
         parsed.tokens(),
         &index,
     ))
+}
+
+/// Coupling of one module, given scope-wide knowledge from the first pass.
+pub struct FileCoupling {
+    /// First-party modules this module imports (the import graph edges).
+    pub import_deps: BTreeSet<String>,
+    /// Per region, in the same order as `FileMeasure::regions`.
+    pub regions: Vec<coupling::RegionCoupling>,
+}
+
+/// Second pass: resolve imports and per-region dependencies against the
+/// project catalog. Re-parses the source; parsing is cheap next to holding
+/// every syntax tree of a scope in memory between passes.
+pub fn couple(source: &str, module: &str, is_package: bool, project: &coupling::Project) -> Result<FileCoupling, ParseFailure> {
+    let parsed = ruff_python_parser::parse_module(source).map_err(|e| ParseFailure {
+        error: "SyntaxError",
+        message: e.to_string(),
+    })?;
+    let index = LineIndex::new(source);
+    let collected = collect::collect(parsed.syntax(), parsed.tokens(), &index);
+    let eligible = eligible_lines(parsed.tokens(), &index, collected.excluded);
+    let regions = regions::assign(candidates(&collected.functions), &eligible, "<module>");
+    let imports = coupling::resolve_imports(parsed.syntax(), module, is_package, project);
+    let (models, contexts) = coupling::class_models(parsed.syntax(), &imports.aliases, module, project);
+    let positions = pyast::Positions::new(&index, parsed.tokens());
+    let ctx = coupling::ModuleContext { module, imports: &imports, project, positions: &positions, models: &models };
+    let per_region = regions
+        .iter()
+        .map(|region| {
+            let (root, class) = match region.origin {
+                Some(i) => {
+                    let f = &collected.functions[i];
+                    let class = contexts.get(&std::ptr::from_ref(f.node)).map(|&m| &models[m]);
+                    (pyast::PyNode::Stmt(f.stmt), class)
+                }
+                None => (pyast::PyNode::Module(parsed.syntax()), None),
+            };
+            let mut rc = coupling::region_coupling(&ctx, root, &region.lines, class);
+            if region.origin.is_none() {
+                rc.deps.extend(imports.dependencies.iter().cloned());
+            }
+            rc
+        })
+        .collect();
+    Ok(FileCoupling { import_deps: imports.dependencies.clone(), regions: per_region })
 }
 
 /// `(def line, exact, normalized)` fingerprint of one function body.
@@ -264,6 +341,7 @@ fn records(
         clones: Vec::new(),
         findings: Vec::new(),
         rule_lines: BTreeSet::new(),
+        catalog: coupling::CatalogPart::default(),
     }
 }
 

@@ -14,6 +14,8 @@ use crate::lines::LineIndex;
 
 pub struct FunctionInfo<'a> {
     pub node: &'a StmtFunctionDef,
+    /// The same definition as a statement, for walks rooted at it.
+    pub stmt: &'a Stmt,
     pub name: String,
     pub qname: String,
     /// Line of `def` (or `async`), as `ast` reports `lineno`.
@@ -133,7 +135,7 @@ impl<'a> Collector<'a> {
     }
 
     /// Record a definition; returns its name for the enclosing scope.
-    fn function(&mut self, f: &'a StmtFunctionDef) -> String {
+    fn function(&mut self, stmt: &'a Stmt, f: &'a StmtFunctionDef) -> String {
         let def_line = function_line(f, self.tokens, self.index);
         let start_line = f
             .decorator_list
@@ -156,6 +158,7 @@ impl<'a> Collector<'a> {
         };
         self.out.functions.push(FunctionInfo {
             node: f,
+            stmt,
             name: name.clone(),
             qname,
             def_line,
@@ -193,7 +196,7 @@ impl<'a> Visitor<'a> for Collector<'a> {
         self.depth += 1;
         match stmt {
             Stmt::FunctionDef(f) => {
-                let name = self.function(f);
+                let name = self.function(stmt, f);
                 self.scope.push(name);
                 visitor::walk_stmt(self, stmt);
                 self.scope.pop();
