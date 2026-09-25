@@ -12,7 +12,8 @@ use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::lines::LineIndex;
 
-pub struct FunctionInfo {
+pub struct FunctionInfo<'a> {
+    pub node: &'a StmtFunctionDef,
     pub name: String,
     pub qname: String,
     /// Line of `def` (or `async`), as `ast` reports `lineno`.
@@ -32,8 +33,8 @@ pub struct FunctionInfo {
 pub type Span = ((u32, usize), (u32, usize));
 
 #[derive(Default)]
-pub struct Collected {
-    pub functions: Vec<FunctionInfo>,
+pub struct Collected<'a> {
+    pub functions: Vec<FunctionInfo<'a>>,
     pub excluded: Vec<Span>,
     /// `(line, increment)` complexity events.
     pub events: Vec<(u32, u32)>,
@@ -44,12 +45,16 @@ struct Collector<'a> {
     tokens: &'a Tokens,
     scope: Vec<String>,
     depth: u32,
-    out: Collected,
+    out: Collected<'a>,
     /// Generator expressions already attributed to their call's parenthesis.
     counted_generators: Vec<TextRange>,
 }
 
-pub fn collect(module: &ModModule, tokens: &Tokens, index: &LineIndex) -> Collected {
+pub fn collect<'a>(
+    module: &'a ModModule,
+    tokens: &'a Tokens,
+    index: &'a LineIndex,
+) -> Collected<'a> {
     let mut c = Collector {
         index,
         tokens,
@@ -71,7 +76,30 @@ fn is_overload(d: &Decorator) -> bool {
     }
 }
 
-impl Collector<'_> {
+/// CPython's `lineno` for a statement: decorated definitions report the
+/// `def`/`class` keyword line, everything else its first token.
+pub fn stmt_line(stmt: &Stmt, tokens: &Tokens, index: &LineIndex) -> u32 {
+    let decorators = match stmt {
+        Stmt::FunctionDef(f) => &f.decorator_list,
+        Stmt::ClassDef(c) => &c.decorator_list,
+        _ => return index.line(stmt.start()),
+    };
+    let Some(last) = decorators.last() else {
+        return index.line(stmt.start());
+    };
+    let from = tokens.partition_point(|t| t.start() < last.end());
+    tokens[from..]
+        .iter()
+        .find(|t| {
+            matches!(
+                t.kind(),
+                TokenKind::Def | TokenKind::Async | TokenKind::Class
+            )
+        })
+        .map_or_else(|| index.line(stmt.start()), |t| index.line(t.start()))
+}
+
+impl<'a> Collector<'a> {
     fn line(&self, offset: TextSize) -> u32 {
         self.index.line(offset)
     }
@@ -107,7 +135,7 @@ impl Collector<'_> {
     }
 
     /// Record a definition; returns its name for the enclosing scope.
-    fn function(&mut self, f: &StmtFunctionDef) -> String {
+    fn function(&mut self, f: &'a StmtFunctionDef) -> String {
         let def_line = self.line(self.def_keyword(f));
         let start_line = f
             .decorator_list
@@ -129,6 +157,7 @@ impl Collector<'_> {
             format!("{}.{name}", self.scope.join("."))
         };
         self.out.functions.push(FunctionInfo {
+            node: f,
             name: name.clone(),
             qname,
             def_line,
@@ -161,7 +190,7 @@ impl Collector<'_> {
     }
 }
 
-impl<'a> Visitor<'a> for Collector<'_> {
+impl<'a> Visitor<'a> for Collector<'a> {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         self.depth += 1;
         match stmt {

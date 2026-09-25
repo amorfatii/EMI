@@ -29,6 +29,13 @@ REPO = HERE.parent
 ORACLE = Path(os.environ.get("EMI_ORACLE", Path.home() / "Projects" / "emi-v0.4"))
 CACHE = Path(os.environ.get("EMI_CORPUS_CACHE", Path.home() / ".cache" / "emi-dev" / "corpus"))
 
+# Output groups implemented per adapter; extend as phases land. A group not
+# listed is not compared, so it cannot pass vacuously or fail prematurely.
+IMPLEMENTED = {
+    "python": {"redundancy"},
+    "js": set(),
+}
+
 # Fields compared per record kind, by phase. Extend as phases land.
 FUNCTION_FIELDS = ("file", "function", "line", "sloc", "cc", "erosion_mass")
 JS_FUNCTION_FIELDS = ("lines", "erosion_exact")
@@ -115,13 +122,23 @@ def compare_lists(label: str, want: list, got: list, key, report: list) -> None:
 def compare(golden: dict, got: dict, probe: str) -> list:
     want = golden["measurement"]
     report: list = []
+    redundancy = "redundancy" in IMPLEMENTED[probe]
     compare_lists("components", want["components"], got["components"],
-                  lambda c: (c["id"], c["sloc"], json.dumps(c["burden"]["E"])), report)
+                  lambda c: (c["id"], c["sloc"], json.dumps(c["burden"]["E"]),
+                             c["burden"].get("V") if redundancy else None), report)
+    if redundancy:
+        compare_lists("verbosity_findings", want["verbosity_findings"], got["verbosity_findings"],
+                      lambda f: json.dumps(f, sort_keys=True), report)
     fields = FUNCTION_FIELDS + (JS_FUNCTION_FIELDS if probe == "js" else ())
     compare_lists("functions", want["functions"], got["functions"],
                   lambda f: pick(f, fields), report)
     compare_lists("regions", want["regions"], got["regions"],
                   lambda r: pick(r, REGION_FIELDS), report)
+    for key in ("clone_groups", "clone_groups_normalized") if redundancy else ():
+        if json.dumps(want[key]) != json.dumps(got.get(key)):
+            report.append(f"{key}: {len(want[key])} expected, {len(got.get(key) or [])} got"
+                          + ("" if sorted(map(json.dumps, want[key])) != sorted(map(json.dumps, got.get(key) or []))
+                             else " (same groups, different order)"))
     if want["source_sha256"] != got["source_sha256"]:
         report.append("source_sha256 differs")
     if probe == "js" and sorted(want.get("fallbacks", [])) != sorted(got.get("fallbacks", [])):

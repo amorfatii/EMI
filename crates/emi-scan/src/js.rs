@@ -116,6 +116,7 @@ fn add_parsed(
             sloc: measure.sloc,
             burden: Burden {
                 erosion: measure.erosion,
+                redundancy: None,
             },
         });
         out.functions.extend(measure.functions);

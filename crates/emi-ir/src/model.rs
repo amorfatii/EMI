@@ -75,6 +75,8 @@ pub struct RegionRecord {
 pub struct Burden {
     #[serde(rename = "E")]
     pub erosion: Evidence,
+    #[serde(rename = "V", skip_serializing_if = "Option::is_none")]
+    pub redundancy: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -105,6 +107,45 @@ pub struct InventoryEntry {
     pub reason: Option<String>,
 }
 
+/// A locatable rule finding (waste, masking, verbosity or test-value rule).
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct Finding {
+    pub file: String,
+    pub rule: String,
+    pub lines: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// Comment-bloat accounting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment_lines: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header_free: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counted: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<u32>,
+}
+
+impl Finding {
+    pub fn new(file: &str, rule: &str, lines: Vec<u32>) -> Self {
+        Finding {
+            file: file.to_owned(),
+            rule: rule.to_owned(),
+            lines,
+            ..Finding::default()
+        }
+    }
+}
+
+/// One occurrence of a clone: the body lines it covers in a file.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct CloneOccurrence {
+    pub file: String,
+    pub lines: Vec<u32>,
+}
+
 /// Measurement of one scope by one language adapter.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Measurement {
@@ -112,6 +153,11 @@ pub struct Measurement {
     pub components: Vec<Component>,
     pub functions: Vec<FunctionRecord>,
     pub regions: Vec<RegionRecord>,
+    pub clone_groups: Vec<Vec<CloneOccurrence>>,
+    pub clone_groups_normalized: Vec<Vec<CloneOccurrence>>,
+    pub verbosity_findings: Vec<Finding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_value_findings: Option<Vec<Finding>>,
     pub source_sha256: BTreeMap<String, String>,
     pub errors: Vec<FileError>,
     #[serde(skip_serializing_if = "Option::is_none")]

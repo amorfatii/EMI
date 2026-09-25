@@ -20,6 +20,8 @@ pub struct Candidate {
     pub end: u32,
     /// Sort key: smaller claims first; adapters encode their oracle's order.
     pub key: (u32, u64, u64),
+    /// Adapter-side index of the function this candidate came from.
+    pub origin: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -28,7 +30,8 @@ pub struct Region {
     pub qname: String,
     pub line: u32,
     pub lines: BTreeSet<u32>,
-    pub is_module: bool,
+    /// `Candidate::origin` of a function region; `None` for the module region.
+    pub origin: Option<usize>,
 }
 
 /// Assign eligible lines to regions. Candidates that end up owning no line
@@ -56,7 +59,7 @@ pub fn assign(
             qname: c.qname,
             line: c.line,
             lines,
-            is_module: false,
+            origin: Some(c.origin),
         });
     }
     let rest: BTreeSet<u32> = eligible.difference(&owned).copied().collect();
@@ -66,7 +69,7 @@ pub fn assign(
             qname: module_qname.to_owned(),
             line: 1,
             lines: rest,
-            is_module: true,
+            origin: None,
         });
     }
     regions
@@ -118,6 +121,7 @@ mod tests {
             start,
             end,
             key: (end - start, u64::from(start), 0),
+            origin: 0,
         }
     }
 

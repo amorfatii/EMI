@@ -3,6 +3,9 @@
 use std::fs;
 use std::path::Path;
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use emi_ir::clones::Grouper;
 use emi_ir::{Burden, Component, FileError, InventoryEntry, Measurement, pytext};
 use emi_lang_python::FileMeasure;
 use rayon::prelude::*;
@@ -119,6 +122,9 @@ fn error(file: &str, stage: &str, error: &str, message: String) -> FileError {
 struct Scan {
     out: Measurement,
     inventory: Vec<InventoryEntry>,
+    exact_clones: Grouper,
+    normalized_clones: Grouper,
+    rule_lines: BTreeMap<String, BTreeSet<u32>>,
 }
 
 impl Scan {
@@ -192,10 +198,37 @@ impl Scan {
             sloc: m.sloc,
             burden: Burden {
                 erosion: emi_ir::Evidence::Exact(m.erosion),
+                redundancy: None,
             },
         });
+        for c in &m.clones {
+            self.exact_clones.add(c.exact, rel, &c.body_lines);
+            self.normalized_clones.add(c.normalized, rel, &c.body_lines);
+        }
+        self.out.verbosity_findings.extend(m.findings);
+        self.rule_lines.insert(rel.to_owned(), m.rule_lines);
         self.out.functions.extend(m.functions);
         self.out.regions.extend(m.regions);
+    }
+
+    /// V per component: clone and scored-rule lines, capped at component size.
+    fn redundancy(&mut self, clone_lines: &BTreeMap<String, BTreeSet<u32>>) {
+        let empty = BTreeSet::new();
+        for c in &mut self.out.components {
+            let clones = clone_lines.get(&c.id).unwrap_or(&empty);
+            let rules = self.rule_lines.get(&c.id).unwrap_or(&empty);
+            let flagged = u32::try_from(clones.union(rules).count()).unwrap_or(u32::MAX);
+            c.burden.redundancy = Some(flagged.min(c.sloc));
+        }
+    }
+
+    fn finish_clones(&mut self) -> BTreeMap<String, BTreeSet<u32>> {
+        let mut clone_lines = BTreeMap::new();
+        let exact = std::mem::take(&mut self.exact_clones);
+        let normalized = std::mem::take(&mut self.normalized_clones);
+        self.out.clone_groups = exact.finish(&mut clone_lines);
+        self.out.clone_groups_normalized = normalized.finish(&mut clone_lines);
+        clone_lines
     }
 }
 
@@ -233,6 +266,9 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     let mut scan = Scan {
         out,
         inventory: Vec::new(),
+        exact_clones: Grouper::default(),
+        normalized_clones: Grouper::default(),
+        rule_lines: BTreeMap::new(),
     };
     let selected = select(root, options, &mut scan);
     let outcomes: Vec<Outcome> = selected.par_iter().map(measure_file).collect();
@@ -249,6 +285,8 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     for (f, m) in parsed {
         scan.product(&f.rel, m, options.detect_tests);
     }
+    let clone_lines = scan.finish_clones();
+    scan.redundancy(&clone_lines);
     scan.inventory.sort_by(|a, b| a.file.cmp(&b.file));
     scan.out.inventory = Some(scan.inventory);
     Ok(scan.out)

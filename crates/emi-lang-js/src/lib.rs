@@ -89,6 +89,7 @@ fn candidates(tree: &Tree, source: &[u8]) -> Vec<Candidate> {
                 start: row(start),
                 end: row(e.row),
                 key: (span, position, u64::try_from(order).unwrap_or(u64::MAX)),
+                origin: order,
             }
         })
         .collect()

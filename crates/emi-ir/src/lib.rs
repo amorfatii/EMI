@@ -2,11 +2,12 @@
 //! produces, plus the shared rules they are measured under.
 
 pub mod burden;
+pub mod clones;
 pub mod model;
 pub mod pytext;
 pub mod regions;
 
 pub use model::{
-    Burden, Component, Evidence, FileError, FunctionRecord, InventoryEntry, Measurement,
-    RegionRecord,
+    Burden, CloneOccurrence, Component, Evidence, FileError, Finding, FunctionRecord,
+    InventoryEntry, Measurement, RegionRecord,
 };
