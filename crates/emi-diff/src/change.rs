@@ -88,12 +88,14 @@ fn to_value(m: &Measurement) -> Result<Value> {
     serde_json::to_value(m).map_err(|e| e.to_string())
 }
 
-fn measure(req: &Request, sha: &str, dest: &Path, source: &str) -> Result<Side> {
+/// `scoped`: gitlinks outside `source` are skipped rather than refused
+/// (single-ref measurement; reviews keep the oracle's refusal).
+fn measure(req: &Request, sha: &str, dest: &Path, source: &str, scoped: bool) -> Result<Side> {
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let inventory = if sha == WORKTREE {
         snapshot::materialize_worktree(&req.repo, dest)?
     } else {
-        snapshot::materialize(&req.repo, sha, dest)?
+        snapshot::materialize_scoped(&req.repo, sha, dest, scoped.then_some(source))?
     };
     let scope = if source.is_empty() {
         dest.to_path_buf()
@@ -273,8 +275,8 @@ fn pin(req: &Request) -> Result<Pinned> {
 
 fn measure_both(req: &Request, pinned: &Pinned, source: &str) -> Result<[Side; 2]> {
     let tmp = TempDir::new("emi-diff-")?;
-    let before = measure(req, &pinned.before, &tmp.path.join("ref0"), source)?;
-    let after = measure(req, &pinned.after, &tmp.path.join("ref1"), source)?;
+    let before = measure(req, &pinned.before, &tmp.path.join("ref0"), source, false)?;
+    let after = measure(req, &pinned.after, &tmp.path.join("ref1"), source, false)?;
     Ok([before, after])
 }
 
@@ -334,7 +336,7 @@ pub fn measure_ref(req: &Request, reference: &str) -> Result<(String, Option<Val
         snapshot::resolve_ref(&req.repo, reference)?
     };
     let tmp = TempDir::new("emi-measure-")?;
-    let side = measure(req, &sha, &tmp.path.join("ref"), &source)?;
+    let side = measure(req, &sha, &tmp.path.join("ref"), &source, true)?;
     Ok((sha, side.measurement))
 }
 

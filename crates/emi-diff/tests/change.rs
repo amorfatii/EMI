@@ -159,6 +159,53 @@ fn gitlinks_fail_closed() {
         err.starts_with("gitlink/submodule entries unsupported"),
         "{err}"
     );
+    let at = |scope: &str| {
+        emi_diff::change::measure_ref(
+            &Request::new(&r.0, scope, &head, &head, Probe::Python),
+            &with_link,
+        )
+    };
+    assert!(
+        at("src").is_err(),
+        "a single-ref scan still refuses a gitlink inside its scope"
+    );
+    git(&r.0, &["rm", "-q", "--cached", "src/vendored"]);
+    git(
+        &r.0,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{head},assets/syntaxes"),
+        ],
+    );
+    git(
+        &r.0,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "assets",
+        ],
+    );
+    let outside = git(&r.0, &["rev-parse", "HEAD"]);
+    let measured = emi_diff::change::measure_ref(
+        &Request::new(&r.0, "src", &outside, &outside, Probe::Python),
+        &outside,
+    );
+    assert!(
+        measured.is_ok_and(|(_, m)| m.is_some_and(|m| m["components"][0]["id"] == "a.py")),
+        "a gitlink outside the scope cannot change what the scope measures"
+    );
+    let review = change(&r, &head, &outside).err().unwrap_or_default();
+    assert!(
+        review.starts_with("gitlink/submodule entries unsupported"),
+        "reviews keep the oracle's refusal: {review}"
+    );
 }
 
 #[test]

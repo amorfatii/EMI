@@ -333,7 +333,25 @@ fn set_executable(path: &Path) {
 fn set_executable(_path: &Path) {}
 
 /// `materialize_revision`: raw tracked blobs of commit `sha` into `dest`.
+/// Any gitlink (submodule) is refused, as in the oracle.
 pub fn materialize(repo: &Path, sha: &str, dest: &Path) -> Result<Inventory> {
+    materialize_scoped(repo, sha, dest, None)
+}
+
+/// Whether `path` lies within the repo-relative `scope` (`""` is the root).
+fn within(path: &str, scope: &str) -> bool {
+    scope.is_empty() || path == scope || path.starts_with(&format!("{scope}/"))
+}
+
+/// [`materialize`], but with `Some(scope)` gitlinks outside the measured
+/// scope are skipped (left unmaterialized) instead of refused: a submodule
+/// of assets beside `src/` cannot change what `src/` measures.
+pub fn materialize_scoped(
+    repo: &Path,
+    sha: &str,
+    dest: &Path,
+    scope: Option<&str>,
+) -> Result<Inventory> {
     let sha = emi_ir::pytext::strip(sha);
     if !is_sha(sha) {
         return Err(format!(
@@ -368,7 +386,9 @@ pub fn materialize(repo: &Path, sha: &str, dest: &Path) -> Result<Inventory> {
             ));
         }
         if entry.mode == "160000" || entry.kind == "commit" {
-            gitlinks.push(text);
+            if scope.is_none_or(|s| within(&text, s)) {
+                gitlinks.push(text);
+            }
         } else if entry.mode != "120000" && entry.kind != "blob" {
             return Err(format!(
                 "unsupported tracked object {}: {} {}",
