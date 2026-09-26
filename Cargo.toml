@@ -18,6 +18,7 @@ emi-history = { path = "crates/emi-history" }
 emi-rules = { path = "crates/emi-rules" }
 emi-exec = { path = "crates/emi-exec" }
 emi-controller = { path = "crates/emi-controller" }
+emi-lsp = { path = "crates/emi-lsp" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

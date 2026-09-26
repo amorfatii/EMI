@@ -327,6 +327,7 @@ dependencies = [
  "emi-history",
  "emi-ir",
  "emi-ledger",
+ "emi-lsp",
  "emi-mcp",
  "emi-rules",
  "emi-scan",
@@ -418,6 +419,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "emi-lsp"
+version = "0.1.0"
+dependencies = [
+ "emi-ir",
+ "emi-lang-js",
+ "emi-lang-python",
+ "emi-rules",
+ "serde_json",
 ]
 
 [[package]]

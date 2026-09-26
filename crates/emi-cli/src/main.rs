@@ -122,6 +122,8 @@ enum Command {
     Report(report::ReportArgs),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
+    /// Language server (stdio): rule diagnostics, erosion hints, burden-delta code lenses.
+    Lsp,
 }
 
 fn review(input: &std::path::Path, gate: &gatecli::GateArgs) -> anyhow::Result<u8> {
@@ -214,6 +216,10 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::SarifMerge(args) => mergecli::run(&args),
         Command::Task(cmd) => taskcli::run(&cmd),
         Command::Report(args) => report::run(&args),
+        Command::Lsp => {
+            emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
+            Ok(0)
+        }
         Command::Mcp => {
             emi_mcp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)

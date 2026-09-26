@@ -37,6 +37,10 @@ catalog plus your YAML) with reasoned, expiring suppressions and baselines;
 CI: `emi scan --format sarif` feeds code-scanning UIs; `docs/ci.md` has a
 GitHub workflow that gates PRs and uploads annotations.
 
+Editor: `emi lsp` shows rule diagnostics, erosion hints and per-function
+burden-delta code lenses (`docs/editor.md`). Reports: `emi report` writes a
+self-contained HTML report; `emi diff --format markdown` a PR comment.
+
 Supervised tasks: `emi task create|verify|complete` freezes a task
 contract outside the repo and verifies candidates by running its checks in
 a sandbox with verified cleanup; only an accepted commit completes the task
@@ -76,7 +80,12 @@ Exit code 2 on any error.
 | `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
 | `emi-rules` | Declarative query rules, first-party catalog, suppressions, baselines |
 | `emi-exec` | Check execution: process groups, subreaping, PID namespaces, verified cleanup receipts |
-| `emi-controller` | Supervised tasks: frozen contracts, envelope/structural gates, requirement ledger, completion |
+| `emi-controller` | Editor: `emi lsp` shows rule diagnostics, erosion hints and per-function
+burden-delta code lenses (`docs/editor.md`). Reports: `emi report` writes a
+self-contained HTML report; `emi diff --format markdown` a PR comment.
+
+Supervised tasks: frozen contracts, envelope/structural gates, requirement ledger, completion |
+| `emi-lsp` | Language server: rule diagnostics, erosion hints, burden-delta code lenses |
 | `emi-mcp` | Model Context Protocol server exposing EMI's tools to agents |
 | `emi-history` | History mining with rename tracking, churn/authorship/AI attribution, change coupling, hotspots |
 | `emi-cli` | The `emi` binary |

@@ -20,6 +20,7 @@ emi-history.workspace = true
 emi-mcp = { path = "../emi-mcp" }
 emi-rules.workspace = true
 emi-controller.workspace = true
+emi-lsp.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
