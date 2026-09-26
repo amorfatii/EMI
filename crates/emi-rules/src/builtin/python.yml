@@ -1,0 +1,140 @@
+# Python rules.
+rules:
+  - id: py-breakpoint
+    languages: [python]
+    severity: error
+    message: "Debugger entry point left in code"
+    description: breakpoint() and pdb.set_trace() stop the program waiting for a debugger.
+    tags: [correctness]
+    query: |
+      (call function: (identifier) @fn (#eq? @fn "breakpoint")) @match
+      (call
+        function: (attribute
+          object: (identifier) @mod
+          attribute: (identifier) @attr)
+        (#match? @mod "^i?pdb$")
+        (#eq? @attr "set_trace")) @match
+    examples:
+      match: ["def f():\n    breakpoint()\n", "import pdb\npdb.set_trace()\n"]
+      no_match: ["def f():\n    return 1\n", "trace.set_trace()\n"]
+
+  - id: py-mutable-default
+    languages: [python]
+    severity: warning
+    message: "Mutable default argument: one object is shared by every call"
+    description: A list, dict or set default is created once at definition time; mutations leak across calls.
+    tags: [correctness]
+    query: |
+      [
+        (default_parameter value: [(list) (dictionary) (set)] @match)
+        (typed_default_parameter value: [(list) (dictionary) (set)] @match)
+      ]
+    examples:
+      match: ["def f(x=[]):\n    return x\n", "def f(x: dict = {}):\n    return x\n"]
+      no_match: ["def f(x=None):\n    return x\n", "def f(x=()):\n    return x\n"]
+
+  - id: py-bare-except
+    languages: [python]
+    severity: warning
+    message: "Bare `except:` also catches KeyboardInterrupt and SystemExit"
+    description: Catch the exceptions you expect (at most Exception) so interrupts and exits still work.
+    tags: [correctness]
+    query: |
+      (except_clause
+        !value
+        (block) @body
+        (#not-match? @body "(^|\n)[ \t]*raise[ \t]*($|\n)")
+        (#not-match? @body "^pass$")) @match
+    examples:
+      match: ["try:\n    go()\nexcept:\n    stop()\n"]
+      no_match:
+        - "try:\n    go()\nexcept ValueError:\n    stop()\n"
+        - "try:\n    go()\nexcept:\n    cleanup()\n    raise\n"
+        - "try:\n    go()\nexcept:\n    pass\n"
+
+  - id: py-silent-except
+    languages: [python]
+    severity: warning
+    message: "Every error silently swallowed (broad `except` with only `pass`)"
+    description: >
+      A bare or Exception/BaseException handler that only passes hides every
+      failure, including bugs. Narrow handlers (`except KeyError: pass`) are
+      idiomatic and not flagged.
+    tags: [error-handling, ai-slop]
+    query: |
+      (except_clause
+        !value
+        (block . (pass_statement) .)) @match
+      (except_clause
+        value: (identifier) @kind
+        (block . (pass_statement) .)
+        (#match? @kind "^(Exception|BaseException)$")) @match
+    examples:
+      match:
+        - "try:\n    go()\nexcept Exception:\n    pass\n"
+        - "try:\n    go()\nexcept:\n    pass\n"
+      no_match:
+        - "try:\n    go()\nexcept KeyError:\n    pass\n"
+        - "try:\n    go()\nexcept Exception:\n    log()\n"
+
+  - id: py-identical-branches
+    languages: [python]
+    severity: warning
+    message: "Both branches of this conditional are identical"
+    description: An if/else or conditional expression whose branches are the same text does not branch.
+    tags: [correctness, ai-slop]
+    query: |
+      (if_statement
+        consequence: (block) @a
+        .
+        alternative: (else_clause body: (block) @b)
+        (#eq? @a @b)) @match
+      (conditional_expression
+        (_) @a "if" (_) "else" (_) @b
+        (#eq? @a @b)) @match
+    examples:
+      match:
+        - "if x:\n    go(1)\nelse:\n    go(1)\n"
+        - "y = a if c else a\n"
+      no_match:
+        - "if x:\n    go(1)\nelse:\n    go(2)\n"
+        - "y = a if c else b\n"
+        - "if x:\n    go(1)\nelif y:\n    go(2)\nelse:\n    go(1)\n"
+
+  - id: py-self-assignment
+    languages: [python]
+    severity: note
+    message: "`{{a}}` is assigned to itself"
+    description: >
+      Assigning a value to itself has no effect; the intended right-hand side
+      is usually another name (on a property it may deliberately re-run the
+      setter). Attribute self-assignment is flagged anywhere;
+      a bare name only inside a function body, since `name = name` in a
+      class body deliberately copies a module name into the class.
+    tags: [correctness]
+    query: |
+      (assignment
+        left: (attribute) @a
+        right: (attribute) @b
+        (#eq? @a @b)) @match
+      (function_definition
+        body: (block
+          (expression_statement
+            (assignment
+              left: (identifier) @a
+              right: (identifier) @b
+              (#eq? @a @b)) @match)))
+    examples:
+      match: ["def f(x):\n    x = x\n", "self.name = self.name\n"]
+      no_match: ["x = y\n", "a, b = b, a\n", "class C:\n    codec = codec\n"]
+
+  - id: py-wildcard-import
+    languages: [python]
+    severity: note
+    message: "Wildcard import hides where names come from"
+    description: "`from m import *` makes every name's origin unknown to readers and to static analysis."
+    tags: [maintainability]
+    query: "(import_from_statement (wildcard_import)) @match"
+    examples:
+      match: ["from os.path import *\n"]
+      no_match: ["from os.path import join\n"]

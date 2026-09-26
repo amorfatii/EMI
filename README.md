@@ -30,6 +30,10 @@ target/release/emi review change.json --guardrail          # gate a saved change
 target/release/emi backtest --repo . --source src --commits 41 --headroom 10 --headroom 50
 ```
 
+Rules: `emi check src` runs declarative tree-sitter rules (a first-party
+catalog plus your YAML) with reasoned, expiring suppressions and baselines;
+`emi sarif-merge` combines tools' SARIF (`docs/rules.md`).
+
 CI: `emi scan --format sarif` feeds code-scanning UIs; `docs/ci.md` has a
 GitHub workflow that gates PRs and uploads annotations.
 
@@ -65,6 +69,7 @@ Exit code 2 on any error.
 | `emi-scan` | Scope enumeration and parallel measurement |
 | `emi-ledger` | Calculator (ledger, review report) and gate, with CPython-exact arithmetic and JSON |
 | `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
+| `emi-rules` | Declarative query rules, first-party catalog, suppressions, baselines |
 | `emi-mcp` | Model Context Protocol server exposing EMI's tools to agents |
 | `emi-history` | History mining with rename tracking, churn/authorship/AI attribution, change coupling, hotspots |
 | `emi-cli` | The `emi` binary |

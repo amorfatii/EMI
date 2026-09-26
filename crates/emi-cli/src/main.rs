@@ -9,9 +9,11 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use emi_scan::{OnSyntaxError, Options, Probe};
 
+mod checkcli;
 mod diffcli;
 mod gatecli;
 mod historycli;
+mod mergecli;
 mod sarif;
 
 #[derive(Parser)]
@@ -103,6 +105,12 @@ enum Command {
     /// Rank files by measured burden × change frequency; report change
     /// coupling, authorship and AI attribution over a history window.
     Hotspots(historycli::HotspotsArgs),
+    /// Run declarative rules (built-in catalog and your own YAML) with
+    /// inline suppressions and baselines.
+    Check(checkcli::CheckArgs),
+    /// Merge SARIF logs from several tools into one (runs joined by tool,
+    /// rules unioned, duplicate results dropped).
+    SarifMerge(mergecli::MergeArgs),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
 }
@@ -193,6 +201,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Diff(args) => diffcli::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
         Command::Hotspots(args) => historycli::run(&args),
+        Command::Check(args) => checkcli::run(&args),
+        Command::SarifMerge(args) => mergecli::run(&args),
         Command::Mcp => {
             emi_mcp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)
