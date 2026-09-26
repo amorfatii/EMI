@@ -37,6 +37,11 @@ catalog plus your YAML) with reasoned, expiring suppressions and baselines;
 CI: `emi scan --format sarif` feeds code-scanning UIs; `docs/ci.md` has a
 GitHub workflow that gates PRs and uploads annotations.
 
+Supervised tasks: `emi task create|verify|complete` freezes a task
+contract outside the repo and verifies candidates by running its checks in
+a sandbox with verified cleanup; only an accepted commit completes the task
+(`docs/tasks.md`).
+
 Agents: `emi mcp` serves the gate, explanations, hotspots and refactor
 acceptance over the Model Context Protocol (`docs/agents.md`); `emi diff
 --worktree --guardrail` gates uncommitted work from the command line.
@@ -70,6 +75,8 @@ Exit code 2 on any error.
 | `emi-ledger` | Calculator (ledger, review report) and gate, with CPython-exact arithmetic and JSON |
 | `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
 | `emi-rules` | Declarative query rules, first-party catalog, suppressions, baselines |
+| `emi-exec` | Check execution: process groups, subreaping, PID namespaces, verified cleanup receipts |
+| `emi-controller` | Supervised tasks: frozen contracts, envelope/structural gates, requirement ledger, completion |
 | `emi-mcp` | Model Context Protocol server exposing EMI's tools to agents |
 | `emi-history` | History mining with rename tracking, churn/authorship/AI attribution, change coupling, hotspots |
 | `emi-cli` | The `emi` binary |

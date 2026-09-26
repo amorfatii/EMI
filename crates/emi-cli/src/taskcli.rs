@@ -16,10 +16,78 @@ const RECORD_VERSION: &str = "emi-task-0.1";
 
 #[derive(Subcommand)]
 pub enum TaskCommand {
-    /// Pin a task baseline record.
+    /// Pin a task baseline record (advisory structural gating).
     Init(InitArgs),
     /// Gate baseline -> AFTER under the recorded policy.
     Gate(GateArgs),
+    /// Freeze a supervised task contract under a controller authority.
+    Create(CreateArgs),
+    /// Verify a candidate: run frozen checks, gates, decide (exit 0 accepted, 3 otherwise).
+    Verify(VerifyArgs),
+    /// Latest decision for a candidate, without running anything.
+    Status(VerifyArgs),
+    /// Complete the task with an accepted commit (exit 0) or deny (exit 3).
+    Complete(VerifyArgs),
+    /// Record a contract revision (actor and reason required).
+    Revise(ReviseArgs),
+    /// Pre-push check: exit 0 only for a completed commit.
+    HookCheck(VerifyArgs),
+    /// Install a pre-push hook that runs hook-check.
+    InstallHook(HookArgs),
+}
+
+#[derive(Args)]
+pub struct CreateArgs {
+    /// Controller-owned directory outside the repository.
+    #[arg(long)]
+    authority: PathBuf,
+    /// Task spec JSON (task_id, repo, baseline, objective, requirements, checks, envelope, ...).
+    #[arg(long)]
+    spec: PathBuf,
+}
+
+#[derive(Args)]
+pub struct VerifyArgs {
+    #[arg(long)]
+    authority: PathBuf,
+    #[arg(long)]
+    task: String,
+    /// Candidate commit/ref (default HEAD).
+    #[arg(long, default_value = "HEAD")]
+    candidate: String,
+    /// Verify the uncommitted working tree instead (verify/status only).
+    #[arg(long)]
+    worktree: bool,
+    /// Repository (default: the contract's).
+    #[arg(long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReviseArgs {
+    #[arg(long)]
+    authority: PathBuf,
+    #[arg(long)]
+    task: String,
+    /// JSON object of contract fields to replace.
+    #[arg(long)]
+    changes: String,
+    #[arg(long)]
+    actor: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct HookArgs {
+    #[arg(long)]
+    authority: PathBuf,
+    #[arg(long)]
+    task: String,
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
 }
 
 #[derive(Args)]
@@ -228,9 +296,144 @@ fn gate(a: &GateArgs) -> anyhow::Result<u8> {
     Ok(code)
 }
 
+const EXIT_DENIED: u8 = 3;
+
+fn print(v: &Value) {
+    println!("{}", dumps_pretty(v));
+}
+
+/// The contract's repository (or an override) and the task's store.
+fn store(
+    authority: &std::path::Path,
+    task: &str,
+    repo: Option<&PathBuf>,
+) -> anyhow::Result<emi_controller::Store> {
+    let repo = match repo {
+        Some(r) => r.clone(),
+        None => {
+            // Read the repo path from the stored state's current contract.
+            let probe = emi_controller::Store {
+                dir: authority.join(task),
+            };
+            let c = probe.contract().map_err(anyhow::Error::msg)?;
+            PathBuf::from(c["repo"]["path"].as_str().unwrap_or("."))
+        }
+    };
+    emi_controller::Store::open(authority, task, &repo).map_err(anyhow::Error::msg)
+}
+
+fn candidate(a: &VerifyArgs) -> emi_controller::Candidate {
+    if a.worktree {
+        emi_controller::Candidate::Worktree
+    } else {
+        emi_controller::Candidate::Ref(a.candidate.clone())
+    }
+}
+
+fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
+    let err = anyhow::Error::msg;
+    match cmd {
+        TaskCommand::Create(a) => {
+            let text = std::fs::read_to_string(&a.spec)?;
+            let spec = emi_ledger::strict::loads(&text).map_err(err)?;
+            print(&emi_controller::create(&a.authority, &spec).map_err(err)?);
+            Ok(0)
+        }
+        TaskCommand::Verify(a) => {
+            let d = emi_controller::verify(
+                &store(&a.authority, &a.task, a.repo.as_ref())?,
+                &candidate(a),
+            )
+            .map_err(err)?;
+            print(&d);
+            Ok(if d["decision"] == "accepted" {
+                0
+            } else {
+                EXIT_DENIED
+            })
+        }
+        TaskCommand::Status(a) => {
+            let s = store(&a.authority, &a.task, a.repo.as_ref())?;
+            let c = s.contract().map_err(err)?;
+            let repo = PathBuf::from(c["repo"]["path"].as_str().unwrap_or("."));
+            let id = if a.worktree {
+                emi_controller::verify::WORKTREE.to_owned()
+            } else {
+                snapshot::resolve_ref(&repo, &a.candidate).map_err(err)?
+            };
+            let d = s.latest_decision(&id, c["contract_id"].as_str().unwrap_or(""));
+            print(&d.unwrap_or_else(|| json!({"candidate_id": id, "decision": null, "reasons": ["not verified under the current contract"]})));
+            Ok(0)
+        }
+        TaskCommand::Complete(a) => {
+            let (done, record) = emi_controller::complete(
+                &store(&a.authority, &a.task, a.repo.as_ref())?,
+                &a.candidate,
+            )
+            .map_err(err)?;
+            print(&record);
+            Ok(if done { 0 } else { EXIT_DENIED })
+        }
+        TaskCommand::HookCheck(a) => {
+            let (ok, msg) = emi_controller::hook_check(
+                &store(&a.authority, &a.task, a.repo.as_ref())?,
+                &a.candidate,
+            )
+            .map_err(err)?;
+            eprintln!("emi: {msg}");
+            Ok(if ok { 0 } else { EXIT_DENIED })
+        }
+        TaskCommand::Revise(a) => {
+            let changes = emi_ledger::strict::loads(&a.changes).map_err(err)?;
+            print(
+                &store(&a.authority, &a.task, a.repo.as_ref())?
+                    .revise(&changes, &a.actor, &a.reason)
+                    .map_err(err)?,
+            );
+            Ok(0)
+        }
+        TaskCommand::InstallHook(a) => install_hook(a),
+        TaskCommand::Init(_) | TaskCommand::Gate(_) => Ok(0),
+    }
+}
+
+fn install_hook(a: &HookArgs) -> anyhow::Result<u8> {
+    let git_dir = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&a.repo)
+        .args(["rev-parse", "--git-dir"])
+        .output()?;
+    let git_dir = a.repo.join(String::from_utf8_lossy(&git_dir.stdout).trim());
+    let hook = git_dir.join("hooks").join("pre-push");
+    if hook.exists() {
+        anyhow::bail!(
+            "{} exists; add `emi task hook-check` to it yourself",
+            hook.display()
+        );
+    }
+    let exe = std::env::current_exe()?;
+    let authority = std::fs::canonicalize(&a.authority)?;
+    let script = format!(
+        "#!/bin/sh\n# Installed by emi: pushes must carry a completed supervised task.\nexec '{}' task hook-check --authority '{}' --task '{}' --candidate HEAD\n",
+        exe.display(),
+        authority.display(),
+        a.task
+    );
+    std::fs::create_dir_all(hook.parent().unwrap_or(&git_dir))?;
+    std::fs::write(&hook, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    }
+    println!("installed {}", hook.display());
+    Ok(0)
+}
+
 pub fn run(cmd: &TaskCommand) -> anyhow::Result<u8> {
     match cmd {
         TaskCommand::Init(a) => init(a),
         TaskCommand::Gate(a) => gate(a),
+        other => supervised(other),
     }
 }

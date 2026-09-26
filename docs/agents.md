@@ -24,6 +24,8 @@ Other MCP clients take the same command in their server configuration:
 | `emi_explain` | *Why is this file burdened?* Per region: SLOC, complexity, erosion, coupling dependencies, unresolved calls. It also returns clone groups and findings for the file. `line` narrows the answer to one region. |
 | `emi_hotspots` | *Where does maintenance cost accrue?* Burden × change frequency, change coupling, authorship, AI-attributed share. |
 | `emi_accept_rewrite` | *Is my refactor a real win?* Accepts only when matched density improves **and** measured burden is reduced, with no regressions. Dilution (clean code added, nothing removed) returns `needs-review`. |
+| `emi_task_verify` | *Does my work satisfy the task I was given?* Runs the controller's frozen checks in an isolated snapshot, checks the scope envelope and the structural gate, and returns accepted / rejected / needs_review / incomplete per requirement (docs/tasks.md). |
+| `emi_task_status` | The frozen objective, requirements, envelope and budget, plus the latest decision, without spending budget. |
 | `emi_scan` | *What does the scope look like?* Totals per dimension, unknown-coupling share, cycles, the most burdened files. |
 
 Common arguments: `repo` (default `.`), `source` (scope directory, default

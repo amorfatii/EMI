@@ -17,6 +17,7 @@ emi-scan = { path = "crates/emi-scan" }
 emi-history = { path = "crates/emi-history" }
 emi-rules = { path = "crates/emi-rules" }
 emi-exec = { path = "crates/emi-exec" }
+emi-controller = { path = "crates/emi-controller" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

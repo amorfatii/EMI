@@ -1,0 +1,19 @@
+[package]
+name = "emi-controller"
+description = "Supervised tasks: frozen contracts, isolated check runs, gates, requirement ledgers and completion decisions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emi-diff = { path = "../emi-diff" }
+emi-exec.workspace = true
+emi-ir.workspace = true
+emi-ledger = { path = "../emi-ledger" }
+emi-scan.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

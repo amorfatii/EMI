@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 emi-diff = { path = "../emi-diff" }
 emi-history.workspace = true
+emi-controller.workspace = true
 emi-ledger = { path = "../emi-ledger" }
 emi-scan.workspace = true
 serde_json.workspace = true

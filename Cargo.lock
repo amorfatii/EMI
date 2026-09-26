@@ -322,12 +322,25 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "emi-controller",
  "emi-diff",
  "emi-history",
  "emi-ir",
  "emi-ledger",
  "emi-mcp",
  "emi-rules",
+ "emi-scan",
+ "serde_json",
+]
+
+[[package]]
+name = "emi-controller"
+version = "0.1.0"
+dependencies = [
+ "emi-diff",
+ "emi-exec",
+ "emi-ir",
+ "emi-ledger",
  "emi-scan",
  "serde_json",
 ]
@@ -411,6 +424,7 @@ dependencies = [
 name = "emi-mcp"
 version = "0.1.0"
 dependencies = [
+ "emi-controller",
  "emi-diff",
  "emi-history",
  "emi-ledger",

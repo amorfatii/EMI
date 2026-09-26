@@ -39,6 +39,8 @@ fn handshake_lists_tools_and_rejects_unknowns() {
             "emi_explain",
             "emi_hotspots",
             "emi_accept_rewrite",
+            "emi_task_verify",
+            "emi_task_status",
             "emi_scan"
         ]
     );
