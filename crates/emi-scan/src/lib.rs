@@ -3,7 +3,9 @@
 //! result in the oracle's order.
 
 mod coupling;
+mod go;
 mod js;
+mod native;
 mod python;
 mod python_coupling;
 mod rust;
@@ -18,6 +20,7 @@ pub enum Probe {
     Python,
     Js,
     Rust,
+    Go,
 }
 
 impl Probe {
@@ -27,6 +30,7 @@ impl Probe {
             "python" => Some(Probe::Python),
             "js" => Some(Probe::Js),
             "rust" => Some(Probe::Rust),
+            "go" => Some(Probe::Go),
             _ => None,
         }
     }
@@ -36,6 +40,7 @@ impl Probe {
             Probe::Python => "python",
             Probe::Js => "js",
             Probe::Rust => "rust",
+            Probe::Go => "go",
         }
     }
 }
@@ -144,7 +149,8 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     match options.probe {
         Probe::Python => python::scan(root, options),
         Probe::Js => js::scan(root, options),
-        Probe::Rust => rust::scan(root, options),
+        Probe::Rust => native::scan(&rust::Rust, root, options),
+        Probe::Go => native::scan(&go::Go, root, options),
     }
 }
 

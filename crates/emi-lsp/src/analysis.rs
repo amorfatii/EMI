@@ -22,6 +22,8 @@ pub fn functions(rel: &str, text: &str) -> Option<Vec<Function>> {
         emi_lang_python::measure(rel, text).ok()?.functions
     } else if lower.ends_with(".rs") {
         emi_lang_rust::measure(rel, text)?.functions
+    } else if lower.ends_with(".go") {
+        emi_lang_go::measure(rel, text)?.functions
     } else if [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]
         .iter()
         .any(|e| lower.ends_with(e))

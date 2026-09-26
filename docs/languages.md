@@ -5,6 +5,12 @@
 | Python | `python` | `parity` (v0.5.1 `python-probe-0.12`), `precise` | yes |
 | JavaScript / TypeScript | `js` | `parity` (v0.5.1 `js-probe-0.10`), `precise` | yes |
 | Rust | `rust` | `emi-rust-0.1` (native) | none |
+| Go | `go` | `emi-go-0.1` (native) | `go list` import graphs (below) |
+
+Native adapters share one engine (`emi-lang-common`). Functions erode by
+size and branching (the shared formula). Declaration regions (types,
+constant tables, impl headers) erode by branching only, because a
+200-line constant table is data, not long code.
 
 ## Rust (`emi-rust-0.1`)
 
@@ -45,6 +51,34 @@ adapters' contracts:
   unknowns: every name is resolved, local, external (std or a registry
   crate) or a prelude item. Mutually dependent modules form static cycles,
   and cycle members carry their full SLOC as C.
+
+## Go (`emi-go-0.1`)
+
+- **Files.** `_test.go` files are test code. Files marked
+  `// Code generated … DO NOT EDIT.` are excluded as generated, and so are
+  `//go:build ignore` files (never built; usually generator programs).
+  `vendor/` and `testdata/` are pruned.
+- **Regions.** Functions, methods (`T.m` after the receiver's base type),
+  and top-level `type`, `const` and `var` declarations. Function literals
+  belong to their enclosing function.
+- **Complexity** is 1, plus each `if`, `for`, `&&` and `||`, plus each
+  non-default `case` (expression, type or select). A `case a, b, c:` is one
+  branch.
+- **Coupling** is package-level. A package is a directory, and its import
+  path is the `go.mod` module path plus the directory (the standard
+  library, `module std`, has no prefix). A region depends on the
+  first-party packages it names: `pkg.Name` selectors and qualified types
+  through imports (default name, versioned `/vN` paths, aliases) and the
+  exported names of dot imports. Blank imports are dependencies of the
+  module region, since they run the package's `init`.
+
+**Validation.** EMI's package import graph for the Go 1.x standard library
+(3,607 product files, 706k SLOC, 8 s) was compared with `go list`'s
+imports, unioned over 17 GOOS/GOARCH targets. Over 359 packages, edge
+recall is 99.1% and precision 98.8%, and there are no cycles (Go forbids
+them). The misses come from generated files EMI excludes by policy. The
+extras come from build configurations the comparison did not enumerate
+(e.g. `boringcrypto`).
 
 Rules for Rust in the catalog: `rust-dbg`, `rust-todo-macro` and
 `todo-marker`.

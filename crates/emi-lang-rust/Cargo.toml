@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 emi-ir.workspace = true
+emi-lang-common.workspace = true
 sha2.workspace = true
 tree-sitter.workspace = true
 tree-sitter-rust.workspace = true

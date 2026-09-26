@@ -12,6 +12,8 @@ emi-ir.workspace = true
 emi-lang-python.workspace = true
 emi-lang-js.workspace = true
 emi-lang-rust.workspace = true
+emi-lang-go.workspace = true
+emi-lang-common.workspace = true
 emi-ledger = { path = "../emi-ledger" }
 rayon.workspace = true
 serde_json.workspace = true

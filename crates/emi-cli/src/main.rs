@@ -53,6 +53,7 @@ enum Language {
     Python,
     Js,
     Rust,
+    Go,
 }
 
 impl From<Language> for Probe {
@@ -61,6 +62,7 @@ impl From<Language> for Probe {
             Language::Python => Probe::Python,
             Language::Js => Probe::Js,
             Language::Rust => Probe::Rust,
+            Language::Go => Probe::Go,
         }
     }
 }

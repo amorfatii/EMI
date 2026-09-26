@@ -63,8 +63,3 @@ pub fn qualified_name(f: Node, src: &[u8]) -> String {
     parts.reverse();
     parts.join(".")
 }
-
-/// The module region's name.
-pub fn module_qname(_file: &str) -> String {
-    "<module>".into()
-}

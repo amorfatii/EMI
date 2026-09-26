@@ -11,10 +11,9 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use emi_ir::regions::{self, Region};
 use tree_sitter::Node;
 
-use crate::{children, row};
+use emi_lang_common::{children, owner_index, row};
 
 /// Scope-wide knowledge.
 #[derive(Debug, Default)]
@@ -457,9 +456,8 @@ pub fn couple(module: &str, krate: &str, source: &str, scope: &Scope) -> Option<
         .collect();
     ctx.uses = bindings.into_iter().collect();
     ctx.globs = globs;
-    let tests = crate::eligible_lines(&tree, src);
-    let (cands, nodes) = crate::candidates(&tree, src, &test_rows_of(&tree, src));
-    let regions = regions::assign(cands, &tests, &crate::names::module_qname(module));
+    let (regions, _) =
+        emi_lang_common::regions(&tree, &crate::SPEC, src, &crate::test_rows(&tree, src));
     let fn_names: HashSet<String> = regions.iter().map(|r| r.name.clone()).collect();
     let mut per_region: Vec<RegionDeps> = vec![RegionDeps::default(); regions.len()];
     let owner = owner_index(&regions);
@@ -471,7 +469,6 @@ pub fn couple(module: &str, krate: &str, source: &str, scope: &Scope) -> Option<
             per_region[i].local_callees.push(segs[0].clone());
         }
     }
-    let _ = nodes;
     for r in &mut per_region {
         r.local_callees.sort();
         r.local_callees.dedup();
@@ -484,17 +481,4 @@ pub fn couple(module: &str, krate: &str, source: &str, scope: &Scope) -> Option<
         graph,
         regions: per_region,
     })
-}
-
-fn test_rows_of(tree: &tree_sitter::Tree, src: &[u8]) -> BTreeSet<u32> {
-    crate::test_rows(tree, src)
-}
-
-/// Row -> index of the region owning it.
-fn owner_index(regions: &[Region]) -> HashMap<u32, usize> {
-    regions
-        .iter()
-        .enumerate()
-        .flat_map(|(i, r)| r.lines.iter().map(move |l| (*l, i)))
-        .collect()
 }
