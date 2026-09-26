@@ -65,63 +65,8 @@ pub fn square(x: f64) -> f64 {
     x.powf(std::hint::black_box(2.0))
 }
 
-/// Shortest round-trip digits and decimal-point position:
-/// value = 0.d1d2... × 10^decpt.
-fn shortest(x: f64) -> (String, i32) {
-    let s = format!("{:e}", x.abs());
-    let (mantissa, exp) = s.split_once('e').unwrap_or((&s, "0"));
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let digits = digits.trim_end_matches('0');
-    let digits = if digits.is_empty() {
-        "0".to_owned()
-    } else {
-        digits.to_owned()
-    };
-    (digits, exp.parse::<i32>().unwrap_or(0) + 1)
-}
-
-fn exponent(e: i32) -> String {
-    format!("e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs())
-}
-
-/// `repr(float)`.
-pub fn repr(x: f64) -> String {
-    if x.is_nan() {
-        return "nan".into();
-    }
-    if x.is_infinite() {
-        return if x > 0.0 { "inf".into() } else { "-inf".into() };
-    }
-    let sign = if x.is_sign_negative() { "-" } else { "" };
-    if x == 0.0 {
-        return format!("{sign}0.0");
-    }
-    let (digits, decpt) = shortest(x);
-    let n = i32::try_from(digits.len()).unwrap_or(i32::MAX);
-    if decpt <= -4 || decpt > 16 {
-        let (first, rest) = digits.split_at(1);
-        let dot = if rest.is_empty() {
-            String::new()
-        } else {
-            format!(".{rest}")
-        };
-        return format!("{sign}{first}{dot}{}", exponent(decpt - 1));
-    }
-    if decpt <= 0 {
-        return format!(
-            "{sign}0.{}{digits}",
-            "0".repeat(usize::try_from(-decpt).unwrap_or(0))
-        );
-    }
-    if decpt >= n {
-        return format!(
-            "{sign}{digits}{}.0",
-            "0".repeat(usize::try_from(decpt - n).unwrap_or(0))
-        );
-    }
-    let (int, frac) = digits.split_at(usize::try_from(decpt).unwrap_or(0));
-    format!("{sign}{int}.{frac}")
-}
+use emi_ir::pyrepr::exponent;
+pub use emi_ir::pyrepr::float as repr;
 
 /// `format(x, "g")`: six significant digits, trailing zeros stripped.
 pub fn g(x: f64) -> String {

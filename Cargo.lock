@@ -381,6 +381,7 @@ dependencies = [
  "emi-ir",
  "emi-lang-js",
  "emi-lang-python",
+ "emi-ledger",
  "rayon",
  "serde_json",
  "thiserror",

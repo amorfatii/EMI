@@ -127,6 +127,9 @@ pub struct FileError {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_lines: Option<Vec<u32>>,
+    /// Raw-byte hash of a file that was read but failed later (Python).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -195,4 +198,19 @@ pub struct Measurement {
     pub fallbacks: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inventory: Option<Vec<InventoryEntry>>,
+    /// Count of inventory entries per state, in first-seen order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inventory_summary: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The extraction contract: two measurements are comparable only when
+    /// their options are equal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurement_options: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurement_contract_id: Option<String>,
+    /// `ok`, `no-eligible`, `all-failed` (Python also reports `test-only`
+    /// and `empty` through `ScanError::NoSources`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_complete: Option<bool>,
 }

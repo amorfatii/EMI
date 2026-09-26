@@ -54,6 +54,9 @@ enum Command {
         /// JS: directory tsconfig.json is read from (default: the scope root).
         #[arg(long)]
         config_root: Option<PathBuf>,
+        /// Python: also skip paths matched by the root .gitignore.
+        #[arg(long)]
+        use_gitignore: bool,
         /// Write JSON here instead of stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -98,6 +101,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             exclude,
             include,
             config_root,
+            use_gitignore,
             output,
         } => {
             let mut options = Options::new(match probe {
@@ -114,6 +118,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             options.exclude_globs = exclude;
             options.include_globs = include;
             options.config_root = config_root;
+            options.use_gitignore = use_gitignore;
             let measurement = emi_scan::scan(&source, &options)?;
             let json = serde_json::to_string_pretty(&measurement)?;
             match output {

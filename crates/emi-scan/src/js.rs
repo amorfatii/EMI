@@ -58,11 +58,14 @@ fn measure_file(f: &ScopeFile) -> Outcome {
     }
     let raw = match fs::read(&f.path) {
         Ok(raw) => raw,
-        Err(e) => return Outcome::Unreadable("OSError", truncate(&e.to_string())),
+        Err(e) => return Outcome::Unreadable("OSError", truncate(&crate::os_error(&e, &f.path))),
     };
     let text = match String::from_utf8(raw) {
         Ok(text) => text,
-        Err(e) => return Outcome::Unreadable("UnicodeDecodeError", truncate(&e.to_string())),
+        Err(e) => {
+            let message = pytext::utf8_error(e.as_bytes(), &e.utf8_error());
+            return Outcome::Unreadable("UnicodeDecodeError", truncate(&message));
+        }
     };
     let source = pytext::universal_newlines(&text);
     let sha = pytext::sha256_hex(source.as_bytes());
@@ -83,6 +86,7 @@ fn file_error(file: &str, error: &str, message: String, lines: Option<Vec<u32>>)
         error: error.to_owned(),
         message: Some(message),
         error_lines: lines,
+        sha256: None,
     }
 }
 
@@ -136,9 +140,11 @@ fn syntax_errors(
 }
 
 /// Resolution knowledge of the scope: every parsed file is first-party.
-fn scope_of(root: &Path, options: &Options, parsed: &[Parsed], excludes: &[String]) -> Scope {
-    let config_dir = options.config_root.as_deref().unwrap_or(root);
-    let (resolver, mains) = resolve::load(root, config_dir, excludes);
+fn scope_of(
+    parsed: &[Parsed],
+    resolver: resolve::Resolver,
+    mains: BTreeMap<String, String>,
+) -> Scope {
     let known_files: HashMap<String, String> = parsed
         .iter()
         .map(|p| (p.rel.clone(), emi_lang_js::module_name(&p.rel)))
@@ -149,6 +155,50 @@ fn scope_of(root: &Path, options: &Options, parsed: &[Parsed], excludes: &[Strin
         known_modules,
         resolver,
         mains,
+    }
+}
+
+/// `_config_error_entries`: every resolver diagnostic but the nested-config
+/// advisory fails collection (missing evidence, not clean measurement).
+fn config_errors(resolver: &resolve::Resolver) -> impl Iterator<Item = FileError> + '_ {
+    resolver
+        .diagnostics
+        .iter()
+        .filter(|(_, code, _)| code != "nested-config-unsupported")
+        .map(|(file, code, message)| {
+            file_error(
+                file,
+                "ConfigError",
+                truncate(&format!("{code}: {message}")),
+                None,
+            )
+        })
+}
+
+/// Pinned by the oracle's resolver contract (`js_probe.RESOLVER_MODE`).
+const RESOLVER_MODE: &str = "emi-static-0.10";
+
+/// `_measurement_options`: the extraction contract compared across revisions.
+fn measurement_options(
+    options: &Options,
+    excludes: &[String],
+    resolver: &resolve::Resolver,
+) -> serde_json::Map<String, serde_json::Value> {
+    let value = serde_json::json!({
+        "adapter": emi_lang_js::PROFILE,
+        "engine": crate::ENGINE,
+        "parsers": {"tree-sitter": "0.26.2", "tree-sitter-javascript": "0.25.0",
+                    "tree-sitter-typescript": "0.23.2"},
+        "resolver_mode": RESOLVER_MODE,
+        "on_syntax_error": crate::syntax_policy(options),
+        "exclude_dirs": crate::sorted(excludes),
+        "exclude_globs": crate::sorted(&options.exclude_globs),
+        "include_globs": crate::sorted(&options.include_globs),
+        "scope_prefix": resolver.scope_prefix.clone().unwrap_or_default(),
+    });
+    match value {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
     }
 }
 
@@ -230,22 +280,13 @@ fn assemble(out: &mut Measurement, parsed: Vec<Parsed>, scope: &Scope) -> Result
     Ok(())
 }
 
-pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
-    let mut out = Measurement {
-        measurement_profile: emi_lang_js::PROFILE.to_owned(),
-        ..Measurement::default()
-    };
-    let excludes = options
-        .exclude_dirs
-        .clone()
-        .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(|s| (*s).to_owned()).collect());
-    let selected = select(root, options, &excludes, &mut out);
-    if selected.is_empty() {
-        return Err(ScanError::NoSources(
-            "no JavaScript/TypeScript source files",
-        ));
-    }
-    let raise = options.on_syntax_error == OnSyntaxError::Raise;
+/// Read and parse every selected file; failures become errors (or abort in
+/// raise mode). Returns the parsed files and the grammar fallbacks.
+fn read_all(
+    selected: &[ScopeFile],
+    raise: bool,
+    out: &mut Measurement,
+) -> Result<(Vec<Parsed>, Vec<String>), ScanError> {
     let outcomes: Vec<Outcome> = selected.par_iter().map(measure_file).collect();
     let (mut fallbacks, mut parsed) = (Vec::new(), Vec::new());
     for (f, outcome) in selected.iter().zip(outcomes) {
@@ -278,7 +319,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
                 if measure.fallback {
                     fallbacks.push(rel.clone());
                 }
-                syntax_errors(&mut out, &rel, &measure, raise)?;
+                syntax_errors(out, &rel, &measure, raise)?;
                 parsed.push(Parsed {
                     rel,
                     measure,
@@ -287,13 +328,45 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
             }
         }
     }
-    if parsed.is_empty() && out.errors.is_empty() {
-        return Err(ScanError::NoSources(
+    Ok((parsed, fallbacks))
+}
+
+pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
+    let mut out = Measurement {
+        measurement_profile: emi_lang_js::PROFILE.to_owned(),
+        ..Measurement::default()
+    };
+    let excludes = options
+        .exclude_dirs
+        .clone()
+        .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(|s| (*s).to_owned()).collect());
+    // Configuration comes first, as in the oracle: its failures are errors
+    // of this collection whether or not any source parses.
+    let config_dir = options.config_root.as_deref().unwrap_or(root);
+    let (resolver, mains) = resolve::load(root, config_dir, &excludes);
+    out.errors.extend(config_errors(&resolver));
+    out.measurement_options = Some(measurement_options(options, &excludes, &resolver));
+    let selected = select(root, options, &excludes, &mut out);
+    if selected.is_empty() {
+        return Err(ScanError::empty("no JavaScript/TypeScript source files"));
+    }
+    let raise = options.on_syntax_error == OnSyntaxError::Raise;
+    let (parsed, mut fallbacks) = read_all(&selected, raise, &mut out)?;
+    let all_failed = parsed.is_empty();
+    if all_failed && (raise || out.errors.is_empty()) {
+        return Err(ScanError::unmeasurable(
             "no measurable JavaScript/TypeScript source files",
         ));
     }
-    let scope = scope_of(root, options, &parsed, &excludes);
-    assemble(&mut out, parsed, &scope)?;
+    if !all_failed {
+        let scope = scope_of(&parsed, resolver, mains);
+        assemble(&mut out, parsed, &scope)?;
+        if out.components.is_empty() {
+            return Err(ScanError::unmeasurable(
+                "no measurable JavaScript/TypeScript source files",
+            ));
+        }
+    }
     out.errors
         .sort_by(|a, b| (&a.file, &a.error, &a.message).cmp(&(&b.file, &b.error, &b.message)));
     fallbacks.sort();

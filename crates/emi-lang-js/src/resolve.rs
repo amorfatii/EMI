@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::paths;
+use emi_ir::pyrepr;
 
 pub const CODE_EXTENSIONS: [&str; 8] =
     [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
@@ -149,13 +150,75 @@ fn is_bare_extends(entry: &str) -> bool {
     !(entry.starts_with('.') || entry.starts_with('/'))
 }
 
-struct Chain {
+/// `PurePosixPath(text).parts`: the anchor, then components without
+/// empty or `.` entries (`..` is kept; pathlib never collapses it).
+fn pure_parts(text: &str) -> Vec<&str> {
+    let mut parts: Vec<&str> = Vec::new();
+    if text.starts_with('/') {
+        parts.push("/");
+    }
+    parts.extend(text.split('/').filter(|c| !c.is_empty() && *c != "."));
+    parts
+}
+
+/// Oracle `_rel`: lexical `relative_to(root)`, else the canonical path.
+fn rel_display(path: &str, root: &Path) -> String {
+    let root_text = root.to_string_lossy();
+    let (p, r) = (pure_parts(path), pure_parts(&root_text));
+    if p.len() >= r.len() && p[..r.len()] == r[..] {
+        let rest = &p[r.len()..];
+        return if rest.is_empty() {
+            ".".to_owned()
+        } else {
+            rest.join("/")
+        };
+    }
+    canon(Path::new(path))
+}
+
+/// `PurePosixPath(a, b)` as text.
+fn pure_join(a: &str, b: &str) -> String {
+    let joined = paths::join(a, b);
+    let parts = pure_parts(&joined);
+    match parts.split_first() {
+        Some((&"/", rest)) => format!("/{}", rest.join("/")),
+        _ if parts.is_empty() => ".".to_owned(),
+        _ => parts.join("/"),
+    }
+}
+
+struct Chain<'a> {
+    root: &'a Path,
     levels: Vec<(serde_json::Map<String, Value>, String)>,
     degraded: bool,
     files: Vec<String>,
+    diagnostics: Vec<(String, String, String)>,
 }
 
-impl Chain {
+impl Chain<'_> {
+    fn note(&mut self, code: &str, path: &str, message: String, severe: bool) {
+        self.diagnostics
+            .push((rel_display(path, self.root), code.to_owned(), message));
+        self.degraded |= severe;
+    }
+
+    /// Read one `extends` parent, noting why it is skipped when it is.
+    fn read_parent(
+        &mut self,
+        candidate: &str,
+        shown: &str,
+    ) -> Option<(serde_json::Map<String, Value>, PathBuf)> {
+        let (code, state) = match read_config(Path::new(candidate)) {
+            ConfigRead::Ok(parent, resolved) => return Some((parent, resolved)),
+            ConfigRead::Absent => ("missing-parent", "not found"),
+            ConfigRead::Unreadable => ("unreadable-parent", "unreadable"),
+            ConfigRead::Malformed => ("malformed-parent", "malformed"),
+        };
+        let message = format!("extends target {shown} {state}; parent skipped");
+        self.note(code, candidate, message, true);
+        None
+    }
+
     /// Depth-first `extends` merge in listed order; a true cycle stops.
     fn visit(
         &mut self,
@@ -164,37 +227,64 @@ impl Chain {
         stack: &mut HashSet<String>,
     ) {
         let entries: Vec<Value> = match options.get("extends") {
-            None => return,
+            None | Some(Value::Null) => return,
             Some(Value::String(s)) => vec![Value::String(s.clone())],
             Some(Value::Array(a)) => a.clone(),
-            Some(_) => {
-                self.degraded = true;
+            Some(other) => {
+                let message = format!(
+                    "extends must be a string or list, got {}",
+                    pyrepr::type_name(other)
+                );
+                self.note(
+                    "invalid-extends",
+                    &pure_join(owner_dir, "tsconfig.json"),
+                    message,
+                    true,
+                );
                 return;
             }
         };
-        for entry in entries {
-            let Some(entry) = entry.as_str().filter(|s| !s.is_empty()) else {
-                self.degraded = true;
+        for value in entries {
+            let Some(entry) = value.as_str().filter(|s| !s.is_empty()) else {
+                let message = format!(
+                    "extends entries must be nonempty strings, got {}",
+                    pyrepr::value(&value)
+                );
+                self.note(
+                    "invalid-extends",
+                    &pure_join(owner_dir, "tsconfig.json"),
+                    message,
+                    true,
+                );
                 continue;
             };
+            let shown = pyrepr::string(entry);
             if is_bare_extends(entry) {
-                self.degraded = true;
+                let message = format!(
+                    "extends {shown} is package-style; node_modules lookup is unsupported, parent skipped"
+                );
+                self.note(
+                    "package-extends-unsupported",
+                    &pure_join(owner_dir, entry),
+                    message,
+                    true,
+                );
                 continue;
             }
-            let mut candidate = PathBuf::from(paths::join(owner_dir, entry));
-            if paths::suffix(paths::name(&candidate.to_string_lossy())).is_empty() {
-                candidate.set_extension("json");
+            let mut candidate = pure_join(owner_dir, entry);
+            if paths::suffix(paths::name(&candidate)).is_empty() {
+                candidate.push_str(".json");
             }
-            let key = canon(&candidate);
+            let key = canon(Path::new(&candidate));
             if stack.contains(&key) {
-                self.degraded = true;
+                let message = format!("extends cycle at {shown}; repeated file skipped");
+                self.note("circular-extends", &candidate, message, true);
                 continue;
             }
-            let ConfigRead::Ok(parent, resolved) = read_config(&candidate) else {
-                self.degraded = true;
+            let Some((parent, resolved)) = self.read_parent(&candidate, &shown) else {
                 continue;
             };
-            self.files.push(candidate.to_string_lossy().into_owned());
+            self.files.push(candidate.clone());
             let parent_dir = resolved
                 .parent()
                 .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
@@ -204,11 +294,76 @@ impl Chain {
             self.levels.push((parent, parent_dir));
         }
     }
+
+    /// Later levels win for `baseUrl` and `paths`; returns (baseUrl as an
+    /// absolute path, `paths`, the directory that declared `paths`).
+    fn merge(&mut self) -> MergedOptions {
+        let mut merged = MergedOptions::default();
+        let levels = std::mem::take(&mut self.levels);
+        for (options, owner) in &levels {
+            let Some(Value::Object(compiler)) = options.get("compilerOptions") else {
+                continue;
+            };
+            let owner_file = pure_join(owner, "tsconfig.json");
+            match compiler.get("baseUrl") {
+                Some(Value::String(b)) => {
+                    merged.base_abs = Some(paths::normpath(&paths::join(owner, b)))
+                }
+                Some(other) => {
+                    let message = format!(
+                        "baseUrl must be a string, got {}; option ignored",
+                        pyrepr::type_name(other)
+                    );
+                    self.note("invalid-option", &owner_file, message, true);
+                }
+                None => {}
+            }
+            match compiler.get("paths") {
+                Some(Value::Object(p)) => {
+                    merged.paths = Some(p.clone());
+                    merged.owner = Some(owner.clone());
+                }
+                Some(other) => {
+                    let message = format!(
+                        "paths must be an object, got {}; option ignored",
+                        pyrepr::type_name(other)
+                    );
+                    self.note("invalid-option", &owner_file, message, true);
+                }
+                None => {}
+            }
+        }
+        merged
+    }
+}
+
+#[derive(Default)]
+struct MergedOptions {
+    base_abs: Option<String>,
+    paths: Option<serde_json::Map<String, Value>>,
+    owner: Option<String>,
+}
+
+fn invalid_root(mut r: Resolver, config_dir: &Path, status: &str) -> Resolver {
+    let file = rel_display(
+        &pure_join(&config_dir.to_string_lossy(), "tsconfig.json"),
+        config_dir,
+    );
+    let code = if status == "unreadable" {
+        "root-unreadable"
+    } else {
+        "root-malformed"
+    };
+    let message = format!("tsconfig.json {status}; tsconfig mappings unavailable");
+    r.diagnostics.push((file, code.to_owned(), message));
+    r.status = "invalid".into();
+    r.strict_external = false;
+    r
 }
 
 /// `_load_tsconfig_paths`: baseUrl and `paths` of the root tsconfig chain.
 fn load_tsconfig(config_dir: &Path) -> Resolver {
-    let mut r = Resolver {
+    let r = Resolver {
         maps_usable: true,
         strict_external: true,
         status: "absent".into(),
@@ -219,56 +374,71 @@ fn load_tsconfig(config_dir: &Path) -> Resolver {
     let (config, resolved) = match read_config(&root_file) {
         ConfigRead::Absent => return r,
         ConfigRead::Ok(c, p) => (c, p),
-        ConfigRead::Unreadable | ConfigRead::Malformed => {
-            r.status = "invalid".into();
-            r.strict_external = false;
-            return r;
-        }
+        ConfigRead::Unreadable => return invalid_root(r, config_dir, "unreadable"),
+        ConfigRead::Malformed => return invalid_root(r, config_dir, "malformed"),
     };
     let root_dir = resolved
         .parent()
         .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
     let mut chain = Chain {
+        root: config_dir,
         levels: Vec::new(),
         degraded: false,
         files: vec![root_file.to_string_lossy().into_owned()],
+        diagnostics: Vec::new(),
     };
     let mut stack = HashSet::from([canon(&root_file)]);
     chain.visit(&config, &root_dir, &mut stack);
     chain.levels.push((config, root_dir.clone()));
-    let (mut base_abs, mut merged_paths, mut paths_owner) = (None::<String>, None, None::<String>);
-    for (options, owner) in &chain.levels {
-        let Some(Value::Object(compiler)) = options.get("compilerOptions") else {
-            continue;
-        };
-        match compiler.get("baseUrl") {
-            Some(Value::String(b)) => base_abs = Some(paths::normpath(&paths::join(owner, b))),
-            Some(_) => chain.degraded = true,
-            None => {}
-        }
-        match compiler.get("paths") {
-            Some(Value::Object(p)) => {
-                merged_paths = Some(p.clone());
-                paths_owner = Some(owner.to_string());
-            }
-            Some(_) => chain.degraded = true,
-            None => {}
-        }
-    }
-    let anchor = base_abs
+    let merged = chain.merge();
+    finish_paths(r, chain, merged, &root_dir, config_dir)
+}
+
+fn finish_paths(
+    mut r: Resolver,
+    mut chain: Chain,
+    merged: MergedOptions,
+    root_dir: &str,
+    config_dir: &Path,
+) -> Resolver {
+    let anchor = merged
+        .base_abs
         .clone()
-        .or_else(|| paths_owner.clone())
-        .unwrap_or_else(|| root_dir.clone());
-    r.base_url = base_abs.as_deref().map(|b| paths::relpath(b, &root_dir));
-    for (key, targets) in merged_paths.unwrap_or_default() {
+        .or_else(|| merged.owner.clone())
+        .unwrap_or_else(|| root_dir.to_owned());
+    r.base_url = merged
+        .base_abs
+        .as_deref()
+        .map(|b| paths::relpath(b, root_dir));
+    let owner_file = pure_join(
+        &merged
+            .owner
+            .clone()
+            .unwrap_or_else(|| config_dir.to_string_lossy().into_owned()),
+        "tsconfig.json",
+    );
+    for (key, targets) in merged.paths.unwrap_or_default() {
         let Value::Array(targets) = targets else {
-            chain.degraded = true;
+            let message = format!(
+                "paths entry {} must map to a string array; skipped",
+                pyrepr::string(&key)
+            );
+            chain.note("invalid-option", &owner_file, message, true);
             continue;
         };
-        let rebased: Vec<String> = targets
+        let kept: Vec<&str> = targets.iter().filter_map(Value::as_str).collect();
+        if kept.len() != targets.len() {
+            let message = format!(
+                "paths entry {} has non-string targets; kept {} of {}",
+                pyrepr::string(&key),
+                kept.len(),
+                targets.len()
+            );
+            chain.note("invalid-option", &owner_file, message, false);
+        }
+        let rebased: Vec<String> = kept
             .iter()
-            .filter_map(Value::as_str)
-            .map(|t| paths::relpath(&paths::normpath(&paths::join(&anchor, t)), &root_dir))
+            .map(|t| paths::relpath(&paths::normpath(&paths::join(&anchor, t)), root_dir))
             .collect();
         match key.strip_suffix('*') {
             Some(p) => r.prefix.push((p.to_owned(), rebased)),
@@ -280,6 +450,7 @@ fn load_tsconfig(config_dir: &Path) -> Resolver {
     r.status = if chain.degraded { "degraded" } else { "ok" }.into();
     r.strict_external = !chain.degraded;
     r.files = chain.files;
+    r.diagnostics = chain.diagnostics;
     r
 }
 
@@ -328,6 +499,21 @@ fn find_files(
     out
 }
 
+/// `_config_display_path`: base-relative when inside, else the real path.
+fn config_display_path(path: &Path, base: &Path) -> String {
+    let (p, b) = (path.to_string_lossy(), base.to_string_lossy());
+    let (pp, bp) = (pure_parts(&p), pure_parts(&b));
+    if pp.len() >= bp.len() && pp[..bp.len()] == bp[..] {
+        let rest = &pp[bp.len()..];
+        return if rest.is_empty() {
+            ".".to_owned()
+        } else {
+            rest.join("/")
+        };
+    }
+    fs::canonicalize(path).map_or_else(|_| p.into_owned(), |c| c.to_string_lossy().into_owned())
+}
+
 /// `load_resolver_config`: tsconfig at `config_dir`, scope containment, and
 /// the nested-config advisory that makes bare misses unknown.
 pub fn load(
@@ -351,6 +537,11 @@ pub fn load(
             r.scope_prefix = None;
             r.maps_usable = false;
             r.strict_external = false;
+            r.diagnostics.push((
+                config_display_path(scope_root, config_dir),
+                "scope-outside-config-root".into(),
+                "measured scope is not inside the configuration root; tsconfig mappings disabled, bare specifiers stay unknown".into(),
+            ));
             if r.status == "ok" {
                 r.status = "degraded".into();
             }

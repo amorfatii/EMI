@@ -20,6 +20,7 @@ Values must be equal (floats bit-for-bit); record order is reported separately.
 |---|---|
 | 1 | `components[].{id, sloc, burden.E}`, `functions[].{file, function, line, sloc, cc, erosion_mass}` (+ `lines`, `erosion_exact` for JS), `regions[].{file, id, sloc, sha, E}`, `source_sha256`, JS `fallbacks`, JS syntax-error lines |
 | 2 | redundancy (`burden.V`, clone groups, waste rules, test-value findings), coupling (`burden.C`, region `C`/`in_cycle`, cycles, unresolved calls), tsconfig resolution |
+| 2 | scope metadata: full `errors` (with raw-byte `sha256`, CPython codec/OS wording, JS `ConfigError` diagnostics), `measurement_options`, Python `status`/`scope_complete`/`inventory`/`inventory_summary`, `.gitignore` selection, refusal messages for empty, missing, and test-only scopes (`tools/scope_cases.py`) |
 | 2 | calculator and gate: the whole `review()` report, `guardrail()` verdicts, `compact_verdict`, exit codes, refusal messages |
 
 ## The calculator and gate
@@ -60,6 +61,20 @@ U+2029, form feed, vertical tab, U+001C–U+001E) but hashes regions with
 such files it raises `IndexError` or attributes lines to the wrong rows. The
 Rust adapter uses `\n` lines throughout. Identical on every other file; live
 mode excludes D1 files from the comparison and lists them.
+
+**D2 — Parser wording.** Syntax-error messages come from the parser: CPython
+says `invalid syntax (a.py, line 1)`, ruff says `Expected an identifier`.
+Error entries agree on file, stage, kind, lines and hash; the message of a
+`SyntaxError` is not compared, and a raise-mode parse or decode failure only
+has to be refused on both sides.
+
+**D3 — Implementation identity in `measurement_options`.** The oracle names
+its interpreter (`"python": "3.14.7"`) and its tree-sitter binding
+(`"tree-sitter": "0.26.0"`); the engine names itself (`"engine":
+"emi-rs-<version>"`) and the tree-sitter core it links (`0.26.2`), under its
+own adapter profile. Options stay comparable within one implementation,
+which is what a diff needs (both revisions are measured by the same binary);
+the portable keys are compared with the oracle.
 
 ## Oracle quirks reproduced on purpose
 

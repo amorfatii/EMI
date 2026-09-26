@@ -78,14 +78,17 @@ fn measure_file(f: &ScopeFile, detect_tests: bool) -> Outcome {
     let raw = match fs::read(&f.path) {
         Ok(raw) => raw,
         Err(e) => {
-            return Outcome::Unreadable(io_error_name(&e).to_owned(), truncate(&e.to_string()));
+            return Outcome::Unreadable(
+                io_error_name(&e).to_owned(),
+                truncate(&crate::os_error(&e, &f.path)),
+            );
         }
     };
     let sha = pytext::sha256_hex(&raw);
     let source = match String::from_utf8(raw) {
         Ok(s) => s,
         Err(e) => {
-            let message = truncate(&e.to_string());
+            let message = truncate(&pytext::utf8_error(e.as_bytes(), &e.utf8_error()));
             return Outcome::Failed {
                 sha,
                 stage: "decode",
@@ -140,6 +143,7 @@ fn error(file: &str, stage: &str, error: &str, message: String) -> FileError {
         error: error.to_owned(),
         message: Some(message),
         error_lines: None,
+        sha256: None,
     }
 }
 
@@ -191,8 +195,10 @@ impl Scan {
                 error: name,
                 message,
             } => {
+                let mut err = error(&rel, stage, name, message);
+                err.sha256 = Some(sha.clone());
                 self.out.source_sha256.insert(rel.clone(), sha);
-                self.failed(&rel, "failed", error(&rel, stage, name, message));
+                self.failed(&rel, "failed", err);
                 Ok(None)
             }
             Outcome::Measured {
@@ -283,14 +289,84 @@ impl Scan {
     }
 }
 
+/// `_gitignore_effective` patterns: the root `.gitignore`'s nonblank,
+/// non-comment lines with outer slashes stripped; none unless enabled.
+fn gitignore_patterns(root: &Path, enabled: bool) -> Vec<String> {
+    if !enabled {
+        return Vec::new();
+    }
+    let Ok(raw) = fs::read(root.join(".gitignore")) else {
+        return Vec::new();
+    };
+    let Ok(text) = String::from_utf8(raw) else {
+        return Vec::new();
+    };
+    pytext::splitlines(&text)
+        .into_iter()
+        .map(pytext::strip)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.trim_end_matches('/').trim_start_matches('/').to_owned())
+        .collect()
+}
+
+/// `_ignored_by_gitignore`: the oracle's simple subset (no negations).
+fn gitignored(rel: &str, patterns: &[String]) -> bool {
+    let parts: Vec<&str> = rel.split('/').collect();
+    patterns.iter().filter(|p| !p.is_empty()).any(|pattern| {
+        if pattern.contains('/') {
+            walk::fnmatch(rel, pattern) || rel.starts_with(pattern.trim_end_matches('*'))
+        } else {
+            parts.contains(&pattern.as_str())
+                || parts.iter().any(|part| walk::fnmatch(part, pattern))
+        }
+    })
+}
+
+/// `_collect_snapshot` options: the extraction contract.
+fn measurement_options(
+    options: &Options,
+    excludes: &[String],
+) -> serde_json::Map<String, serde_json::Value> {
+    let value = serde_json::json!({
+        "adapter": emi_lang_python::PROFILE,
+        "engine": crate::ENGINE,
+        "detect_tests": options.detect_tests,
+        "on_syntax_error": crate::syntax_policy(options),
+        "exclude_dirs": crate::sorted(excludes),
+        "exclude_globs": crate::sorted(&options.exclude_globs),
+        "include_globs": crate::sorted(&options.include_globs),
+        "use_gitignore": options.use_gitignore,
+    });
+    match value {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// Stamp status, completeness and the inventory summary (`_finish`).
+fn finish(out: &mut Measurement, status: &str) {
+    let inventory = out.inventory.get_or_insert_with(Vec::new);
+    inventory.sort_by(|a, b| a.file.cmp(&b.file));
+    let mut summary = serde_json::Map::new();
+    for e in inventory.iter() {
+        let n = summary
+            .get(&e.state)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        summary.insert(e.state.clone(), serde_json::Value::from(n + 1));
+    }
+    out.inventory_summary = Some(summary);
+    out.scope_complete = Some(
+        out.errors.is_empty() && matches!(status, "ok" | "empty" | "test-only" | "no-eligible"),
+    );
+    out.status = Some(status.to_owned());
+}
+
 /// Walk the scope and apply glob selection; walk failures and glob
 /// exclusions are recorded, never dropped.
-fn select(root: &Path, options: &Options, scan: &mut Scan) -> Vec<ScopeFile> {
-    let excludes = options
-        .exclude_dirs
-        .clone()
-        .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(|s| (*s).to_owned()).collect());
-    let (candidates, _pruned, walk_errors) = walk::walk(root, &excludes, |n| n.ends_with(".py"));
+fn select(root: &Path, options: &Options, excludes: &[String], scan: &mut Scan) -> Vec<ScopeFile> {
+    let gitignore = gitignore_patterns(root, options.use_gitignore);
+    let (candidates, _pruned, walk_errors) = walk::walk(root, excludes, |n| n.ends_with(".py"));
     for e in walk_errors {
         scan.failed(
             &e.rel,
@@ -300,28 +376,63 @@ fn select(root: &Path, options: &Options, scan: &mut Scan) -> Vec<ScopeFile> {
     }
     let mut selected = Vec::new();
     for f in candidates {
-        if walk::globs_keep(&f.rel, &options.exclude_globs, &options.include_globs) {
-            selected.push(f);
-        } else {
+        if !walk::globs_keep(&f.rel, &options.exclude_globs, &options.include_globs) {
             scan.inventory.push(entry(&f.rel, "excluded", Some("glob")));
+        } else if gitignored(&f.rel, &gitignore) {
+            scan.inventory
+                .push(entry(&f.rel, "excluded", Some("gitignore")));
+        } else {
+            selected.push(f);
         }
     }
     selected
 }
 
-pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
-    let out = Measurement {
+/// An empty measurement carrying the extraction contract and its id.
+fn new_measurement(options: &Options, excludes: &[String]) -> Measurement {
+    let options_map = measurement_options(options, excludes);
+    Measurement {
         measurement_profile: emi_lang_python::PROFILE.to_owned(),
+        measurement_contract_id: Some(emi_ledger::pyfmt::digest(
+            "measurement-contract",
+            &serde_json::Value::Object(options_map.clone()),
+        )),
+        measurement_options: Some(options_map),
         ..Measurement::default()
+    }
+}
+
+/// The oracle's `collect()` refusal for a scope of only test files.
+fn test_only(inventory: &[InventoryEntry]) -> ScanError {
+    let n = inventory.iter().filter(|e| e.state == "test-only").count();
+    let hint = if n > 0 {
+        format!(" (all {n} files detected as tests)")
+    } else {
+        String::new()
     };
+    ScanError::empty(format!("no measurable product source files{hint}"))
+}
+
+pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
+    if root.symlink_metadata().is_err() {
+        let message = format!(
+            "no Python source files (scope root not found: {})",
+            root.display()
+        );
+        return Err(ScanError::empty(message));
+    }
+    let excludes = options
+        .exclude_dirs
+        .clone()
+        .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(|s| (*s).to_owned()).collect());
     let mut scan = Scan {
-        out,
+        out: new_measurement(options, &excludes),
         inventory: Vec::new(),
         exact_clones: Grouper::default(),
         normalized_clones: Grouper::default(),
         rule_lines: BTreeMap::new(),
     };
-    let selected = select(root, options, &mut scan);
+    let selected = select(root, options, &excludes, &mut scan);
     let outcomes: Vec<Outcome> = selected
         .par_iter()
         .map(|f| measure_file(f, options.detect_tests))
@@ -333,13 +444,24 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
             parsed.push((f, m));
         }
     }
-    if parsed.is_empty() && scan.out.errors.is_empty() {
-        return Err(ScanError::NoSources("no parseable Python source files"));
+    if parsed.is_empty() {
+        if scan.out.errors.is_empty() {
+            return Err(ScanError::empty("no Python source files"));
+        }
+        // Every file failed: the snapshot carries the errors, no hashes.
+        scan.out.source_sha256.clear();
+        scan.out.inventory = Some(scan.inventory);
+        finish(&mut scan.out, "all-failed");
+        return Ok(scan.out);
     }
     let (mut tests, mut products) = (Vec::new(), Vec::new());
     for (f, m) in parsed {
         scan.add(&f.rel, m, &mut tests, &mut products);
     }
+    if products.is_empty() {
+        return Err(test_only(&scan.inventory));
+    }
+    let measured = products.iter().any(|p| p.measure.sloc > 0);
     let coupled = couple_all(&mut products)?;
     for (p, fc) in products.into_iter().zip(&coupled.files) {
         if p.measure.sloc == 0 {
@@ -363,7 +485,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     scan.out.test_value_findings = Some(tests.into_iter().flat_map(|(_, f)| f).collect());
     let clone_lines = scan.finish_clones();
     scan.redundancy(&clone_lines);
-    scan.inventory.sort_by(|a, b| a.file.cmp(&b.file));
     scan.out.inventory = Some(scan.inventory);
+    finish(&mut scan.out, if measured { "ok" } else { "no-eligible" });
     Ok(scan.out)
 }

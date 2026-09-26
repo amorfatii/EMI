@@ -137,6 +137,22 @@ def compare_lists(label: str, want: list, got: list, key, report: list) -> None:
         report.append(f"  + got      {k}")
 
 
+# Parser messages are CPython's own wording (SyntaxError text, codec
+# errors); the engine reports the same file, stage, kind and location.
+ENGINE_WORDED = {"SyntaxError", "IndentationError", "TabError", "TokenError"}
+# Identity fields that name the implementation rather than the contract.
+IMPLEMENTATION_KEYS = {"adapter", "python", "engine", "parsers"}
+
+
+def error_key(e: dict) -> str:
+    kept = {k: v for k, v in e.items() if not (k == "message" and e.get("error") in ENGINE_WORDED)}
+    return dump(kept)
+
+
+def portable(options: dict) -> dict:
+    return {k: v for k, v in options.items() if k not in IMPLEMENTATION_KEYS}
+
+
 def compare(golden: dict, got: dict, probe: str) -> list:
     want = golden["measurement"]
     report: list = []
@@ -168,12 +184,14 @@ def compare(golden: dict, got: dict, probe: str) -> list:
         report.append("source_sha256 differs")
     if probe == "js" and sorted(want.get("fallbacks", [])) != sorted(got.get("fallbacks", [])):
         report.append(f"fallbacks differ: {want.get('fallbacks')} vs {got.get('fallbacks')}")
-    want_err = sorted((e["file"], e.get("error_lines") and tuple(e["error_lines"]))
-                      for e in want["errors"] if e.get("error") == "SyntaxError")
-    got_err = sorted((e["file"], e.get("error_lines") and tuple(e["error_lines"]))
-                     for e in got["errors"] if e.get("error") == "SyntaxError")
-    if want_err != got_err:
-        report.append(f"syntax errors differ: {want_err} vs {got_err}")
+    compare_lists("errors", sorted(want["errors"], key=dump), sorted(got["errors"], key=dump),
+                  error_key, report)
+    want_opts, got_opts = want.get("measurement_options"), got.get("measurement_options")
+    if want_opts is not None and portable(want_opts) != portable(got_opts or {}):
+        report.append(f"measurement_options differ: {portable(want_opts)} vs {portable(got_opts or {})}")
+    for key in ("status", "scope_complete", "inventory_summary"):
+        if key in want and want[key] != got.get(key):
+            report.append(f"{key} differs: {want[key]!r} vs {got.get(key)!r}")
     return report
 
 

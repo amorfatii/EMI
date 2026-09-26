@@ -8,6 +8,29 @@ pub fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
+/// `str(UnicodeDecodeError)` for CPython's strict UTF-8 decoder.
+pub fn utf8_error(bytes: &[u8], err: &std::str::Utf8Error) -> String {
+    let start = err.valid_up_to();
+    let (end, reason) = match err.error_len() {
+        None => (bytes.len(), "unexpected end of data"),
+        Some(n) if (0xc2..=0xf4).contains(&bytes[start]) => {
+            (start + n, "invalid continuation byte")
+        }
+        Some(n) => (start + n, "invalid start byte"),
+    };
+    if end - start == 1 {
+        format!(
+            "'utf-8' codec can't decode byte 0x{:02x} in position {start}: {reason}",
+            bytes[start]
+        )
+    } else {
+        format!(
+            "'utf-8' codec can't decode bytes in position {start}-{}: {reason}",
+            end - 1
+        )
+    }
+}
+
 /// `str.strip()` with no arguments.
 pub fn strip(s: &str) -> &str {
     s.trim_matches(is_space)
@@ -100,6 +123,52 @@ pub fn sha256_hex(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_errors_match_cpython() {
+        let cases: [(&[u8], &str); 9] = [
+            (
+                b"\xff",
+                "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte",
+            ),
+            (
+                b"ab\xe2\x82",
+                "'utf-8' codec can't decode bytes in position 2-3: unexpected end of data",
+            ),
+            (
+                b"\xe2(\xa1",
+                "'utf-8' codec can't decode byte 0xe2 in position 0: invalid continuation byte",
+            ),
+            (
+                b"\xf0\x9f\x98",
+                "'utf-8' codec can't decode bytes in position 0-2: unexpected end of data",
+            ),
+            (
+                b"\xc0\xaf",
+                "'utf-8' codec can't decode byte 0xc0 in position 0: invalid start byte",
+            ),
+            (
+                b"\xed\xa0\x80",
+                "'utf-8' codec can't decode byte 0xed in position 0: invalid continuation byte",
+            ),
+            (
+                b"\xe0\x80\x80",
+                "'utf-8' codec can't decode byte 0xe0 in position 0: invalid continuation byte",
+            ),
+            (
+                b"ok\xf0\x9f\x98x",
+                "'utf-8' codec can't decode bytes in position 2-4: invalid continuation byte",
+            ),
+            (
+                b"\xf5",
+                "'utf-8' codec can't decode byte 0xf5 in position 0: invalid start byte",
+            ),
+        ];
+        for (bytes, want) in cases {
+            let err = std::str::from_utf8(bytes).err();
+            assert_eq!(err.map(|e| utf8_error(bytes, &e)).as_deref(), Some(want));
+        }
+    }
 
     #[test]
     fn splitlines_matches_python() {

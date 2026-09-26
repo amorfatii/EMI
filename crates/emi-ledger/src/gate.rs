@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 use serde_json::{Map, Value, json};
 
-use crate::contracts::{self, DIMS, PROFILE, Result, TOLERANCE, str_repr, truthy};
+use crate::contracts::{self, DIMS, PROFILE, Result, TOLERANCE, truthy};
 use crate::pyfmt::{digest, g};
 
 fn delta_of(burden: &Value, dim: &str) -> Option<[f64; 2]> {
@@ -376,28 +376,7 @@ pub fn compact_verdict(
     )
 }
 
-fn py_value(v: &Value) -> String {
-    match v {
-        Value::Null => "None".into(),
-        Value::Bool(b) => {
-            if *b {
-                "True".into()
-            } else {
-                "False".into()
-            }
-        }
-        Value::String(s) => str_repr(s),
-        Value::Number(n) => n
-            .as_f64()
-            .filter(|_| n.is_f64())
-            .map_or_else(|| n.to_string(), crate::pyfmt::repr),
-        Value::Array(items) => format!(
-            "[{}]",
-            items.iter().map(py_value).collect::<Vec<_>>().join(", ")
-        ),
-        Value::Object(_) => v.to_string(),
-    }
-}
+use emi_ir::pyrepr::value as py_value;
 
 fn decision(kind: &str, reason: String) -> Value {
     json!({"decision": kind, "reasons": [reason]})
