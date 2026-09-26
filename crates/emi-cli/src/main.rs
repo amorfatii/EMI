@@ -15,6 +15,7 @@ mod gatecli;
 mod historycli;
 mod markdown;
 mod mergecli;
+mod report;
 mod sarif;
 mod taskcli;
 
@@ -117,6 +118,8 @@ enum Command {
     /// against it.
     #[command(subcommand)]
     Task(taskcli::TaskCommand),
+    /// Write a self-contained HTML report (burden, hotspots, coupling, findings).
+    Report(report::ReportArgs),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
 }
@@ -210,6 +213,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Check(args) => checkcli::run(&args),
         Command::SarifMerge(args) => mergecli::run(&args),
         Command::Task(cmd) => taskcli::run(&cmd),
+        Command::Report(args) => report::run(&args),
         Command::Mcp => {
             emi_mcp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)
