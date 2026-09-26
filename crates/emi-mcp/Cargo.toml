@@ -1,0 +1,18 @@
+[package]
+name = "emi-mcp"
+description = "Model Context Protocol server: EMI's gate, explanations and hotspots as agent tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emi-diff = { path = "../emi-diff" }
+emi-history.workspace = true
+emi-ledger = { path = "../emi-ledger" }
+emi-scan.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

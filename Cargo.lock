@@ -326,6 +326,7 @@ dependencies = [
  "emi-history",
  "emi-ir",
  "emi-ledger",
+ "emi-mcp",
  "emi-scan",
  "serde_json",
 ]
@@ -395,6 +396,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "emi-mcp"
+version = "0.1.0"
+dependencies = [
+ "emi-diff",
+ "emi-history",
+ "emi-ledger",
+ "emi-scan",
+ "serde_json",
 ]
 
 [[package]]

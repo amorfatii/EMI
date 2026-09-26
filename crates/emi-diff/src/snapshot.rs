@@ -410,6 +410,68 @@ pub fn materialize(repo: &Path, sha: &str, dest: &Path) -> Result<Inventory> {
     })
 }
 
+/// The working tree as a commit of it would contain it: tracked and
+/// untracked-but-not-ignored files, copied from disk (deleted files are
+/// absent). Lets an agent gate uncommitted work.
+pub fn materialize_worktree(repo: &Path, dest: &Path) -> Result<Inventory> {
+    ensure_repo(repo)?;
+    let top = git_text(repo, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_owned();
+    let top = PathBuf::from(top);
+    let listed = git_bytes(
+        repo,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--full-name",
+            "--",
+            ":/",
+        ],
+    )?;
+    fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    let (mut files, mut symlinks) = (Vec::new(), Vec::new());
+    let mut seen = std::collections::HashSet::new();
+    for raw in listed.split(|b| *b == 0).filter(|c| !c.is_empty()) {
+        let text = String::from_utf8_lossy(raw).into_owned();
+        if escapes(&text) || !seen.insert(text.clone()) {
+            continue;
+        }
+        let rel = os_path(raw);
+        let source = top.join(&rel);
+        let Ok(meta) = source.symlink_metadata() else {
+            continue;
+        };
+        let target = dest.join(&rel);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot write {}: {e}", pyrepr::string(&text)))?;
+        }
+        if meta.file_type().is_symlink() {
+            let link = fs::read_link(&source).map_err(|e| e.to_string())?;
+            symlink(&link, &target).map_err(|e| {
+                format!("cannot materialize symlink {}: {e}", pyrepr::string(&text))
+            })?;
+            symlinks.push(text);
+        } else if meta.is_file() {
+            fs::copy(&source, &target)
+                .map_err(|e| format!("cannot write {}: {e}", pyrepr::string(&text)))?;
+            files.push(text);
+        }
+    }
+    files.sort();
+    symlinks.sort();
+    Ok(Inventory {
+        commit: "worktree".into(),
+        tree: "worktree".into(),
+        files,
+        symlinks,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,8 +22,12 @@ pub struct DiffArgs {
     #[arg(long)]
     before: String,
     /// Changed ref (commit, branch, tag).
-    #[arg(long)]
+    #[arg(long, required_unless_present = "worktree", default_value = "")]
     after: String,
+    /// Measure the working tree (tracked plus untracked, not ignored
+    /// files) as the changed side, e.g. an agent's uncommitted work.
+    #[arg(long, conflicts_with = "after")]
+    worktree: bool,
     /// Diff AFTER against merge-base(BEFORE, AFTER) instead of BEFORE.
     #[arg(long)]
     merge_base: bool,
@@ -82,9 +86,18 @@ fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
     // Pin the refs before measuring: the same immutable SHAs feed the
     // export and the trajectory row even if a branch moves mid-run.
     let before = snapshot::resolve_ref(&args.repo, &args.before)?;
-    let after = snapshot::resolve_ref(&args.repo, &args.after)?;
+    let after = if args.worktree {
+        emi_diff::change::WORKTREE.to_owned()
+    } else {
+        snapshot::resolve_ref(&args.repo, &args.after)?
+    };
+    let base_of = if args.worktree {
+        snapshot::resolve_ref(&args.repo, "HEAD")?
+    } else {
+        after.clone()
+    };
     let before = if args.merge_base {
-        snapshot::merge_base(&args.repo, &before, &after)?
+        snapshot::merge_base(&args.repo, &before, &base_of)?
     } else {
         before
     };
@@ -96,6 +109,7 @@ fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
     req.detect_tests = !args.no_test_detection;
     req.profile = args.profile.into();
     req.history = args.history;
+    req.worktree = args.worktree;
     let change = build_change(&req)?;
     if !args.gate.guardrail {
         return Ok((change, 0));

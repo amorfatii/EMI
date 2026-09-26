@@ -17,6 +17,7 @@ emi-scan.workspace = true
 emi-ledger = { path = "../emi-ledger" }
 emi-diff = { path = "../emi-diff" }
 emi-history.workspace = true
+emi-mcp = { path = "../emi-mcp" }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

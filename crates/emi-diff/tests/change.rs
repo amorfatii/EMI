@@ -186,3 +186,27 @@ fn merge_base_diffs_against_the_fork_point() {
         serde_json::json!(["a.py", "b.py"])
     );
 }
+
+#[test]
+fn worktree_measures_what_a_commit_would_contain() {
+    let r = repo("worktree");
+    let head = commit(
+        &r,
+        &[("src/a.py", STABLE), (".gitignore", "src/scratch.py\n")],
+        "one",
+    );
+    std::fs::write(r.0.join("src/a.py"), GROWING).unwrap_or_default();
+    std::fs::write(r.0.join("src/new.py"), STABLE).unwrap_or_default();
+    std::fs::write(r.0.join("src/scratch.py"), GROWING).unwrap_or_default();
+    let mut req = Request::new(&r.0, "src", "HEAD", "", Probe::Python);
+    req.worktree = true;
+    let c = build_change(&req).unwrap_or_default();
+    assert_eq!(c["before_sha"], head.as_str());
+    assert_eq!(c["after_ref"], "worktree");
+    assert_eq!(
+        c["scope"]["expected_components"],
+        serde_json::json!(["a.py", "new.py"]),
+        "untracked files count, ignored ones do not"
+    );
+    assert_eq!(c["scope"]["unchanged_components"], serde_json::json!([]));
+}

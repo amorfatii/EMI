@@ -30,6 +30,10 @@ target/release/emi review change.json --guardrail          # gate a saved change
 target/release/emi backtest --repo . --source src --commits 41 --headroom 10 --headroom 50
 ```
 
+Agents: `emi mcp` serves the gate, explanations, hotspots and refactor
+acceptance over the Model Context Protocol (`docs/agents.md`); `emi diff
+--worktree --guardrail` gates uncommitted work from the command line.
+
 History: `emi hotspots --repo . --source src --probe js` ranks files by
 burden × change frequency, with change coupling, authorship and AI-attributed
 share (`docs/history.md`); `emi diff --history` adds the churn-weighted
@@ -58,6 +62,7 @@ Exit code 2 on any error.
 | `emi-scan` | Scope enumeration and parallel measurement |
 | `emi-ledger` | Calculator (ledger, review report) and gate, with CPython-exact arithmetic and JSON |
 | `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
+| `emi-mcp` | Model Context Protocol server exposing EMI's tools to agents |
 | `emi-history` | History mining with rename tracking, churn/authorship/AI attribution, change coupling, hotspots |
 | `emi-cli` | The `emi` binary |
 

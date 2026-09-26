@@ -30,6 +30,9 @@ pub struct Request {
     /// Attach 90-day churn (before the base commit) to the base components,
     /// enabling the review's exposure view.
     pub history: bool,
+    /// Measure the working tree as the `after` side (tracked plus
+    /// untracked-not-ignored files); `after` is then ignored.
+    pub worktree: bool,
 }
 
 impl Request {
@@ -54,6 +57,7 @@ impl Request {
             detect_tests: true,
             profile: emi_scan::Profile::Parity,
             history: false,
+            worktree: false,
         }
     }
 
@@ -86,7 +90,11 @@ fn to_value(m: &Measurement) -> Result<Value> {
 
 fn measure(req: &Request, sha: &str, dest: &Path, source: &str) -> Result<Side> {
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-    let inventory = snapshot::materialize(&req.repo, sha, dest)?;
+    let inventory = if sha == WORKTREE {
+        snapshot::materialize_worktree(&req.repo, dest)?
+    } else {
+        snapshot::materialize(&req.repo, sha, dest)?
+    };
     let scope = if source.is_empty() {
         dest.to_path_buf()
     } else {
@@ -237,8 +245,23 @@ struct Pinned {
     after: String,
 }
 
+/// The `after` identity of a working-tree measurement.
+pub const WORKTREE: &str = "worktree";
+
 fn pin(req: &Request) -> Result<Pinned> {
     let before = snapshot::resolve_ref(&req.repo, &req.before)?;
+    if req.worktree {
+        let head = snapshot::resolve_ref(&req.repo, "HEAD")?;
+        let before = if req.merge_base {
+            snapshot::merge_base(&req.repo, &before, &head)?
+        } else {
+            before
+        };
+        return Ok(Pinned {
+            before,
+            after: WORKTREE.into(),
+        });
+    }
     let after = snapshot::resolve_ref(&req.repo, &req.after)?;
     let before = if req.merge_base {
         snapshot::merge_base(&req.repo, &before, &after)?
@@ -305,7 +328,11 @@ fn contract_id(before_m: &Value, after_m: &Value) -> String {
 /// blobs): its pinned SHA and the measurement (`None` for an empty scope).
 pub fn measure_ref(req: &Request, reference: &str) -> Result<(String, Option<Value>)> {
     let source = snapshot::normalize_source(&req.source)?;
-    let sha = snapshot::resolve_ref(&req.repo, reference)?;
+    let sha = if reference == WORKTREE {
+        WORKTREE.to_owned()
+    } else {
+        snapshot::resolve_ref(&req.repo, reference)?
+    };
     let tmp = TempDir::new("emi-measure-")?;
     let side = measure(req, &sha, &tmp.path.join("ref"), &source)?;
     Ok((sha, side.measurement))
@@ -380,7 +407,14 @@ pub fn build_change(req: &Request) -> Result<Value> {
     put("before_sha", json!(pinned.before));
     put("after_sha", json!(pinned.after));
     put("before_ref", json!(req.before));
-    put("after_ref", json!(req.after));
+    put(
+        "after_ref",
+        json!(if req.worktree {
+            WORKTREE
+        } else {
+            req.after.as_str()
+        }),
+    );
     put("source_sha256_before", before_m["source_sha256"].clone());
     put("source_sha256_after", after_m["source_sha256"].clone());
     put("measurement_contract_id", json!(contract_id));
