@@ -179,11 +179,7 @@ fn init(a: &InitArgs) -> anyhow::Result<u8> {
     let repo = std::fs::canonicalize(&a.repo)?
         .to_string_lossy()
         .into_owned();
-    let probe = if matches!(a.probe, Language::Js) {
-        "js"
-    } else {
-        "python"
-    };
+    let probe = emi_scan::Probe::from(a.probe).name();
     let sorted = |v: &[String]| {
         let mut v = v.to_vec();
         v.sort();
@@ -262,11 +258,7 @@ fn gate(a: &GateArgs) -> anyhow::Result<u8> {
     gate_args.validate()?;
     let repo = PathBuf::from(text("repo"));
     let after = snapshot::resolve_ref(&repo, &a.after).map_err(anyhow::Error::msg)?;
-    let probe = if text("probe") == "js" {
-        emi_scan::Probe::Js
-    } else {
-        emi_scan::Probe::Python
-    };
+    let probe = emi_scan::Probe::from_name(&text("probe")).unwrap_or(emi_scan::Probe::Python);
     let mut req = Request::new(&repo, &text("source"), &text("baseline_sha"), &after, probe);
     req.exclude = strings(r.get("exclude"));
     req.include = strings(r.get("include"));

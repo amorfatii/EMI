@@ -13,6 +13,7 @@ pub enum Grammar {
     Ts,
     Tsx,
     Python,
+    Rust,
 }
 
 impl Grammar {
@@ -24,6 +25,7 @@ impl Grammar {
             "ts" | "mts" | "cts" => Grammar::Ts,
             "tsx" => Grammar::Tsx,
             "py" => Grammar::Python,
+            "rs" => Grammar::Rust,
             _ => return None,
         })
     }
@@ -33,6 +35,7 @@ impl Grammar {
             Grammar::Js => Language::Js,
             Grammar::Ts | Grammar::Tsx => Language::Ts,
             Grammar::Python => Language::Python,
+            Grammar::Rust => Language::Rust,
         }
     }
 
@@ -42,10 +45,17 @@ impl Grammar {
             Grammar::Ts => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Grammar::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Grammar::Python => tree_sitter_python::LANGUAGE.into(),
+            Grammar::Rust => tree_sitter_rust::LANGUAGE.into(),
         }
     }
 
-    const ALL: [Grammar; 4] = [Grammar::Js, Grammar::Ts, Grammar::Tsx, Grammar::Python];
+    const ALL: [Grammar; 5] = [
+        Grammar::Js,
+        Grammar::Ts,
+        Grammar::Tsx,
+        Grammar::Python,
+        Grammar::Rust,
+    ];
 }
 
 /// One rule hit.
@@ -81,7 +91,9 @@ pub fn compile(rule: Rule) -> Result<Compiled, String> {
         .into_iter()
         .filter(|g| rule.languages.contains(&g.family()))
     {
-        let query = Query::new(&g.language(), &rule.query)
+        let family = format!("{:?}", g.family()).to_lowercase();
+        let source = rule.queries.get(&family).unwrap_or(&rule.query);
+        let query = Query::new(&g.language(), source)
             .map_err(|e| format!("rule {}: query does not compile for {g:?}: {e}", rule.id))?;
         let capture = query
             .capture_names()

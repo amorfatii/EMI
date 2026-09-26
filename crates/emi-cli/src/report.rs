@@ -347,11 +347,7 @@ fn render(data: &Value) -> String {
 }
 
 fn collect(a: &ReportArgs) -> Result<Value, String> {
-    let probe = if matches!(a.probe, Language::Js) {
-        emi_scan::Probe::Js
-    } else {
-        emi_scan::Probe::Python
-    };
+    let probe: emi_scan::Probe = a.probe.into();
     let mut req = Request::new(&a.repo, &a.source, &a.head, &a.head, probe);
     req.profile = a.profile.into();
     req.tolerate_syntax_errors = true;

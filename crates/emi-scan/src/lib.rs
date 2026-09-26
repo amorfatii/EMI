@@ -6,6 +6,7 @@ mod coupling;
 mod js;
 mod python;
 mod python_coupling;
+mod rust;
 pub mod walk;
 
 use std::path::Path;
@@ -16,6 +17,27 @@ use emi_ir::Measurement;
 pub enum Probe {
     Python,
     Js,
+    Rust,
+}
+
+impl Probe {
+    /// `python`, `js` or `rust`.
+    pub fn from_name(name: &str) -> Option<Probe> {
+        match name {
+            "python" => Some(Probe::Python),
+            "js" => Some(Probe::Js),
+            "rust" => Some(Probe::Rust),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Probe::Python => "python",
+            Probe::Js => "js",
+            Probe::Rust => "rust",
+        }
+    }
 }
 
 /// Which measurement contract to apply.
@@ -122,6 +144,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     match options.probe {
         Probe::Python => python::scan(root, options),
         Probe::Js => js::scan(root, options),
+        Probe::Rust => rust::scan(root, options),
     }
 }
 

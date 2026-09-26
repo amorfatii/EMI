@@ -143,9 +143,9 @@ fn structural(v: Option<&Value>) -> Result<Value> {
     };
     if !matches!(
         m.get("probe").and_then(Value::as_str),
-        Some("python" | "js")
+        Some("python" | "js" | "rust")
     ) {
-        return Err("structural.probe must be python or js".into());
+        return Err("structural.probe must be python, js or rust".into());
     }
     if !nonempty_str(m.get("source")) {
         return Err("structural.source must be a scope directory".into());

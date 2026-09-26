@@ -20,10 +20,11 @@ use crate::engine::Compiled;
 use crate::model::Tests;
 
 /// The built-in catalog, one YAML file per family.
-pub const BUILTIN: [(&str, &str); 3] = [
+pub const BUILTIN: [(&str, &str); 4] = [
     ("builtin/common.yml", include_str!("builtin/common.yml")),
     ("builtin/js.yml", include_str!("builtin/js.yml")),
     ("builtin/python.yml", include_str!("builtin/python.yml")),
+    ("builtin/rust.yml", include_str!("builtin/rust.yml")),
 ];
 
 /// Parse rule YAML.
@@ -193,7 +194,8 @@ pub fn compile(check: &Check) -> Result<Vec<Compiled>, String> {
 }
 
 /// Directories never descended into (both adapters' defaults).
-const EXCLUDE_DIRS: [&str; 15] = [
+const EXCLUDE_DIRS: [&str; 16] = [
+    "target",
     "__pycache__",
     ".git",
     ".hg",
@@ -306,7 +308,12 @@ fn placeholder_problems(rule: &Rule) -> Vec<String> {
     while let Some(i) = rest.find("{{") {
         let Some(j) = rest[i..].find("}}") else { break };
         let name = &rest[i + 2..i + j];
-        if !rule.query.contains(&format!("@{name}")) {
+        if !rule.query.contains(&format!("@{name}"))
+            && !rule
+                .queries
+                .values()
+                .any(|q| q.contains(&format!("@{name}")))
+        {
             out.push(format!(
                 "{}: message placeholder {{{{{name}}}}} names no capture",
                 rule.id
@@ -315,6 +322,20 @@ fn placeholder_problems(rule: &Rule) -> Vec<String> {
         rest = &rest[i + j + 2..];
     }
     out
+}
+
+/// The path an example is checked as, per language and test scoping.
+fn example_file(lang: model::Language, test: bool) -> &'static str {
+    match (lang, test) {
+        (model::Language::Python, true) => "tests/test_x.py",
+        (model::Language::Python, false) => "x.py",
+        (model::Language::Js, true) => "x.test.js",
+        (model::Language::Js, false) => "x.js",
+        (model::Language::Ts, true) => "x.test.ts",
+        (model::Language::Ts, false) => "x.ts",
+        (model::Language::Rust, true) => "tests/x.rs",
+        (model::Language::Rust, false) => "x.rs",
+    }
 }
 
 /// Run every rule's `examples`: each `match` snippet must hit, each
@@ -330,29 +351,7 @@ pub fn self_test(rules: &[Rule]) -> Vec<String> {
                 continue;
             }
         };
-        let file = |lang: model::Language| match lang {
-            model::Language::Python => {
-                if rule.tests == Tests::Only {
-                    "tests/test_x.py"
-                } else {
-                    "x.py"
-                }
-            }
-            model::Language::Js => {
-                if rule.tests == Tests::Only {
-                    "x.test.js"
-                } else {
-                    "x.js"
-                }
-            }
-            model::Language::Ts => {
-                if rule.tests == Tests::Only {
-                    "x.test.ts"
-                } else {
-                    "x.ts"
-                }
-            }
-        };
+        let file = |lang: model::Language| example_file(lang, rule.tests == Tests::Only);
         for lang in &rule.languages {
             let mut exercised = 0;
             for (expect, snippets) in [

@@ -12,6 +12,8 @@ pub enum Language {
     Ts,
     /// `.py`
     Python,
+    /// `.rs`
+    Rust,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,6 +68,10 @@ pub struct Rule {
     pub message: String,
     /// Tree-sitter query; the `@match` capture (else the first) locates it.
     pub query: String,
+    /// Per-language replacements for `query` (grammars name nodes
+    /// differently, e.g. Rust's `line_comment`).
+    #[serde(default)]
+    pub queries: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]

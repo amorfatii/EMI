@@ -10,7 +10,7 @@ inputs:
     description: Product scope directory (repository-relative).
     default: src
   probe:
-    description: python or js
+    description: python, js or rust
     default: python
   profile:
     description: precise (default) or parity

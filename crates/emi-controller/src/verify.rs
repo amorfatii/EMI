@@ -228,11 +228,8 @@ fn structural_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &st
     if s.is_null() {
         return json!({"state": "not_required"});
     }
-    let probe = if s["probe"] == "js" {
-        emi_scan::Probe::Js
-    } else {
-        emi_scan::Probe::Python
-    };
+    let probe = emi_scan::Probe::from_name(s["probe"].as_str().unwrap_or("python"))
+        .unwrap_or(emi_scan::Probe::Python);
     let mut req = emi_diff::Request::new(
         repo,
         s["source"].as_str().unwrap_or("src"),

@@ -1,5 +1,4 @@
-# Dogfood: EMI gates changes to this repository's own Python tooling
-# (tools/) until the Rust adapter lands (plan Phase 10).
+# Dogfood: EMI gates changes to its own Rust crates.
 name: emi
 on: pull_request
 jobs:
@@ -18,5 +17,6 @@ jobs:
       - run: cargo install --locked --path crates/emi-cli
       - uses: ./
         with:
-          source: tools
-          probe: python
+          source: crates
+          probe: rust
+          profile: parity

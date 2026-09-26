@@ -16,7 +16,7 @@ Python tool for scanning and gating.
 
 ```sh
 cargo build --release
-target/release/emi scan path/to/src --probe python   # or --probe js
+target/release/emi scan path/to/src --probe python   # or --probe js / --probe rust
 target/release/emi scan path/to/src --probe js --tolerate-syntax-errors -o scan.json
 ```
 
@@ -74,6 +74,7 @@ Exit code 2 on any error.
 |---|---|
 | `emi-ir` | Records, evidence intervals, burden formulas, region assignment, Python-compatible text rules |
 | `emi-lang-python` | Python adapter on ruff's parser (tag 0.16.9) |
+| `emi-lang-rust` | Rust adapter on tree-sitter-rust 0.24.2: regions, complexity, clones, static module coupling (`docs/languages.md`) |
 | `emi-lang-js` | JS/TS adapter on tree-sitter 0.26.2, grammars js 0.25.0 / ts 0.23.2 |
 | `emi-scan` | Scope enumeration and parallel measurement |
 | `emi-ledger` | Calculator (ledger, review report) and gate, with CPython-exact arithmetic and JSON |

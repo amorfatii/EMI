@@ -54,10 +54,7 @@ pub struct HotspotsArgs {
 }
 
 fn report(args: &HotspotsArgs) -> Result<Value, String> {
-    let probe = match args.probe {
-        Language::Python => emi_scan::Probe::Python,
-        Language::Js => emi_scan::Probe::Js,
-    };
+    let probe: emi_scan::Probe = args.probe.into();
     let mut req = Request::new(&args.repo, &args.source, &args.head, &args.head, probe);
     req.profile = args.profile.into();
     req.tolerate_syntax_errors = args.tolerate_syntax_errors;

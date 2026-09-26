@@ -145,7 +145,50 @@ impl Server {
                "params": {"uri": uri, "diagnostics": diagnostics}})
     }
 
-    /// Handle one message; returns the messages to send.
+    fn initialize(&mut self, msg: &Value) -> Value {
+        if let Some(root) = msg["params"]["rootUri"].as_str().and_then(uri_to_path) {
+            let base = msg["params"]["initializationOptions"]["base"]
+                .as_str()
+                .unwrap_or("HEAD")
+                .to_owned();
+            *self = Server::new(root, base);
+        }
+        json!({"capabilities": {"textDocumentSync": {"openClose": true, "change": 1, "save": true},
+                                "codeLensProvider": {"resolveProvider": false}},
+               "serverInfo": {"name": "emi", "version": env!("CARGO_PKG_VERSION")}})
+    }
+
+    fn open(&mut self, uri: &str, msg: &Value) -> Value {
+        let text = msg["params"]["textDocument"]["text"].as_str().unwrap_or("");
+        self.documents.insert(uri.to_owned(), text.to_owned());
+        self.publish(uri)
+    }
+
+    fn change(&mut self, uri: &str, msg: &Value) -> Value {
+        let changes = msg["params"]["contentChanges"].as_array();
+        if let Some(text) = changes
+            .and_then(|c| c.last())
+            .and_then(|c| c["text"].as_str())
+        {
+            self.documents.insert(uri.to_owned(), text.to_owned());
+        }
+        self.publish(uri)
+    }
+
+    fn close(&mut self, uri: &str) -> Value {
+        self.documents.remove(uri);
+        json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+               "params": {"uri": uri, "diagnostics": []}})
+    }
+
+    fn code_lens(&self, uri: &str) -> Value {
+        let rel = self.rel(uri);
+        let text = self.documents.get(uri).cloned().unwrap_or_default();
+        let base = self.base_text(&rel);
+        Value::Array(analysis::lenses(&rel, &text, base.as_deref()))
+    }
+
+    /// Handle one message; returns the messages to send and whether to exit.
     pub fn handle(&mut self, msg: &Value) -> (Vec<Value>, bool) {
         let method = msg["method"].as_str().unwrap_or("");
         let id = msg.get("id").cloned();
@@ -154,73 +197,20 @@ impl Server {
             .as_str()
             .unwrap_or("")
             .to_owned();
-        match method {
-            "initialize" => {
-                if let Some(root) = msg["params"]["rootUri"].as_str().and_then(uri_to_path) {
-                    let base = msg["params"]["initializationOptions"]["base"]
-                        .as_str()
-                        .unwrap_or("HEAD")
-                        .to_owned();
-                    *self = Server::new(root, base);
-                }
-                let caps = json!({"capabilities": {"textDocumentSync": {"openClose": true, "change": 1, "save": true},
-                                                   "codeLensProvider": {"resolveProvider": false}},
-                                  "serverInfo": {"name": "emi", "version": env!("CARGO_PKG_VERSION")}});
-                (vec![reply(caps)], false)
-            }
-            "textDocument/didOpen" => {
-                self.documents.insert(
-                    uri.clone(),
-                    msg["params"]["textDocument"]["text"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_owned(),
-                );
-                (vec![self.publish(&uri)], false)
-            }
-            "textDocument/didChange" => {
-                if let Some(text) = msg["params"]["contentChanges"]
-                    .as_array()
-                    .and_then(|c| c.last())
-                    .and_then(|c| c["text"].as_str())
-                {
-                    self.documents.insert(uri.clone(), text.to_owned());
-                }
-                (vec![self.publish(&uri)], false)
-            }
-            "textDocument/didSave" => (vec![self.publish(&uri)], false),
-            "textDocument/didClose" => {
-                self.documents.remove(&uri);
-                (
-                    vec![
-                        json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": uri, "diagnostics": []}}),
-                    ],
-                    false,
-                )
-            }
-            "textDocument/codeLens" => {
-                let rel = self.rel(&uri);
-                let text = self.documents.get(&uri).cloned().unwrap_or_default();
-                let base = self.base_text(&rel);
-                (
-                    vec![reply(Value::Array(analysis::lenses(
-                        &rel,
-                        &text,
-                        base.as_deref(),
-                    )))],
-                    false,
-                )
-            }
-            "shutdown" => (vec![reply(Value::Null)], false),
-            "exit" => (Vec::new(), true),
-            _ if id.is_some() && !method.is_empty() => (
-                vec![
-                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("method not found: {method}")}}),
-                ],
-                false,
-            ),
-            _ => (Vec::new(), false),
-        }
+        let out = match method {
+            "initialize" => reply(self.initialize(msg)),
+            "textDocument/didOpen" => self.open(&uri, msg),
+            "textDocument/didChange" => self.change(&uri, msg),
+            "textDocument/didSave" => self.publish(&uri),
+            "textDocument/didClose" => self.close(&uri),
+            "textDocument/codeLens" => reply(self.code_lens(&uri)),
+            "shutdown" => reply(Value::Null),
+            "exit" => return (Vec::new(), true),
+            _ if id.is_some() && !method.is_empty() => json!({"jsonrpc": "2.0", "id": id,
+                "error": {"code": -32601, "message": format!("method not found: {method}")}}),
+            _ => return (Vec::new(), false),
+        };
+        (vec![out], false)
     }
 }
 

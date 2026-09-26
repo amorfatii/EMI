@@ -52,6 +52,17 @@ impl From<ProfileArg> for emi_scan::Profile {
 enum Language {
     Python,
     Js,
+    Rust,
+}
+
+impl From<Language> for Probe {
+    fn from(l: Language) -> Self {
+        match l {
+            Language::Python => Probe::Python,
+            Language::Js => Probe::Js,
+            Language::Rust => Probe::Rust,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -176,10 +187,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             format,
             output,
         } => {
-            let mut options = Options::new(match probe {
-                Language::Python => Probe::Python,
-                Language::Js => Probe::Js,
-            });
+            let mut options = Options::new(probe.into());
             if tolerate_syntax_errors {
                 options.on_syntax_error = OnSyntaxError::Record;
             }

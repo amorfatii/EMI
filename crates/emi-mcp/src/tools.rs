@@ -13,7 +13,7 @@ fn common_schema(extra: Value) -> Value {
     let mut props = json!({
         "repo": {"type": "string", "description": "Path to the git repository (default: current directory)."},
         "source": {"type": "string", "description": "Product scope subdirectory, repository-relative (default: \"src\"; \".\" for the root)."},
-        "probe": {"type": "string", "enum": ["python", "js"], "description": "Language adapter (default: python)."},
+        "probe": {"type": "string", "enum": ["python", "js", "rust"], "description": "Language adapter (default: python)."},
         "profile": {"type": "string", "enum": ["precise", "parity"], "description": "Measurement contract (default: precise)."}
     });
     if let (Some(p), Value::Object(e)) = (props.as_object_mut(), extra) {
@@ -85,11 +85,12 @@ fn text<'a>(args: &'a Value, key: &str, default: &'a str) -> &'a str {
 }
 
 fn request(args: &Value, before: &str) -> Result<Request, String> {
-    let probe = match text(args, "probe", "python") {
-        "python" => Probe::Python,
-        "js" => Probe::Js,
-        other => return Err(format!("probe must be python or js, got {other}")),
-    };
+    let probe = Probe::from_name(text(args, "probe", "python")).ok_or_else(|| {
+        format!(
+            "probe must be python, js or rust, got {}",
+            text(args, "probe", "python")
+        )
+    })?;
     let after = args.get("after").and_then(Value::as_str);
     let mut req = Request::new(
         PathBuf::from(text(args, "repo", ".")),

@@ -1,7 +1,7 @@
 # Rules shared by every supported language.
 rules:
   - id: todo-marker
-    languages: [js, ts, python]
+    languages: [js, ts, python, rust]
     severity: note
     message: "Unresolved deferred-work marker (TODO/FIXME/XXX/HACK)"
     description: >
@@ -12,10 +12,17 @@ rules:
     query: |
       ((comment) @match
        (#match? @match "(^|[^A-Za-z])(TODO|FIXME|XXX|HACK)([^A-Za-z]|$)"))
+    queries:
+      rust: |
+        ((line_comment) @match
+         (#match? @match "(^|[^A-Za-z])(TODO|FIXME|XXX|HACK)([^A-Za-z]|$)"))
+        ((block_comment) @match
+         (#match? @match "(^|[^A-Za-z])(TODO|FIXME|XXX|HACK)([^A-Za-z]|$)"))
     examples:
       match:
         - "// TODO: handle retries\nlet a = 1;"
         - "# FIXME broken on windows\nx = 1\n"
+        - "// TODO: fold into the parser\nfn f() {}\n"
       no_match:
         - "// todos are tracked in the issue tracker\nlet a = 1;"
         - "# the XXXL size\nx = 1\n"

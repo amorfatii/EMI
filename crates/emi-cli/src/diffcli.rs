@@ -71,22 +71,16 @@ pub struct DiffArgs {
 }
 
 fn probe(language: Language) -> Probe {
-    match language {
-        Language::Python => Probe::Python,
-        Language::Js => Probe::Js,
-    }
+    language.into()
 }
 
 fn probe_name(language: Language) -> &'static str {
-    match language {
-        Language::Python => "python",
-        Language::Js => "js",
-    }
+    Probe::from(language).name()
 }
 
 /// Resolve both refs once, measure, and (with --guardrail) gate.
 fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
-    if matches!(args.probe, Language::Js) && args.cache_dir.is_some() {
+    if !matches!(args.probe, Language::Python) && args.cache_dir.is_some() {
         return Err("--cache-dir is not supported with --probe js (python probe only)".into());
     }
     // Pin the refs before measuring: the same immutable SHAs feed the
