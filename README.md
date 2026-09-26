@@ -30,6 +30,9 @@ target/release/emi review change.json --guardrail          # gate a saved change
 target/release/emi backtest --repo . --source src --commits 41 --headroom 10 --headroom 50
 ```
 
+CI: `emi scan --format sarif` feeds code-scanning UIs; `docs/ci.md` has a
+GitHub workflow that gates PRs and uploads annotations.
+
 Agents: `emi mcp` serves the gate, explanations, hotspots and refactor
 acceptance over the Model Context Protocol (`docs/agents.md`); `emi diff
 --worktree --guardrail` gates uncommitted work from the command line.

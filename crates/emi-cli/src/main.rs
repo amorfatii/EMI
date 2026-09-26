@@ -12,6 +12,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 mod diffcli;
 mod gatecli;
 mod historycli;
+mod sarif;
 
 #[derive(Parser)]
 #[command(
@@ -79,6 +80,9 @@ enum Command {
         use_gitignore: bool,
         #[arg(long, value_enum, default_value_t = ProfileArg::Parity)]
         profile: ProfileArg,
+        /// Output format: the measurement JSON, or SARIF 2.1.0 results.
+        #[arg(long, default_value = "json", value_parser = ["json", "sarif"])]
+        format: String,
         /// Write JSON here instead of stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -150,6 +154,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             config_root,
             use_gitignore,
             profile: measurement_profile,
+            format,
             output,
         } => {
             let mut options = Options::new(match probe {
@@ -169,7 +174,14 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             options.use_gitignore = use_gitignore;
             options.profile = measurement_profile.into();
             let measurement = emi_scan::scan(&source, &options)?;
-            let json = serde_json::to_string_pretty(&measurement)?;
+            let json = if format == "sarif" {
+                serde_json::to_string_pretty(&sarif::log(
+                    &serde_json::to_value(&measurement)?,
+                    &source,
+                ))?
+            } else {
+                serde_json::to_string_pretty(&measurement)?
+            };
             match output {
                 Some(path) => fs::write(&path, json + "\n")
                     .with_context(|| format!("writing {}", path.display()))?,
