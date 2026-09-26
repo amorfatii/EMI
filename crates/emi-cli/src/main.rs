@@ -23,6 +23,24 @@ struct Cli {
     command: Command,
 }
 
+/// Measurement contract.
+#[derive(Clone, Copy, ValueEnum)]
+enum ProfileArg {
+    /// Reproduce the v0.5.1 oracle exactly.
+    Parity,
+    /// Static coupling with value origins (fewer unknowns; new contract).
+    Precise,
+}
+
+impl From<ProfileArg> for emi_scan::Profile {
+    fn from(p: ProfileArg) -> Self {
+        match p {
+            ProfileArg::Parity => emi_scan::Profile::Parity,
+            ProfileArg::Precise => emi_scan::Profile::Precise,
+        }
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Language {
     Python,
@@ -58,6 +76,8 @@ enum Command {
         /// Python: also skip paths matched by the root .gitignore.
         #[arg(long)]
         use_gitignore: bool,
+        #[arg(long, value_enum, default_value_t = ProfileArg::Parity)]
+        profile: ProfileArg,
         /// Write JSON here instead of stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -123,6 +143,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             include,
             config_root,
             use_gitignore,
+            profile: measurement_profile,
             output,
         } => {
             let mut options = Options::new(match probe {
@@ -140,6 +161,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             options.include_globs = include;
             options.config_root = config_root;
             options.use_gitignore = use_gitignore;
+            options.profile = measurement_profile.into();
             let measurement = emi_scan::scan(&source, &options)?;
             let json = serde_json::to_string_pretty(&measurement)?;
             match output {

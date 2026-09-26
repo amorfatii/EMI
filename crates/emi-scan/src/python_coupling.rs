@@ -17,11 +17,19 @@ pub struct Product {
     pub rel: String,
     pub measure: FileMeasure,
     pub source: String,
+    /// Precise profile: dotted package path of the scope root when the root
+    /// is itself a package (`warehouse/` makes `warehouse.accounts.models`).
+    pub prefix: String,
 }
 
 impl Product {
-    fn module(&self) -> String {
-        coupling::module_name(&self.rel)
+    pub fn module(&self) -> String {
+        let local = coupling::module_name(&self.rel);
+        match (self.prefix.is_empty(), local.is_empty()) {
+            (true, _) => local,
+            (false, true) => self.prefix.clone(),
+            (false, false) => format!("{}.{local}", self.prefix),
+        }
     }
 
     fn is_package(&self) -> bool {
@@ -35,10 +43,34 @@ pub struct Coupled {
     pub cycle_modules: HashSet<String>,
 }
 
+/// Dotted package path of `root` when it (and possibly its parents) are
+/// packages: the names imports use for first-party modules.
+pub fn package_prefix(root: &std::path::Path) -> String {
+    let mut parts = Vec::new();
+    let mut dir = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    while dir.join("__init__.py").is_file() {
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+            break;
+        };
+        if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            break;
+        }
+        parts.push(name.to_owned());
+        if !dir.pop() {
+            break;
+        }
+    }
+    parts.reverse();
+    parts.join(".")
+}
+
 /// Build the catalog from every product module, couple each file, and find
 /// cycles in the import graph.
-pub fn couple_all(products: &mut [Product]) -> Result<Coupled, ScanError> {
-    let mut project = Project::default();
+pub fn couple_all(products: &mut [Product], precise: bool) -> Result<Coupled, ScanError> {
+    let mut project = Project {
+        precise,
+        ..Project::default()
+    };
     for p in products.iter_mut() {
         let module = p.module();
         project.add(&module, std::mem::take(&mut p.measure.catalog));

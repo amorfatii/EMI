@@ -32,6 +32,11 @@ pub(crate) fn fnmatch_simple(name: &str, prefix: &str, suffix: &str) -> bool {
 pub const PROFILE: &str =
     "emi-js-0.1:parity-js-probe-0.10:tree-sitter-0.26.2:grammar-js-0.25.0:grammar-ts-0.23.2";
 
+/// Static coupling with value origins (`coupling::precise`); every other
+/// dimension is measured as in [`PROFILE`].
+pub const PRECISE_PROFILE: &str =
+    "emi-js-0.1:precise-0.1:tree-sitter-0.26.2:grammar-js-0.25.0:grammar-ts-0.23.2";
+
 /// Result of measuring one JS/TS file.
 #[derive(Debug)]
 pub struct FileMeasure {

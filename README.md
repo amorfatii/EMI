@@ -30,6 +30,10 @@ target/release/emi review change.json --guardrail          # gate a saved change
 target/release/emi backtest --repo . --source src --commits 41 --headroom 10 --headroom 50
 ```
 
+Profiles: `--profile parity` (default) reproduces the v0.5.1 oracle;
+`--profile precise` measures static coupling with value origins and cuts
+unknown coupling by 97% on the corpus (`docs/profiles.md`).
+
 Gate policy: `--allow-growth UNITS` (proven growth tolerated, default 10),
 `--allow-headroom UNITS` (possible growth behind missing evidence),
 `--max-evidence N`, `--log-trajectory DIR` (+ `--trajectory-strict`).

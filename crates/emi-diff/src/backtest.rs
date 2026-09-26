@@ -23,6 +23,7 @@ pub struct Backtest {
     pub allowance: f64,
     pub headrooms: Vec<f64>,
     pub tolerate_syntax_errors: bool,
+    pub profile: emi_scan::Profile,
 }
 
 /// Newest `commits` first-parent commits touching the scope, oldest first.
@@ -69,6 +70,7 @@ fn evaluate(bt: &Backtest, old: &str, new: &str) -> Value {
     let short = |s: &str| s.chars().take(12).collect::<String>();
     let mut req = Request::new(&bt.repo, &bt.source, old, new, bt.probe);
     req.tolerate_syntax_errors = bt.tolerate_syntax_errors;
+    req.profile = bt.profile;
     let outcome = build_change(&req).and_then(|change| {
         let report = emi_ledger::review(&change)?;
         let mut verdicts = Map::new();

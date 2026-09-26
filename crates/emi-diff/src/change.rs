@@ -26,6 +26,7 @@ pub struct Request {
     pub tolerate_syntax_errors: bool,
     pub use_gitignore: bool,
     pub detect_tests: bool,
+    pub profile: emi_scan::Profile,
 }
 
 impl Request {
@@ -48,6 +49,7 @@ impl Request {
             tolerate_syntax_errors: false,
             use_gitignore: false,
             detect_tests: true,
+            profile: emi_scan::Profile::Parity,
         }
     }
 
@@ -57,6 +59,7 @@ impl Request {
         options.include_globs.clone_from(&self.include);
         options.detect_tests = self.detect_tests;
         options.use_gitignore = self.use_gitignore;
+        options.profile = self.profile;
         if self.tolerate_syntax_errors {
             options.on_syntax_error = OnSyntaxError::Record;
         }

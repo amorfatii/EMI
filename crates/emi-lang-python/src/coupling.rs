@@ -23,15 +23,64 @@ pub enum Binding {
     Value(Option<String>),
     External,
     Unknown,
+    /// Precise profile: a value handed in or produced at runtime
+    /// (parameters, loop items, call results); calls through it are
+    /// dynamic dispatch, not a static dependency.
+    Dispatch,
+    /// Precise profile: an attribute inherited from these first-party
+    /// ancestor modules.
+    Inherited(Vec<String>),
 }
 
-use Binding::{Class, External, Instance, Symbol, Unknown, Value};
+use Binding::{Class, Dispatch, External, Instance, Symbol, Unknown, Value};
 
 fn merge(current: Option<&Binding>, incoming: Binding) -> Binding {
     match current {
         None => incoming,
         Some(c) if *c == incoming => incoming,
         Some(_) => Unknown,
+    }
+}
+
+/// First-party module a reference binding reaches, if any.
+fn reference_module(b: &Binding) -> Option<&String> {
+    match b {
+        Binding::Module(m) | Symbol(m, _) | Class(m, _) | Instance(m, _) | Value(Some(m)) => {
+            Some(m)
+        }
+        _ => None,
+    }
+}
+
+/// Precise profile: least upper bound of two origins. Conflicting
+/// first-party references stay unknown; a reference joined with a runtime
+/// value keeps the reference (the code is reachable); values join to
+/// dispatch.
+fn join(current: Option<&Binding>, incoming: Binding) -> Binding {
+    let Some(current) = current else {
+        return incoming;
+    };
+    if *current == incoming {
+        return incoming;
+    }
+    match (current, &incoming) {
+        (Unknown, _) | (_, Unknown) => Unknown,
+        _ => match (reference_module(current), reference_module(&incoming)) {
+            (Some(a), Some(b)) if a == b => Value(Some(a.clone())),
+            (Some(_), Some(_)) => Unknown,
+            (Some(_), None) => current.clone(),
+            (None, Some(_)) => incoming,
+            (None, None) => Dispatch,
+        },
+    }
+}
+
+/// `merge` under the parity profile, `join` under the precise one.
+fn combine(precise: bool, current: Option<&Binding>, incoming: Binding) -> Binding {
+    if precise {
+        join(current, incoming)
+    } else {
+        merge(current, incoming)
     }
 }
 
@@ -139,6 +188,8 @@ pub fn catalog_part(module: &ast::ModModule) -> CatalogPart {
 /// Scope-wide knowledge: first-party modules and the declaration catalog.
 #[derive(Default)]
 pub struct Project {
+    /// Measure with the precise profile's binder.
+    pub precise: bool,
     pub known_modules: HashSet<String>,
     /// Modules with at least one top-level def/class, and those names.
     pub symbols: HashMap<String, HashSet<String>>,
@@ -168,6 +219,26 @@ impl Project {
     }
 
     fn member_binding(&self, binding: Binding, attrs: &[&str]) -> Binding {
+        if self.precise && !attrs.is_empty() {
+            match &binding {
+                Dispatch | Value(None) => return Dispatch,
+                Binding::Inherited(_) => return binding,
+                Value(Some(m)) => return Value(Some(m.clone())),
+                Symbol(m, _) if self.symbols.contains_key(m) => return Value(Some(m.clone())),
+                Instance(m, n) | Class(m, n) => {
+                    let known = self.classes.get(&(m.clone(), n.clone()));
+                    return match known {
+                        Some(f) if f.methods.contains(attrs[0]) && attrs.len() == 1 => {
+                            Value(Some(m.clone()))
+                        }
+                        // An attribute of a first-party object: its code
+                        // lives with the class's module.
+                        _ => Value(Some(m.clone())),
+                    };
+                }
+                _ => {}
+            }
+        }
         match binding {
             External => External,
             Unknown => Unknown,
@@ -184,6 +255,11 @@ impl Project {
                         return match remaining {
                             [only] if names.contains(*only) => {
                                 Symbol(candidate, (*only).to_owned())
+                            }
+                            // Precise: a member of a first-party symbol is
+                            // that module's code.
+                            [first, ..] if self.precise && names.contains(*first) => {
+                                Value(Some(candidate))
                             }
                             _ => Unknown,
                         };
@@ -359,6 +435,21 @@ pub fn resolve_imports(
 pub struct ClassModel {
     pub attributes: HashMap<String, Binding>,
     pub safe: bool,
+    /// Precise profile: first-party ancestor modules when every base
+    /// resolved, `None` when some base (or the metaclass) did not.
+    pub heritage: Option<Vec<String>>,
+    /// Defines `__getattr__`/`__getattribute__`: missing attributes are
+    /// computed at runtime.
+    pub dynamic: bool,
+}
+
+/// The expression under an attribute chain (`f()` in `f().a.b`).
+fn attribute_base(e: &Expr) -> &Expr {
+    let mut node = e;
+    while let Expr::Attribute(a) = node {
+        node = &a.value;
+    }
+    node
 }
 
 /// Root name and literal attribute path of `a.b.c`.
@@ -402,6 +493,9 @@ impl Resolver<'_> {
             Expr::Attribute(_) => {
                 let (root, attrs) = attribute_parts(e);
                 if let (Some("self" | "cls"), Some(model)) = (root, class) {
+                    if self.project.precise {
+                        return self.self_attribute(model, &attrs);
+                    }
                     if !model.safe {
                         return Unknown;
                     }
@@ -414,6 +508,14 @@ impl Resolver<'_> {
                         .project
                         .member_binding(first, attrs.get(1..).unwrap_or_default());
                 }
+                if root.is_none() && self.project.precise {
+                    let base = match self.expr(attribute_base(e), bindings, class) {
+                        External => return External,
+                        Unknown => return Unknown,
+                        b => b,
+                    };
+                    return self.project.member_binding(base, &attrs);
+                }
                 let binding = root.map_or(Unknown, |r| self.name(r, bindings));
                 if binding == External {
                     return External;
@@ -422,12 +524,267 @@ impl Resolver<'_> {
             }
             Expr::Call(c) => match self.expr(&c.func, bindings, class) {
                 Class(m, n) => Instance(m, n),
+                _ if self.project.precise => Dispatch,
                 _ => Unknown,
             },
             Expr::Lambda(_) => Value(None),
+            Expr::If(i) if self.project.precise => join(
+                Some(&self.expr(&i.body, bindings, class)),
+                self.expr(&i.orelse, bindings, class),
+            ),
+            Expr::BoolOp(b) if self.project.precise => b
+                .values
+                .iter()
+                .map(|v| self.expr(v, bindings, class))
+                .reduce(|a, v| join(Some(&a), v))
+                .unwrap_or(Dispatch),
+            Expr::Named(n) if self.project.precise => self.expr(&n.value, bindings, class),
+            Expr::Await(a) if self.project.precise => match self.expr(&a.value, bindings, class) {
+                Unknown => Unknown,
+                _ => Dispatch,
+            },
+            _ if self.project.precise => Dispatch,
             _ => Unknown,
         }
     }
+
+    /// Precise profile: `self.a.b` in a method of `model`'s class.
+    fn self_attribute(&self, model: &ClassModel, attrs: &[&str]) -> Binding {
+        let rest = attrs.get(1..).unwrap_or_default();
+        match attrs.first().and_then(|a| model.attributes.get(*a)) {
+            Some(b) => self.project.member_binding(b.clone(), rest),
+            None if attrs.is_empty() => Dispatch,
+            None if model.dynamic => Unknown,
+            None => match &model.heritage {
+                None => Unknown,
+                Some(mods) if mods.is_empty() => Dispatch,
+                Some(mods) => Binding::Inherited(mods.clone()),
+            },
+        }
+    }
+}
+
+/// Precise profile: `(heritage, dynamic)` of a class. Every base (and a
+/// metaclass keyword) must resolve: first-party bases contribute their
+/// modules, builtins and packages contribute nothing.
+fn precise_heritage(
+    resolver: &Resolver,
+    cls: &ast::StmtClassDef,
+    top: &HashMap<String, Binding>,
+    module: &str,
+) -> (Option<Vec<String>>, bool) {
+    let dynamic = function_names(&cls.body)
+        .any(|f| matches!(f.name.as_str(), "__getattr__" | "__getattribute__"));
+    if !resolver.project.precise {
+        return (None, dynamic);
+    }
+    let mut modules = BTreeSet::new();
+    let args = cls.arguments.as_deref();
+    let bases = args
+        .map(|a| a.args.iter().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let keywords = args
+        .map(|a| a.keywords.iter().map(|k| &k.value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for base in bases.into_iter().chain(keywords) {
+        if let Expr::Name(n) = base
+            && !top.contains_key(n.id.as_str())
+            && crate::builtins::is_builtin(n.id.as_str())
+        {
+            continue;
+        }
+        match resolver.expr(base, top, None) {
+            External => {}
+            b => match reference_module(&b) {
+                Some(m) if resolver.project.known_modules.contains(m) => {
+                    if m != module {
+                        modules.insert(m.clone());
+                    }
+                }
+                Some(_) => {}
+                None => return (None, dynamic),
+            },
+        }
+    }
+    (Some(modules.into_iter().collect()), dynamic)
+}
+
+/// Statements of a scope without entering nested functions or classes.
+fn scope_statements<'a>(body: &'a [Stmt], out: &mut Vec<&'a Stmt>) {
+    for s in body {
+        out.push(s);
+        match s {
+            Stmt::If(i) => {
+                scope_statements(&i.body, out);
+                for clause in &i.elif_else_clauses {
+                    scope_statements(&clause.body, out);
+                }
+            }
+            Stmt::For(f) => {
+                scope_statements(&f.body, out);
+                scope_statements(&f.orelse, out);
+            }
+            Stmt::While(w) => {
+                scope_statements(&w.body, out);
+                scope_statements(&w.orelse, out);
+            }
+            Stmt::With(w) => scope_statements(&w.body, out),
+            Stmt::Try(t) => {
+                scope_statements(&t.body, out);
+                for h in &t.handlers {
+                    let ast::ExceptHandler::ExceptHandler(h) = h;
+                    scope_statements(&h.body, out);
+                }
+                scope_statements(&t.orelse, out);
+                scope_statements(&t.finalbody, out);
+            }
+            Stmt::Match(m) => {
+                for case in &m.cases {
+                    scope_statements(&case.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Precise profile: one scope's own bindings over `outer` — nested defs
+/// and classes, assignments, and loop/with/except targets (handed in).
+fn scope_env(
+    resolver: &Resolver,
+    body: &[Stmt],
+    outer: &HashMap<String, Binding>,
+    module: &str,
+    keep: &HashSet<String>,
+) -> HashMap<String, Binding> {
+    let mut env = outer.clone();
+    let mut stmts = Vec::new();
+    scope_statements(body, &mut stmts);
+    for s in &stmts {
+        match s {
+            Stmt::FunctionDef(f) => {
+                env.insert(f.name.to_string(), Value(Some(module.to_owned())));
+            }
+            Stmt::ClassDef(c) => {
+                env.insert(
+                    c.name.to_string(),
+                    Class(module.to_owned(), c.name.to_string()),
+                );
+            }
+            _ => {}
+        }
+    }
+    let mut declared: HashSet<String> = HashSet::new();
+    let mut bind = |env: &mut HashMap<String, Binding>, name: String, value: Binding| {
+        if keep.contains(&name) {
+            return;
+        }
+        let merged = if declared.contains(&name) {
+            join(env.get(&name), value)
+        } else {
+            value
+        };
+        declared.insert(name.clone());
+        env.insert(name, merged);
+    };
+    for s in &stmts {
+        match s {
+            Stmt::Assign(_) | Stmt::AnnAssign(_) => {
+                let value = match s {
+                    Stmt::Assign(a) => Some(&*a.value),
+                    Stmt::AnnAssign(a) => a.value.as_deref(),
+                    _ => None,
+                };
+                let binding = value.map_or(Dispatch, |v| resolver.expr(v, &env, None));
+                for target in assignment_targets(s) {
+                    for id in stored_names(target) {
+                        let b = if name_id(target).is_some() {
+                            binding.clone()
+                        } else {
+                            Dispatch
+                        };
+                        bind(&mut env, id, b);
+                    }
+                }
+            }
+            Stmt::For(f) => {
+                for id in stored_names(&f.target) {
+                    bind(&mut env, id, Dispatch);
+                }
+            }
+            Stmt::With(w) => {
+                for item in &w.items {
+                    for id in item
+                        .optional_vars
+                        .as_deref()
+                        .map(stored_names)
+                        .unwrap_or_default()
+                    {
+                        bind(&mut env, id, Dispatch);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    env
+}
+
+/// Precise profile: the module scope — imports, top-level defs/classes
+/// and module-level variables (imports keep their binding).
+pub fn module_env(
+    module_ast: &ast::ModModule,
+    aliases: &HashMap<String, Binding>,
+    module: &str,
+    project: &Project,
+) -> HashMap<String, Binding> {
+    let resolver = Resolver { project };
+    let keep: HashSet<String> = aliases.keys().cloned().collect();
+    scope_env(&resolver, &module_ast.body, aliases, module, &keep)
+}
+
+/// Precise profile: for every function, the bindings its region starts
+/// from — the module scope plus each enclosing function's scope (its
+/// parameters are handed in), outermost first.
+pub fn function_envs<'a>(
+    module_ast: &'a ast::ModModule,
+    module_env: &HashMap<String, Binding>,
+    module: &str,
+    project: &Project,
+) -> HashMap<*const StmtFunctionDef, HashMap<String, Binding>> {
+    let resolver = Resolver { project };
+    let mut envs: HashMap<*const StmtFunctionDef, HashMap<String, Binding>> = HashMap::new();
+    let none = HashSet::new();
+    let mut stack: Vec<(&'a [Stmt], HashMap<String, Binding>)> =
+        vec![(&module_ast.body, module_env.clone())];
+    while let Some((body, env)) = stack.pop() {
+        for node in bfs_statements(body) {
+            match node {
+                Stmt::FunctionDef(f) => {
+                    envs.insert(std::ptr::from_ref(f), env.clone());
+                    let mut inner = env.clone();
+                    for n in bfs(PyNode::Arguments(&f.parameters)) {
+                        if let PyNode::Arg(a) = n {
+                            inner.insert(a.name.to_string(), Dispatch);
+                        }
+                    }
+                    let inner = scope_env(&resolver, &f.body, &inner, module, &none);
+                    stack.push((&f.body, inner));
+                }
+                Stmt::ClassDef(c) => stack.push((&c.body, env.clone())),
+                _ => {}
+            }
+        }
+    }
+    envs
+}
+
+/// Function and class definitions of a scope (not nested in each other).
+fn bfs_statements(body: &[Stmt]) -> Vec<&Stmt> {
+    let mut stmts = Vec::new();
+    scope_statements(body, &mut stmts);
+    stmts.retain(|s| matches!(s, Stmt::FunctionDef(_) | Stmt::ClassDef(_)));
+    stmts
 }
 
 /// Class models keyed by method node address.
@@ -439,7 +796,31 @@ pub fn class_models(
 ) -> (Vec<ClassModel>, HashMap<*const StmtFunctionDef, usize>) {
     let resolver = Resolver { project };
     let (mut models, mut contexts) = (Vec::new(), HashMap::new());
-    let mut top = aliases.clone();
+    let top = top_bindings(module_ast, aliases, module, project);
+    for node in bfs(PyNode::Module(module_ast)) {
+        let PyNode::Stmt(Stmt::ClassDef(cls)) = node else {
+            continue;
+        };
+        for m in function_names(&cls.body) {
+            contexts.insert(std::ptr::from_ref(m), models.len());
+        }
+        models.push(class_model(&resolver, node, cls, &top, module));
+    }
+    (models, contexts)
+}
+
+/// Module-scope bindings class bodies resolve against.
+fn top_bindings(
+    module_ast: &ast::ModModule,
+    aliases: &HashMap<String, Binding>,
+    module: &str,
+    project: &Project,
+) -> HashMap<String, Binding> {
+    let mut top = if project.precise {
+        module_env(module_ast, aliases, module, project)
+    } else {
+        aliases.clone()
+    };
     for stmt in &module_ast.body {
         match stmt {
             Stmt::FunctionDef(f) => {
@@ -454,57 +835,71 @@ pub fn class_models(
             _ => {}
         }
     }
-    for node in bfs(PyNode::Module(module_ast)) {
-        let PyNode::Stmt(Stmt::ClassDef(cls)) = node else {
-            continue;
-        };
-        let safe = project
-            .classes
-            .get(&(module.to_owned(), cls.name.to_string()))
-            .is_some_and(|f| f.safe);
-        let mut model = ClassModel {
-            attributes: HashMap::new(),
-            safe,
-        };
-        let methods: Vec<&StmtFunctionDef> = function_names(&cls.body).collect();
+    top
+}
+
+/// One class's attribute bindings, from every assignment in its body.
+fn class_model(
+    resolver: &Resolver,
+    node: PyNode,
+    cls: &ast::StmtClassDef,
+    top: &HashMap<String, Binding>,
+    module: &str,
+) -> ClassModel {
+    let project = resolver.project;
+    let safe = project
+        .classes
+        .get(&(module.to_owned(), cls.name.to_string()))
+        .is_some_and(|f| f.safe);
+    let (heritage, dynamic) = precise_heritage(resolver, cls, top, module);
+    let mut model = ClassModel {
+        attributes: HashMap::new(),
+        safe,
+        heritage,
+        dynamic,
+    };
+    let methods: Vec<&StmtFunctionDef> = function_names(&cls.body).collect();
+    let mut base = top.clone();
+    if project.precise {
+        // Values assigned to fields from method parameters are handed in.
         for m in &methods {
-            contexts.insert(std::ptr::from_ref(*m), models.len());
-        }
-        let mut base = top.clone();
-        for member in bfs(node) {
-            let PyNode::Stmt(s @ (Stmt::Assign(_) | Stmt::AnnAssign(_))) = member else {
-                continue;
-            };
-            let value = match s {
-                Stmt::Assign(a) => &*a.value,
-                Stmt::AnnAssign(a) => match a.value.as_deref() {
-                    Some(v) => v,
-                    None => continue,
-                },
-                _ => continue,
-            };
-            let binding = resolver.expr(value, &base, Some(&model));
-            for target in assignment_targets(s) {
-                if let Some(attr) = self_attribute(target) {
-                    let merged = merge(model.attributes.get(attr), binding.clone());
-                    model.attributes.insert(attr.to_owned(), merged);
-                } else if let Some(id) = name_id(target) {
-                    let merged = merge(base.get(&id), binding.clone());
-                    base.insert(id, merged);
+            for n in bfs(PyNode::Arguments(&m.parameters)) {
+                if let PyNode::Arg(a) = n {
+                    base.insert(a.name.to_string(), Dispatch);
                 }
             }
         }
-        if model.safe {
-            for m in methods {
-                model
-                    .attributes
-                    .entry(m.name.to_string())
-                    .or_insert_with(|| Value(Some(module.to_owned())));
+    }
+    for member in bfs(node) {
+        let PyNode::Stmt(s @ (Stmt::Assign(_) | Stmt::AnnAssign(_))) = member else {
+            continue;
+        };
+        let value = match s {
+            Stmt::Assign(a) => Some(&*a.value),
+            Stmt::AnnAssign(a) => a.value.as_deref(),
+            _ => None,
+        };
+        let Some(value) = value else { continue };
+        let binding = resolver.expr(value, &base, Some(&model));
+        for target in assignment_targets(s) {
+            if let Some(attr) = self_attribute(target) {
+                let merged = combine(project.precise, model.attributes.get(attr), binding.clone());
+                model.attributes.insert(attr.to_owned(), merged);
+            } else if let Some(id) = name_id(target) {
+                let merged = combine(project.precise, base.get(&id), binding.clone());
+                base.insert(id, merged);
             }
         }
-        models.push(model);
     }
-    (models, contexts)
+    if model.safe || project.precise {
+        for m in methods {
+            model
+                .attributes
+                .entry(m.name.to_string())
+                .or_insert_with(|| Value(Some(module.to_owned())));
+        }
+    }
+    model
 }
 
 // ---- per-region dependencies -----------------------------------------
@@ -524,6 +919,10 @@ pub struct RegionCoupling {
 }
 
 pub struct ModuleContext<'a> {
+    /// Precise profile: bindings visible in a region before its own
+    /// (module scope plus enclosing functions), by function node.
+    pub envs: Option<&'a HashMap<*const StmtFunctionDef, HashMap<String, Binding>>>,
+    pub module_env: Option<&'a HashMap<String, Binding>>,
     pub module: &'a str,
     pub imports: &'a Imports,
     pub project: &'a Project,
@@ -544,7 +943,13 @@ fn stored_names(e: &Expr) -> Vec<String> {
 
 fn initial_bindings(ctx: &ModuleContext, root: PyNode) -> HashMap<String, Binding> {
     let module = ctx.module.to_owned();
-    let mut bindings = ctx.imports.aliases.clone();
+    let precise_base = match root {
+        PyNode::Stmt(Stmt::FunctionDef(f)) => ctx.envs.and_then(|e| e.get(&std::ptr::from_ref(f))),
+        _ => ctx.module_env,
+    };
+    let mut bindings = precise_base
+        .cloned()
+        .unwrap_or_else(|| ctx.imports.aliases.clone());
     for name in ctx.project.symbols.get(ctx.module).into_iter().flatten() {
         let b = if ctx
             .project
@@ -577,9 +982,14 @@ fn initial_bindings(ctx: &ModuleContext, root: PyNode) -> HashMap<String, Bindin
         }
     }
     if let PyNode::Stmt(Stmt::FunctionDef(f)) = root {
+        let param = if ctx.project.precise {
+            Dispatch
+        } else {
+            Unknown
+        };
         for n in bfs(PyNode::Arguments(&f.parameters)) {
             if let PyNode::Arg(a) = n {
-                bindings.insert(a.name.to_string(), Unknown);
+                bindings.insert(a.name.to_string(), param.clone());
             }
         }
     }
@@ -624,24 +1034,46 @@ pub fn region_coupling(
                 }
             }
             PyNode::Handler(h) => shadowed.extend(h.name.as_ref().map(ToString::to_string)),
+            PyNode::Expr(
+                e @ (Expr::ListComp(_) | Expr::SetComp(_) | Expr::DictComp(_) | Expr::Generator(_)),
+            ) if ctx.project.precise => {
+                shadowed.extend(comprehension_targets(e));
+            }
             PyNode::Expr(Expr::Call(_)) => uses.push(node),
             PyNode::Expr(Expr::Name(n)) if n.ctx == ExprContext::Load => uses.push(node),
             _ => {}
         }
     }
+    let precise = ctx.project.precise;
+    let item = if precise { Dispatch } else { Unknown };
     for name in shadowed {
-        let merged = merge(bindings.get(&name), Unknown);
+        let merged = combine(precise, bindings.get(&name), item.clone());
         bindings.insert(name, merged);
     }
     for a in assigns {
         let (value, targets) = a.parts();
-        let binding = value.map_or(Unknown, |v| resolver.expr(v, &bindings, class));
+        let binding = value.map_or(item.clone(), |v| resolver.expr(v, &bindings, class));
         for id in targets.iter().filter_map(name_id) {
-            let merged = merge(bindings.get(&id), binding.clone());
+            let merged = combine(precise, bindings.get(&id), binding.clone());
             bindings.insert(id, merged);
         }
     }
     resolve_uses(ctx, &resolver, &bindings, root, &uses, class)
+}
+
+/// Names bound by a comprehension's `for` targets.
+fn comprehension_targets(e: &Expr) -> Vec<String> {
+    let generators: &[ast::Comprehension] = match e {
+        Expr::ListComp(c) => &c.generators,
+        Expr::SetComp(c) => &c.generators,
+        Expr::DictComp(c) => &c.generators,
+        Expr::Generator(c) => &c.generators,
+        _ => return Vec::new(),
+    };
+    generators
+        .iter()
+        .flat_map(|g| stored_names(&g.target))
+        .collect()
 }
 
 enum Assign<'a> {
@@ -718,6 +1150,11 @@ fn resolve_uses(
             continue;
         }
         let binding = resolver.expr(func, bindings, class);
+        if let Binding::Inherited(mods) = &binding {
+            out.deps
+                .extend(mods.iter().filter(|m| *m != ctx.module).cloned());
+            continue;
+        }
         if let Some(c) = ctx
             .project
             .module_component(&binding)

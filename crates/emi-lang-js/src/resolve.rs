@@ -584,6 +584,8 @@ pub struct Scope {
     pub known_modules: HashSet<String>,
     pub resolver: Resolver,
     pub mains: BTreeMap<String, String>,
+    /// Measure with the precise profile's binder (see `coupling::precise`).
+    pub precise: bool,
 }
 
 impl Scope {

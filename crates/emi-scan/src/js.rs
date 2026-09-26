@@ -144,6 +144,7 @@ fn scope_of(
     parsed: &[Parsed],
     resolver: resolve::Resolver,
     mains: BTreeMap<String, String>,
+    precise: bool,
 ) -> Scope {
     let known_files: HashMap<String, String> = parsed
         .iter()
@@ -155,6 +156,7 @@ fn scope_of(
         known_modules,
         resolver,
         mains,
+        precise,
     }
 }
 
@@ -175,6 +177,13 @@ fn config_errors(resolver: &resolve::Resolver) -> impl Iterator<Item = FileError
         })
 }
 
+fn profile(options: &Options) -> &'static str {
+    match options.profile {
+        crate::Profile::Parity => emi_lang_js::PROFILE,
+        crate::Profile::Precise => emi_lang_js::PRECISE_PROFILE,
+    }
+}
+
 /// Pinned by the oracle's resolver contract (`js_probe.RESOLVER_MODE`).
 const RESOLVER_MODE: &str = "emi-static-0.10";
 
@@ -185,7 +194,7 @@ fn measurement_options(
     resolver: &resolve::Resolver,
 ) -> serde_json::Map<String, serde_json::Value> {
     let value = serde_json::json!({
-        "adapter": emi_lang_js::PROFILE,
+        "adapter": profile(options),
         "engine": crate::ENGINE,
         "parsers": {"tree-sitter": "0.26.2", "tree-sitter-javascript": "0.25.0",
                     "tree-sitter-typescript": "0.23.2"},
@@ -333,7 +342,7 @@ fn read_all(
 
 pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     let mut out = Measurement {
-        measurement_profile: emi_lang_js::PROFILE.to_owned(),
+        measurement_profile: profile(options).to_owned(),
         ..Measurement::default()
     };
     let excludes = options
@@ -359,7 +368,12 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         ));
     }
     if !all_failed {
-        let scope = scope_of(&parsed, resolver, mains);
+        let scope = scope_of(
+            &parsed,
+            resolver,
+            mains,
+            options.profile == crate::Profile::Precise,
+        );
         assemble(&mut out, parsed, &scope)?;
         if out.components.is_empty() {
             return Err(ScanError::unmeasurable(

@@ -8,7 +8,7 @@ use emi_diff::{Request, build_change, snapshot};
 use emi_scan::Probe;
 use serde_json::{Map, Value};
 
-use crate::{Language, gatecli};
+use crate::{Language, ProfileArg, gatecli};
 
 #[derive(Args)]
 pub struct DiffArgs {
@@ -29,6 +29,8 @@ pub struct DiffArgs {
     merge_base: bool,
     #[arg(long, value_enum, default_value_t = Language::Python)]
     probe: Language,
+    #[arg(long, value_enum, default_value_t = ProfileArg::Parity)]
+    profile: ProfileArg,
     /// fnmatch glob against scope-relative paths to skip (repeatable).
     #[arg(long = "exclude")]
     exclude: Vec<String>,
@@ -88,6 +90,7 @@ fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
     req.tolerate_syntax_errors = args.tolerate_syntax_errors;
     req.use_gitignore = args.use_gitignore;
     req.detect_tests = !args.no_test_detection;
+    req.profile = args.profile.into();
     let change = build_change(&req)?;
     if !args.gate.guardrail {
         return Ok((change, 0));
@@ -136,6 +139,8 @@ pub struct BacktestArgs {
     source: String,
     #[arg(long, value_enum, default_value_t = Language::Python)]
     probe: Language,
+    #[arg(long, value_enum, default_value_t = ProfileArg::Parity)]
+    profile: ProfileArg,
     /// History window: pairs the newest N scope commits.
     #[arg(long, default_value_t = 40)]
     commits: usize,
@@ -176,6 +181,7 @@ pub fn backtest(args: &BacktestArgs) -> anyhow::Result<u8> {
             args.headroom.clone()
         },
         tolerate_syntax_errors: args.tolerate_syntax_errors,
+        profile: args.profile.into(),
     };
     let payload = emi_diff::backtest::run(&bt).map_err(anyhow::Error::msg)?;
     let text = if args.format == "json" {

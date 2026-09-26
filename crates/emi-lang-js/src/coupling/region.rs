@@ -126,7 +126,9 @@ impl Region<'_, '_> {
         } else if b == Unknown {
             if ambiguous.contains(name) {
                 self.unknown(node, "conflicting import binding");
-            } else if !(is_global(name) && !self.bindings.contains_key(name)) {
+            } else if !(super::is_runtime_global(name, self.ctx.scope.precise)
+                && !self.bindings.contains_key(name))
+            {
                 self.unknown(node, "unresolved callable");
             }
         }
@@ -134,10 +136,22 @@ impl Region<'_, '_> {
     }
 
     fn heritage_deps(&mut self) -> (bool, BTreeSet<String>) {
+        if self.heritage.is_none() && self.ctx.scope.precise {
+            let resolved = this_class(self.node).map_or((false, BTreeSet::new()), |cls| {
+                heritage(cls, &self.bindings, &self.facts.classes, self.ctx.src, true)
+            });
+            self.heritage = Some(resolved);
+        }
         if self.heritage.is_none() {
             let resolved = if self.node.kind() == "method_definition" {
                 enclosing_class(self.node).map_or((false, BTreeSet::new()), |cls| {
-                    heritage(cls, &self.bindings, &self.facts.classes, self.ctx.src)
+                    heritage(
+                        cls,
+                        &self.bindings,
+                        &self.facts.classes,
+                        self.ctx.src,
+                        self.ctx.scope.precise,
+                    )
                 })
             } else {
                 (false, BTreeSet::new())
@@ -319,6 +333,10 @@ fn call(r: &mut Region, node: Node, ambiguous: &HashSet<String>) {
             }
         }
         "import" => r.loader(node, "import"),
+        "member_expression" if r.ctx.scope.precise => precise_member_call(r, node, func, ambiguous),
+        "subscript_expression" if r.ctx.scope.precise => {
+            precise_member_call(r, node, func, ambiguous)
+        }
         "member_expression" => match this_super(func) {
             Some("this") => r.heritage_or(node, "this call (unresolved receiver)"),
             Some("super") => r.heritage_or(node, "super call"),
@@ -348,6 +366,65 @@ fn call(r: &mut Region, node: Node, ambiguous: &HashSet<String>) {
             } else {
                 r.unknown(node, "super call");
             }
+        }
+        _ => {}
+    }
+}
+
+/// The class whose instance `this` denotes in `region`: arrow functions
+/// inherit `this` from their enclosing function; methods and class
+/// fields bind it to the class; any other function rebinds it.
+fn this_class(region: Node) -> Option<Node> {
+    let mut current = Some(region);
+    while let Some(node) = current {
+        match node.kind() {
+            "method_definition"
+            | "field_definition"
+            | "public_field_definition"
+            | "class_static_block" => {
+                return enclosing_class(node);
+            }
+            "arrow_function" | "class_body" => {}
+            kind if super::is_function_like(kind) => return None,
+            "program" => return None,
+            _ => {}
+        }
+        current = node.parent();
+    }
+    None
+}
+
+/// Precise profile: a member or computed call depends on its receiver's
+/// origin. `this` inside a class resolves through the class ancestry;
+/// fields and non-class `this` are dynamic dispatch.
+fn precise_member_call(r: &mut Region, node: Node, func: Node, ambiguous: &HashSet<String>) {
+    match this_super(func) {
+        Some("this") if this_class(r.node).is_some() => {
+            return r.heritage_or(node, "this call (unresolved receiver)");
+        }
+        Some("super") => return r.heritage_or(node, "super call"),
+        Some("super-chain") => return r.unknown(node, "super call"),
+        Some(_) => return,
+        None => {}
+    }
+    let mut root = Some(func);
+    while let Some(n) = root.filter(|n| {
+        matches!(
+            n.kind(),
+            "member_expression" | "subscript_expression" | "parenthesized_expression"
+        )
+    }) {
+        root = n
+            .child_by_field_name("object")
+            .or_else(|| named_children(n).first().copied());
+    }
+    match root {
+        Some(n) if n.kind() == "identifier" => {
+            let name = text(n, r.ctx.src).into_owned();
+            r.call_name(&name, node, ambiguous);
+        }
+        Some(n) if n.kind() == "import" => {
+            r.unknown(node, "dynamic import of non-literal specifier")
         }
         _ => {}
     }
@@ -393,7 +470,10 @@ pub fn region_coupling(
     lines: &BTreeSet<u32>,
     ambiguous: &mut HashSet<String>,
 ) -> RegionCoupling {
-    let mut bindings = facts.imports.aliases.clone();
+    let precise = facts.envs.get(&node.id());
+    let mut bindings = precise
+        .cloned()
+        .unwrap_or_else(|| facts.imports.aliases.clone());
     for name in &facts.symbols {
         bindings.entry(name.clone()).or_insert(Local);
     }
@@ -417,29 +497,41 @@ pub fn region_coupling(
         callees: BTreeSet::new(),
         heritage: None,
     };
-    scope_phase(&mut r, &w.scope);
+    if precise.is_none() {
+        bind_parity(&mut r, &w, ambiguous);
+    }
+    uses(&mut r, &w, ambiguous);
+    r.out.local_callees = r.callees.into_iter().collect();
+    r.out
+}
+
+/// Parity binder: the region's own parameters and declarations.
+fn bind_parity(r: &mut Region, w: &Walked, ambiguous: &mut HashSet<String>) {
+    scope_phase(r, &w.scope);
     for n in &w.assigns {
         if n.kind() == "variable_declarator" {
-            declarator(&mut r, *n, ambiguous);
+            declarator(r, *n, ambiguous);
         } else {
-            assignment(&mut r, *n, ambiguous);
+            assignment(r, *n, ambiguous);
         }
     }
+}
+
+fn uses(r: &mut Region, w: &Walked, ambiguous: &HashSet<String>) {
+    let ctx = r.ctx;
     for n in &w.uses {
         match n.kind() {
             "identifier" | "type_identifier" => {
                 let name = text(*n, ctx.src);
-                if !is_binding_position(*n) && !is_global(&name) {
+                if !is_binding_position(*n) && !super::is_runtime_global(&name, ctx.scope.precise) {
                     r.use_name(&name);
                 }
             }
             "shorthand_property_identifier" => r.use_name(&text(*n, ctx.src)),
-            _ => call(&mut r, *n, ambiguous),
+            _ => call(r, *n, ambiguous),
         }
     }
     for n in &w.jsx {
-        jsx(&mut r, *n, ambiguous);
+        jsx(r, *n, ambiguous);
     }
-    r.out.local_callees = r.callees.into_iter().collect();
-    r.out
 }

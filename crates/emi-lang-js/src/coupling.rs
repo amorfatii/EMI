@@ -18,6 +18,9 @@ pub enum Binding {
     External,
     Local,
     Unknown,
+    /// Precise profile: a value handed in (parameter, loop item, field);
+    /// calls through it are dynamic dispatch, not a static dependency.
+    Dispatch,
 }
 
 use Binding::{External, Local, Unknown};
@@ -85,6 +88,69 @@ pub const RUNTIME_GLOBALS: &[&str] = &[
 
 fn is_global(name: &str) -> bool {
     RUNTIME_GLOBALS.contains(&name)
+}
+
+/// Precise profile: the ECMAScript, Node.js and web runtime globals the
+/// oracle's list lacks. None can resolve to first-party code.
+pub const PRECISE_GLOBALS: &[&str] = &[
+    "AbortController",
+    "AbortSignal",
+    "AggregateError",
+    "ArrayBuffer",
+    "Atomics",
+    "Blob",
+    "BroadcastChannel",
+    "DataView",
+    "EvalError",
+    "Event",
+    "EventTarget",
+    "FinalizationRegistry",
+    "Float32Array",
+    "Float64Array",
+    "FormData",
+    "Function",
+    "Headers",
+    "Int16Array",
+    "Int32Array",
+    "Int8Array",
+    "MessageChannel",
+    "Proxy",
+    "RangeError",
+    "ReferenceError",
+    "Request",
+    "Response",
+    "SharedArrayBuffer",
+    "SyntaxError",
+    "TextDecoder",
+    "TextEncoder",
+    "TypeError",
+    "URIError",
+    "URL",
+    "URLSearchParams",
+    "Uint16Array",
+    "Uint32Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "WeakRef",
+    "WebSocket",
+    "arguments",
+    "atob",
+    "btoa",
+    "clearImmediate",
+    "crypto",
+    "escape",
+    "performance",
+    "require",
+    "setImmediate",
+    "structuredClone",
+    "undefined",
+    "unescape",
+    "window",
+];
+
+/// A runtime global under the given profile.
+fn is_runtime_global(name: &str, precise: bool) -> bool {
+    is_global(name) || (precise && PRECISE_GLOBALS.contains(&name))
 }
 
 const DYNAMIC_CALLEES: [&str; 2] = ["eval", "Function"];
@@ -529,12 +595,26 @@ fn heritage_base(class: Node) -> Option<Node> {
         .find(|p| p.is_named() && p.kind() != "extends")
 }
 
+/// Precise profile: the TS grammar wraps the base in `extends_clause`;
+/// `implements` alone names no base class.
+fn precise_heritage_base(class: Node) -> Option<Node> {
+    let base = heritage_base(class)?;
+    match base.kind() {
+        "implements_clause" => None,
+        "extends_clause" => base
+            .child_by_field_name("value")
+            .or_else(|| named_children(base).first().copied()),
+        _ => Some(base),
+    }
+}
+
 /// `_heritage_resolution`: `(known, modules)` of a class's ancestry.
 fn heritage(
     class: Node,
     bindings: &HashMap<String, Binding>,
     classes: &HashMap<String, Node>,
     src: &[u8],
+    precise: bool,
 ) -> (bool, BTreeSet<String>) {
     let (mut modules, mut seen) = (BTreeSet::new(), HashSet::new());
     let mut current = class;
@@ -542,14 +622,19 @@ fn heritage(
         if !seen.insert(current.id()) {
             return (false, BTreeSet::new());
         }
-        let Some(base) = heritage_base(current) else {
+        let base = if precise {
+            precise_heritage_base(current)
+        } else {
+            heritage_base(current)
+        };
+        let Some(base) = base else {
             return (true, modules);
         };
         if base.kind() != "identifier" {
             return (false, BTreeSet::new());
         }
         let name = text(base, src);
-        if is_global(&name) {
+        if is_runtime_global(&name, precise) {
             return (true, modules);
         }
         if let Some(next) = classes.get(name.as_ref()) {
@@ -565,6 +650,8 @@ fn heritage(
                 (true, modules)
             }
             Some(Local) => (true, modules),
+            // A package base class has no first-party ancestry.
+            Some(External) if precise => (true, modules),
             _ => (false, BTreeSet::new()),
         };
     }
@@ -609,6 +696,9 @@ fn literal_targets(ctx: &FileCtx, tree: &Tree, skip_require: bool) -> BTreeSet<S
 /// File-level coupling facts shared by every region.
 pub struct FileFacts<'t> {
     pub imports: FileImports,
+    /// Precise profile: the lexical environment of each function-like node
+    /// and of the root, by node id.
+    pub envs: HashMap<usize, precise::Env>,
     pub symbols: HashSet<String>,
     pub classes: HashMap<String, Node<'t>>,
     /// Import-graph edges of this module.
@@ -630,7 +720,13 @@ pub fn file_facts<'t>(ctx: &FileCtx, tree: &'t Tree) -> FileFacts<'t> {
         imports.aliases.contains_key("require"),
     ));
     graph.remove(ctx.module);
+    let envs = if ctx.scope.precise {
+        precise::environments(ctx, root, &imports.aliases)
+    } else {
+        HashMap::new()
+    };
     FileFacts {
+        envs,
         symbols: file_symbols(root, ctx.src),
         classes: class_table(root, ctx.src),
         imports,
@@ -638,5 +734,6 @@ pub fn file_facts<'t>(ctx: &FileCtx, tree: &'t Tree) -> FileFacts<'t> {
     }
 }
 
+mod precise;
 mod region;
 pub use region::{RegionCoupling, Unresolved, region_coupling};

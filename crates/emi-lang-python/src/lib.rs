@@ -27,6 +27,10 @@ use crate::lines::LineIndex;
 /// region/SLOC/CC semantics; the parser pin is part of the identity.
 pub const PROFILE: &str = "emi-python-0.1:parity-python-probe-0.12:ruff-parser-0.16.9";
 
+/// Static coupling with value origins and resolved class ancestry; every
+/// other dimension is measured as in [`PROFILE`].
+pub const PRECISE_PROFILE: &str = "emi-python-0.1:precise-0.1:ruff-parser-0.16.9";
+
 /// Result of measuring one Python file.
 #[derive(Debug)]
 pub struct FileMeasure {
@@ -262,7 +266,15 @@ pub fn couple(
     let (models, contexts) =
         coupling::class_models(parsed.syntax(), &imports.aliases, module, project);
     let positions = pyast::Positions::new(&index, parsed.tokens());
+    let module_env = project
+        .precise
+        .then(|| coupling::module_env(parsed.syntax(), &imports.aliases, module, project));
+    let envs = module_env
+        .as_ref()
+        .map(|env| coupling::function_envs(parsed.syntax(), env, module, project));
     let ctx = coupling::ModuleContext {
+        envs: envs.as_ref(),
+        module_env: module_env.as_ref(),
         module,
         imports: &imports,
         project,

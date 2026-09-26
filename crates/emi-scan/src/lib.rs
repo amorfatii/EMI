@@ -18,6 +18,17 @@ pub enum Probe {
     Js,
 }
 
+/// Which measurement contract to apply.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Profile {
+    /// Reproduces the v0.5.1 oracle exactly.
+    #[default]
+    Parity,
+    /// Static coupling with value origins: dispatch through parameters and
+    /// fields is attributed to the code that obtained the value.
+    Precise,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnSyntaxError {
     /// Abort on the first unreadable or unparseable file.
@@ -41,6 +52,7 @@ pub struct Options {
     /// Python only: also skip paths matched by the root `.gitignore`
     /// (the oracle's simple subset: no negations).
     pub use_gitignore: bool,
+    pub profile: Profile,
 }
 
 impl Options {
@@ -54,6 +66,7 @@ impl Options {
             detect_tests: true,
             config_root: None,
             use_gitignore: false,
+            profile: Profile::Parity,
         }
     }
 }

@@ -241,6 +241,7 @@ impl Scan {
                     rel: rel.to_owned(),
                     measure,
                     source,
+                    prefix: String::new(),
                 });
             }
         }
@@ -328,7 +329,7 @@ fn measurement_options(
     excludes: &[String],
 ) -> serde_json::Map<String, serde_json::Value> {
     let value = serde_json::json!({
-        "adapter": emi_lang_python::PROFILE,
+        "adapter": profile(options),
         "engine": crate::ENGINE,
         "detect_tests": options.detect_tests,
         "on_syntax_error": crate::syntax_policy(options),
@@ -388,11 +389,18 @@ fn select(root: &Path, options: &Options, excludes: &[String], scan: &mut Scan) 
     selected
 }
 
+fn profile(options: &Options) -> &'static str {
+    match options.profile {
+        crate::Profile::Parity => emi_lang_python::PROFILE,
+        crate::Profile::Precise => emi_lang_python::PRECISE_PROFILE,
+    }
+}
+
 /// An empty measurement carrying the extraction contract and its id.
 fn new_measurement(options: &Options, excludes: &[String]) -> Measurement {
     let options_map = measurement_options(options, excludes);
     Measurement {
-        measurement_profile: emi_lang_python::PROFILE.to_owned(),
+        measurement_profile: profile(options).to_owned(),
         measurement_contract_id: Some(emi_ledger::pyfmt::digest(
             "measurement-contract",
             &serde_json::Value::Object(options_map.clone()),
@@ -462,15 +470,19 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         return Err(test_only(&scan.inventory));
     }
     let measured = products.iter().any(|p| p.measure.sloc > 0);
-    let coupled = couple_all(&mut products)?;
+    if options.profile == crate::Profile::Precise {
+        let prefix = crate::python_coupling::package_prefix(root);
+        for p in &mut products {
+            p.prefix.clone_from(&prefix);
+        }
+    }
+    let coupled = couple_all(&mut products, options.profile == crate::Profile::Precise)?;
     for (p, fc) in products.into_iter().zip(&coupled.files) {
         if p.measure.sloc == 0 {
             continue;
         }
+        let in_cycle = coupled.cycle_modules.contains(&p.module());
         let mut measure = p.measure;
-        let in_cycle = coupled
-            .cycle_modules
-            .contains(&emi_lang_python::coupling::module_name(&p.rel));
         let c = apply(
             &mut measure.functions,
             &mut measure.regions,
