@@ -36,10 +36,13 @@ fn result_key(r: &Value) -> String {
     )
 }
 
+/// One tool's merged run: its first run object, results, seen result keys,
+/// and rules by id.
+type ToolRun = (Value, Vec<Value>, HashSet<String>, BTreeMap<String, Value>);
+
 /// Merge runs by tool name: rules are unioned by id, results deduplicated.
 pub fn merge(logs: &[Value]) -> Value {
-    let mut runs: BTreeMap<String, (Value, Vec<Value>, HashSet<String>, BTreeMap<String, Value>)> =
-        BTreeMap::new();
+    let mut runs: BTreeMap<String, ToolRun> = BTreeMap::new();
     for log in logs {
         for run in log["runs"].as_array().into_iter().flatten() {
             let tool = run["tool"]["driver"]["name"]

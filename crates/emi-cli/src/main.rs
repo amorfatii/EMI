@@ -15,6 +15,7 @@ mod gatecli;
 mod historycli;
 mod mergecli;
 mod sarif;
+mod taskcli;
 
 #[derive(Parser)]
 #[command(
@@ -111,6 +112,10 @@ enum Command {
     /// Merge SARIF logs from several tools into one (runs joined by tool,
     /// rules unioned, duplicate results dropped).
     SarifMerge(mergecli::MergeArgs),
+    /// Cumulative task gating: pin a baseline once, gate every retry
+    /// against it.
+    #[command(subcommand)]
+    Task(taskcli::TaskCommand),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
 }
@@ -203,6 +208,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Hotspots(args) => historycli::run(&args),
         Command::Check(args) => checkcli::run(&args),
         Command::SarifMerge(args) => mergecli::run(&args),
+        Command::Task(cmd) => taskcli::run(&cmd),
         Command::Mcp => {
             emi_mcp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)
