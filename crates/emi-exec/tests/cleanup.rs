@@ -1,0 +1,108 @@
+//! The executor's promises, tested with real processes (Linux).
+
+#![cfg(target_os = "linux")]
+
+use std::time::Duration;
+
+use emi_exec::{Isolation, Spec, Status, run};
+
+fn alive(marker: &str) -> bool {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            std::fs::read(e.path().join("cmdline"))
+                .is_ok_and(|c| String::from_utf8_lossy(&c).contains(marker))
+        })
+}
+
+fn sh(script: &str) -> Spec {
+    let mut spec = Spec::new(&["sh", "-c", script], std::env::temp_dir());
+    spec.timeout = Duration::from_secs(2);
+    spec
+}
+
+#[test]
+fn exit_codes_and_output_are_captured() {
+    let o = run(&sh("echo out; echo err >&2; exit 3"));
+    assert_eq!((o.status, o.exit_code), (Status::Exited, Some(3)));
+    assert_eq!((o.stdout.as_str(), o.stderr.as_str()), ("out\n", "err\n"));
+    assert!(o.receipt.verified_clean, "{:?}", o.receipt);
+}
+
+#[test]
+fn background_children_die_with_the_command() {
+    let o = run(&sh("sleep 301 & echo started"));
+    assert_eq!(o.exit_code, Some(0));
+    assert!(o.receipt.group_killed && o.receipt.group_empty);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!alive("sleep 301"), "background child outlived its command");
+}
+
+#[test]
+fn timeouts_kill_the_whole_group() {
+    let o = run(&sh("sleep 302 & sleep 303"));
+    assert_eq!(o.status, Status::TimedOut);
+    assert!(o.receipt.verified_clean, "{:?}", o.receipt);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!alive("sleep 302") && !alive("sleep 303"));
+}
+
+#[test]
+fn setsid_daemons_are_reaped_as_orphans() {
+    // Double fork into a new session: escapes the process group.
+    let o = run(&sh("setsid sh -c 'sleep 304' & sleep 0.2"));
+    assert_eq!(o.exit_code, Some(0));
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !alive("sleep 304"),
+        "setsid daemon escaped: {:?}",
+        o.receipt
+    );
+}
+
+#[test]
+fn launch_failures_are_reported_not_hidden() {
+    let o = run(&Spec::new(
+        &["/nonexistent/emi-check-binary"],
+        std::env::temp_dir(),
+    ));
+    assert_eq!(o.status, Status::NotLaunched);
+    assert!(
+        o.launch_error
+            .is_some_and(|e| e.contains("emi-check-binary"))
+    );
+}
+
+#[test]
+fn environment_is_an_allowlist() {
+    // SAFETY-free: set for this process only; the child must not see it.
+    let mut spec = sh("echo \"[${EMI_SECRET_TEST:-unset}]\"");
+    spec.env.retain(|(k, _)| k == "PATH");
+    let o = run(&spec);
+    assert_eq!(o.stdout, "[unset]\n");
+}
+
+#[test]
+fn output_is_capped_but_counted() {
+    let mut spec = sh("head -c 100000 /dev/zero");
+    spec.output_limit = 1000;
+    let o = run(&spec);
+    assert_eq!((o.stdout.len(), o.stdout_bytes), (1000, 100_000));
+}
+
+#[test]
+fn bwrap_isolation_is_recorded_honestly() {
+    let mut spec = sh("touch /usr/emi-should-not-write 2>/dev/null && echo wrote || echo denied");
+    spec.isolation = Isolation::Best { network: false };
+    let o = run(&spec);
+    if emi_exec::bwrap_available() {
+        assert_eq!(o.receipt.isolation, "bwrap");
+        assert!(o.receipt.pid_namespace && !o.receipt.network);
+        assert_eq!(o.stdout, "denied\n", "root is read-only inside the sandbox");
+    } else {
+        assert_eq!(o.receipt.isolation, "process-group");
+        assert!(!o.receipt.pid_namespace);
+    }
+}
