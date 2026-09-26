@@ -101,6 +101,13 @@ enum Command {
         /// Output format: the measurement JSON, or SARIF 2.1.0 results.
         #[arg(long, default_value = "json", value_parser = ["json", "sarif"])]
         format: String,
+        /// Measure the scope as of this commit/ref (raw tracked blobs, as
+        /// `emi diff` does); SOURCE is then relative to --repo.
+        #[arg(long, value_name = "REF")]
+        at: Option<String>,
+        /// Repository for --at.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
         /// Write JSON here instead of stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -173,6 +180,34 @@ fn review(input: &std::path::Path, gate: &gatecli::GateArgs) -> anyhow::Result<u
     Ok(code)
 }
 
+/// Measure `source` (repository-relative) at `reference` from raw blobs.
+fn scan_at(
+    repo: &std::path::Path,
+    source: &std::path::Path,
+    reference: &str,
+    options: &Options,
+) -> anyhow::Result<serde_json::Value> {
+    let mut req = emi_diff::Request::new(
+        repo,
+        &source.to_string_lossy(),
+        reference,
+        reference,
+        options.probe,
+    );
+    req.exclude.clone_from(&options.exclude_globs);
+    req.include.clone_from(&options.include_globs);
+    req.tolerate_syntax_errors = options.on_syntax_error == OnSyntaxError::Record;
+    req.detect_tests = options.detect_tests;
+    req.use_gitignore = options.use_gitignore;
+    req.profile = options.profile;
+    let (sha, measurement) =
+        emi_diff::change::measure_ref(&req, reference).map_err(anyhow::Error::msg)?;
+    let mut m =
+        measurement.ok_or_else(|| anyhow::anyhow!("no measurable source files at {reference}"))?;
+    m["commit"] = serde_json::json!(sha);
+    Ok(m)
+}
+
 fn run(cli: Cli) -> anyhow::Result<u8> {
     match cli.command {
         Command::Scan {
@@ -187,6 +222,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             use_gitignore,
             profile: measurement_profile,
             format,
+            at,
+            repo,
             output,
         } => {
             let mut options = Options::new(probe.into());
@@ -202,12 +239,18 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             options.config_root = config_root;
             options.use_gitignore = use_gitignore;
             options.profile = measurement_profile.into();
-            let measurement = emi_scan::scan(&source, &options)?;
+            let (measurement, root) = match at {
+                Some(reference) => (
+                    scan_at(&repo, &source, &reference, &options)?,
+                    repo.join(&source),
+                ),
+                None => (
+                    serde_json::to_value(emi_scan::scan(&source, &options)?)?,
+                    source.clone(),
+                ),
+            };
             let json = if format == "sarif" {
-                serde_json::to_string_pretty(&sarif::log(
-                    &serde_json::to_value(&measurement)?,
-                    &source,
-                ))?
+                serde_json::to_string_pretty(&sarif::log(&measurement, &root))?
             } else {
                 serde_json::to_string_pretty(&measurement)?
             };
