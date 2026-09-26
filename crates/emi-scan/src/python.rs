@@ -12,7 +12,8 @@ use emi_ir::{
 use emi_lang_python::FileMeasure;
 use rayon::prelude::*;
 
-use crate::python_coupling::{Product, apply, couple_all};
+use crate::coupling::apply;
+use crate::python_coupling::{Product, couple_all, evidence};
 use crate::walk::{self, ScopeFile};
 use crate::{OnSyntaxError, Options, ScanError, is_symlink, truncate};
 
@@ -348,7 +349,12 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         let in_cycle = coupled
             .cycle_modules
             .contains(&emi_lang_python::coupling::module_name(&p.rel));
-        let c = apply(&mut measure, fc, in_cycle);
+        let c = apply(
+            &mut measure.functions,
+            &mut measure.regions,
+            &evidence(fc),
+            in_cycle,
+        );
         scan.component(&p.rel, measure, c);
     }
     scan.out.static_dependency_cycles = coupled.cycles;

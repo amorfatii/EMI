@@ -63,7 +63,7 @@ pub fn start_row(func: Node) -> usize {
 }
 
 /// Contents of a plain string literal (no template holes), as `_string_of`.
-fn string_value(node: Node, source: &[u8]) -> Option<String> {
+pub(crate) fn string_value(node: Node, source: &[u8]) -> Option<String> {
     if node.kind() != "string" {
         return None;
     }

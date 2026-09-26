@@ -49,6 +49,9 @@ enum Command {
         /// fnmatch glob restricting measured paths (repeatable).
         #[arg(long = "include")]
         include: Vec<String>,
+        /// JS: directory tsconfig.json is read from (default: the scope root).
+        #[arg(long)]
+        config_root: Option<PathBuf>,
         /// Write JSON here instead of stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -65,6 +68,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             no_default_excludes,
             exclude,
             include,
+            config_root,
             output,
         } => {
             let mut options = Options::new(match probe {
@@ -80,6 +84,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             options.exclude_globs = exclude;
             options.include_globs = include;
+            options.config_root = config_root;
             let measurement = emi_scan::scan(&source, &options)?;
             let json = serde_json::to_string_pretty(&measurement)?;
             match output {

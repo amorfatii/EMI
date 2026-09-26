@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use emi_ir::{CouplingRecord, Evidence, UnresolvedCall, burden};
+use emi_ir::UnresolvedCall;
+
+use crate::coupling::RegionEvidence;
 use emi_lang_python::coupling::{self, Project};
 use emi_lang_python::{FileCoupling, FileMeasure};
 use rayon::prelude::*;
@@ -65,91 +67,22 @@ pub fn couple_all(products: &mut [Product]) -> Result<Coupled, ScanError> {
     })
 }
 
-fn unresolved_calls(rc: &coupling::RegionCoupling) -> Vec<UnresolvedCall> {
-    rc.unresolved
+/// Adapter-neutral evidence of a Python file's regions.
+pub fn evidence(fc: &FileCoupling) -> Vec<RegionEvidence> {
+    fc.regions
         .iter()
-        .map(|u| UnresolvedCall {
-            line: u.line,
-            column: u.column.map(|c| u32::try_from(c).unwrap_or(u32::MAX)),
-            reason: u.reason.to_owned(),
+        .map(|rc| RegionEvidence {
+            deps: rc.deps.iter().cloned().collect(),
+            unresolved: rc
+                .unresolved
+                .iter()
+                .map(|u| UnresolvedCall {
+                    line: u.line,
+                    column: u.column.map(|c| u32::try_from(c).unwrap_or(u32::MAX)),
+                    reason: u.reason.to_owned(),
+                })
+                .collect(),
+            local_callees: rc.local_callees.clone(),
         })
         .collect()
-}
-
-fn count(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
-/// Attach coupling evidence to a file's records; returns the component's C.
-pub fn apply(measure: &mut FileMeasure, fc: &FileCoupling, in_cycle: bool) -> Evidence {
-    let (mut known, mut unknown_sloc) = (0.0, 0u32);
-    for ((func, region), rc) in measure
-        .functions
-        .iter_mut()
-        .zip(measure.regions.iter_mut())
-        .zip(&fc.regions)
-    {
-        let sloc = region.sloc;
-        let evidence = if in_cycle {
-            known += f64::from(sloc);
-            Evidence::Exact(f64::from(sloc))
-        } else if !rc.unresolved.is_empty() {
-            unknown_sloc += sloc;
-            Evidence::Partial {
-                known_mass: 0.0,
-                unknown_sloc: sloc,
-            }
-        } else {
-            let mass = burden::coupling_mass(sloc, count(rc.deps.len()), 0);
-            known += mass;
-            Evidence::Exact(mass)
-        };
-        region.in_cycle = Some(in_cycle);
-        region.coupling = Some(evidence);
-        func.coupling = Some(CouplingRecord {
-            resolved_fanout: count(rc.deps.len()),
-            resolved_dependencies: rc.deps.iter().cloned().collect(),
-            local_callees: rc.local_callees.clone(),
-            coupling_unknown: !rc.unresolved.is_empty() && !in_cycle,
-            unresolved_calls: unresolved_calls(rc),
-            in_static_cycle: in_cycle,
-            local_callers: Vec::new(),
-        });
-    }
-    fill_local_callers(&mut measure.functions);
-    if unknown_sloc > 0 {
-        Evidence::Partial {
-            known_mass: known,
-            unknown_sloc,
-        }
-    } else {
-        Evidence::Exact(known)
-    }
-}
-
-/// Fan-in within one file by bare name (a documented approximation).
-pub fn fill_local_callers(functions: &mut [emi_ir::FunctionRecord]) {
-    let callees: Vec<(String, Vec<String>)> = functions
-        .iter()
-        .map(|f| {
-            (
-                f.function.clone(),
-                f.coupling
-                    .as_ref()
-                    .map(|c| c.local_callees.clone())
-                    .unwrap_or_default(),
-            )
-        })
-        .collect();
-    for f in functions.iter_mut() {
-        let mut callers: Vec<String> = callees
-            .iter()
-            .filter(|(_, called)| called.contains(&f.function))
-            .map(|(caller, _)| caller.clone())
-            .collect();
-        callers.sort();
-        if let Some(c) = f.coupling.as_mut() {
-            c.local_callers = callers;
-        }
-    }
 }

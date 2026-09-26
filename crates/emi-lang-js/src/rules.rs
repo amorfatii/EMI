@@ -29,7 +29,7 @@ pub struct RuleHit {
     pub lines: Vec<u32>,
 }
 
-fn text<'s>(node: Node, src: &'s [u8]) -> Cow<'s, str> {
+pub(crate) fn text<'s>(node: Node, src: &'s [u8]) -> Cow<'s, str> {
     String::from_utf8_lossy(&src[node.start_byte()..node.end_byte()])
 }
 
@@ -38,7 +38,7 @@ fn node_lines(node: Node) -> Vec<u32> {
 }
 
 /// Pre-order walk over every node (named and anonymous), like `_walk`.
-fn walk(root: Node) -> Vec<Node> {
+pub(crate) fn walk(root: Node) -> Vec<Node> {
     let mut out = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -48,17 +48,17 @@ fn walk(root: Node) -> Vec<Node> {
     out
 }
 
-fn children(node: Node) -> Vec<Node> {
+pub(crate) fn children(node: Node) -> Vec<Node> {
     let mut cursor = node.walk();
     node.children(&mut cursor).collect()
 }
 
-fn named_children(node: Node) -> Vec<Node> {
+pub(crate) fn named_children(node: Node) -> Vec<Node> {
     let mut cursor = node.walk();
     node.named_children(&mut cursor).collect()
 }
 
-fn contains(ancestor: Node, node: Node) -> bool {
+pub(crate) fn contains(ancestor: Node, node: Node) -> bool {
     let mut current = Some(node);
     while let Some(c) = current {
         if c.id() == ancestor.id() {

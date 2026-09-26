@@ -3,11 +3,15 @@
 use std::fs;
 use std::path::Path;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use emi_ir::clones::Grouper;
-use emi_ir::{Burden, Component, FileError, Measurement, pytext};
+use emi_ir::graph::strongly_connected;
+use emi_ir::{Burden, Component, FileError, Measurement, UnresolvedCall, pytext};
 use emi_lang_js::FileMeasure;
+use emi_lang_js::resolve::{self, Scope};
+
+use crate::coupling::{RegionEvidence, apply};
 use rayon::prelude::*;
 
 use crate::walk::{self, ScopeFile};
@@ -40,7 +44,11 @@ fn is_code(name: &str) -> bool {
 enum Outcome {
     Symlink,
     Unreadable(&'static str, String),
-    Parsed { sha: String, measure: FileMeasure },
+    Parsed {
+        sha: String,
+        measure: FileMeasure,
+        source: String,
+    },
     Unparsed,
 }
 
@@ -59,7 +67,11 @@ fn measure_file(f: &ScopeFile) -> Outcome {
     let source = pytext::universal_newlines(&text);
     let sha = pytext::sha256_hex(source.as_bytes());
     match emi_lang_js::measure(&f.rel, &source) {
-        Some(measure) => Outcome::Parsed { sha, measure },
+        Some(measure) => Outcome::Parsed {
+            sha,
+            measure,
+            source,
+        },
         None => Outcome::Unparsed,
     }
 }
@@ -74,12 +86,13 @@ fn file_error(file: &str, error: &str, message: String, lines: Option<Vec<u32>>)
     }
 }
 
-fn select(root: &Path, options: &Options, out: &mut Measurement) -> Vec<ScopeFile> {
-    let excludes = options
-        .exclude_dirs
-        .clone()
-        .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(|s| (*s).to_owned()).collect());
-    let (candidates, _pruned, walk_errors) = walk::walk(root, &excludes, is_code);
+fn select(
+    root: &Path,
+    options: &Options,
+    excludes: &[String],
+    out: &mut Measurement,
+) -> Vec<ScopeFile> {
+    let (candidates, _pruned, walk_errors) = walk::walk(root, excludes, is_code);
     out.errors.extend(
         walk_errors
             .into_iter()
@@ -92,54 +105,127 @@ fn select(root: &Path, options: &Options, out: &mut Measurement) -> Vec<ScopeFil
         .collect()
 }
 
-/// Scope-wide accumulation across files.
-#[derive(Default)]
-struct Redundancy {
-    exact: Grouper,
-    normalized: Grouper,
-    rule_lines: BTreeMap<String, BTreeSet<u32>>,
+/// A parsed file waiting for the coupling pass.
+struct Parsed {
+    rel: String,
+    measure: FileMeasure,
+    source: String,
 }
 
-/// Add a parsed file's records. Syntax errors abort in raise mode and are
-/// recorded (with the affected lines) otherwise.
-fn add_parsed(
+/// Record syntax errors: abort in raise mode, keep the affected lines otherwise.
+fn syntax_errors(
     out: &mut Measurement,
-    red: &mut Redundancy,
     rel: &str,
-    measure: FileMeasure,
+    measure: &FileMeasure,
     raise: bool,
 ) -> Result<(), ScanError> {
-    if !measure.error_lines.is_empty() {
-        let rows: Vec<u32> = measure.error_lines.iter().copied().collect();
-        if raise {
-            let message = format!("rows {rows:?}");
-            return Err(ScanError::Syntax {
-                file: rel.to_owned(),
-                message,
-            });
+    if measure.error_lines.is_empty() {
+        return Ok(());
+    }
+    let rows: Vec<u32> = measure.error_lines.iter().copied().collect();
+    if raise {
+        return Err(ScanError::Syntax {
+            file: rel.to_owned(),
+            message: format!("rows {rows:?}"),
+        });
+    }
+    let message = "best-effort measurement; regions on error lines are unknown".to_owned();
+    out.errors
+        .push(file_error(rel, "SyntaxError", message, Some(rows)));
+    Ok(())
+}
+
+/// Resolution knowledge of the scope: every parsed file is first-party.
+fn scope_of(root: &Path, options: &Options, parsed: &[Parsed], excludes: &[String]) -> Scope {
+    let config_dir = options.config_root.as_deref().unwrap_or(root);
+    let (resolver, mains) = resolve::load(root, config_dir, excludes);
+    let known_files: HashMap<String, String> = parsed
+        .iter()
+        .map(|p| (p.rel.clone(), emi_lang_js::module_name(&p.rel)))
+        .collect();
+    let known_modules = known_files.values().cloned().collect();
+    Scope {
+        known_files,
+        known_modules,
+        resolver,
+        mains,
+    }
+}
+
+fn evidence(fc: &emi_lang_js::FileCoupling) -> Vec<RegionEvidence> {
+    fc.regions
+        .iter()
+        .map(|rc| RegionEvidence {
+            deps: rc.deps.iter().cloned().collect(),
+            unresolved: rc
+                .unresolved
+                .iter()
+                .map(|u| UnresolvedCall {
+                    line: Some(u.line),
+                    column: Some(u.column),
+                    reason: u.reason.to_owned(),
+                })
+                .collect(),
+            local_callees: rc.local_callees.clone(),
+        })
+        .collect()
+}
+
+/// Couple every parsed file, find cycles, and assemble records in file order.
+fn assemble(out: &mut Measurement, parsed: Vec<Parsed>, scope: &Scope) -> Result<(), ScanError> {
+    let couplings = parsed
+        .par_iter()
+        .map(|p| {
+            emi_lang_js::couple(&p.rel, &p.source, scope).ok_or_else(|| ScanError::Syntax {
+                file: p.rel.clone(),
+                message: "parser unavailable".into(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let graph: BTreeMap<String, BTreeSet<String>> = parsed
+        .iter()
+        .zip(&couplings)
+        .map(|(p, c)| (emi_lang_js::module_name(&p.rel), c.graph.clone()))
+        .collect();
+    out.static_dependency_cycles = strongly_connected(&graph);
+    let cycle_modules: HashSet<&String> = out.static_dependency_cycles.iter().flatten().collect();
+    let cycle_modules: HashSet<String> = cycle_modules.into_iter().cloned().collect();
+    let (mut exact, mut normalized) = (Grouper::default(), Grouper::default());
+    let mut rule_lines: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+    for (p, fc) in parsed.into_iter().zip(&couplings) {
+        let mut m = p.measure;
+        for c in &m.clones {
+            exact.add(c.exact, &p.rel, &c.body_lines);
+            normalized.add(c.normalized, &p.rel, &c.body_lines);
         }
-        let message = "best-effort measurement; regions on error lines are unknown".to_owned();
-        out.errors
-            .push(file_error(rel, "SyntaxError", message, Some(rows)));
-    }
-    for c in &measure.clones {
-        red.exact.add(c.exact, rel, &c.body_lines);
-        red.normalized.add(c.normalized, rel, &c.body_lines);
-    }
-    out.verbosity_findings.extend(measure.findings);
-    red.rule_lines.insert(rel.to_owned(), measure.rule_lines);
-    if measure.sloc > 0 {
+        out.verbosity_findings.append(&mut m.findings);
+        rule_lines.insert(p.rel.clone(), std::mem::take(&mut m.rule_lines));
+        if m.sloc == 0 {
+            continue;
+        }
+        let in_cycle = cycle_modules.contains(&emi_lang_js::module_name(&p.rel));
+        let c = apply(&mut m.functions, &mut m.regions, &evidence(fc), in_cycle);
         out.components.push(Component {
-            id: rel.to_owned(),
-            sloc: measure.sloc,
+            id: p.rel.clone(),
+            sloc: m.sloc,
             burden: Burden {
-                erosion: measure.erosion,
+                erosion: m.erosion,
                 redundancy: None,
-                coupling: None,
+                coupling: Some(c),
             },
         });
-        out.functions.extend(measure.functions);
-        out.regions.extend(measure.regions);
+        out.functions.append(&mut m.functions);
+        out.regions.append(&mut m.regions);
+    }
+    let mut clone_lines = BTreeMap::new();
+    out.clone_groups = exact.finish(&mut clone_lines);
+    out.clone_groups_normalized = normalized.finish(&mut clone_lines);
+    let empty = BTreeSet::new();
+    for c in &mut out.components {
+        let clones = clone_lines.get(&c.id).unwrap_or(&empty);
+        let rules = rule_lines.get(&c.id).unwrap_or(&empty);
+        // Unlike the Python adapter, JS redundancy is not capped at size.
+        c.burden.redundancy = Some(u32::try_from(clones.union(rules).count()).unwrap_or(u32::MAX));
     }
     Ok(())
 }
@@ -149,7 +235,11 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         measurement_profile: emi_lang_js::PROFILE.to_owned(),
         ..Measurement::default()
     };
-    let selected = select(root, options, &mut out);
+    let excludes = options
+        .exclude_dirs
+        .clone()
+        .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(|s| (*s).to_owned()).collect());
+    let selected = select(root, options, &excludes, &mut out);
     if selected.is_empty() {
         return Err(ScanError::NoSources(
             "no JavaScript/TypeScript source files",
@@ -157,8 +247,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     }
     let raise = options.on_syntax_error == OnSyntaxError::Raise;
     let outcomes: Vec<Outcome> = selected.par_iter().map(measure_file).collect();
-    let (mut fallbacks, mut measured) = (Vec::new(), 0usize);
-    let mut red = Redundancy::default();
+    let (mut fallbacks, mut parsed) = (Vec::new(), Vec::new());
     for (f, outcome) in selected.iter().zip(outcomes) {
         let rel = f.rel.clone();
         match outcome {
@@ -180,34 +269,34 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
                     message: "parser unavailable".into(),
                 });
             }
-            Outcome::Parsed { sha, measure } => {
+            Outcome::Parsed {
+                sha,
+                measure,
+                source,
+            } => {
                 out.source_sha256.insert(rel.clone(), sha);
                 if measure.fallback {
                     fallbacks.push(rel.clone());
                 }
-                measured += 1;
-                add_parsed(&mut out, &mut red, &rel, measure, raise)?;
+                syntax_errors(&mut out, &rel, &measure, raise)?;
+                parsed.push(Parsed {
+                    rel,
+                    measure,
+                    source,
+                });
             }
         }
     }
-    if measured == 0 && out.errors.is_empty() {
+    if parsed.is_empty() && out.errors.is_empty() {
         return Err(ScanError::NoSources(
             "no measurable JavaScript/TypeScript source files",
         ));
     }
+    let scope = scope_of(root, options, &parsed, &excludes);
+    assemble(&mut out, parsed, &scope)?;
     out.errors
         .sort_by(|a, b| (&a.file, &a.error, &a.message).cmp(&(&b.file, &b.error, &b.message)));
     fallbacks.sort();
     out.fallbacks = Some(fallbacks);
-    let mut clone_lines = BTreeMap::new();
-    out.clone_groups = red.exact.finish(&mut clone_lines);
-    out.clone_groups_normalized = red.normalized.finish(&mut clone_lines);
-    let empty = BTreeSet::new();
-    for c in &mut out.components {
-        let clones = clone_lines.get(&c.id).unwrap_or(&empty);
-        let rules = red.rule_lines.get(&c.id).unwrap_or(&empty);
-        // Unlike the Python adapter, JS redundancy is not capped at size.
-        c.burden.redundancy = Some(u32::try_from(clones.union(rules).count()).unwrap_or(u32::MAX));
-    }
     Ok(out)
 }

@@ -2,6 +2,7 @@
 //! the v0.5 selection rules, measure them in parallel, and assemble the
 //! result in the oracle's order.
 
+mod coupling;
 mod js;
 mod python;
 mod python_coupling;
@@ -35,6 +36,8 @@ pub struct Options {
     pub include_globs: Vec<String>,
     /// Python only: keep test files out of product measurement.
     pub detect_tests: bool,
+    /// JS only: directory tsconfig.json loads from (default: the scope root).
+    pub config_root: Option<std::path::PathBuf>,
 }
 
 impl Options {
@@ -46,6 +49,7 @@ impl Options {
             exclude_globs: Vec::new(),
             include_globs: Vec::new(),
             detect_tests: true,
+            config_root: None,
         }
     }
 }

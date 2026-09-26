@@ -343,6 +343,7 @@ version = "0.1.0"
 dependencies = [
  "emi-ir",
  "regex",
+ "serde_json",
  "sha2",
  "tree-sitter",
  "tree-sitter-javascript",

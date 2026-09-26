@@ -3,9 +3,12 @@
 //! pinned tree-sitter grammars.
 
 mod clones;
+pub mod coupling;
 mod eligible;
 mod names;
 mod parse;
+mod paths;
+pub mod resolve;
 pub mod rules;
 
 use std::collections::BTreeSet;
@@ -18,6 +21,11 @@ use crate::parse::{push_children, row};
 
 pub use crate::clones::CloneCandidate;
 pub use crate::parse::error_lines;
+
+/// `fnmatch(name, "<prefix>*<suffix>")` for a single star.
+pub(crate) fn fnmatch_simple(name: &str, prefix: &str, suffix: &str) -> bool {
+    name.len() >= prefix.len() + suffix.len() && name.starts_with(prefix) && name.ends_with(suffix)
+}
 
 /// Measurement profile of this adapter. It reproduces `js-probe-0.10`
 /// region/SLOC/CC semantics; grammar pins are part of the identity.
@@ -153,6 +161,57 @@ fn findings(
         .map(|h| Finding::new(file, h.rule, h.lines))
         .collect();
     (findings, rule_lines)
+}
+
+/// Module id of a scope-relative path: the path without its suffix.
+pub fn module_name(rel: &str) -> String {
+    let suffix = paths::suffix(paths::name(rel));
+    rel[..rel.len() - suffix.len()].to_owned()
+}
+
+/// Coupling of one file given scope-wide resolution knowledge.
+pub struct FileCoupling {
+    /// Import-graph edges (first-party modules this file depends on).
+    pub graph: std::collections::BTreeSet<String>,
+    /// Per region, in the same order as `FileMeasure::regions`.
+    pub regions: Vec<coupling::RegionCoupling>,
+}
+
+/// Second pass: bindings, graph edges and per-region coupling. Re-parses the
+/// source rather than keeping every tree of a scope alive between passes.
+pub fn couple(file: &str, source: &str, scope: &resolve::Scope) -> Option<FileCoupling> {
+    let bytes = source.as_bytes();
+    let parsed = parse::parse(file, bytes)?;
+    let tree = &parsed.tree;
+    let module = module_name(file);
+    let ctx = coupling::FileCtx {
+        scope,
+        rel: file,
+        module: &module,
+        src: bytes,
+    };
+    let facts = coupling::file_facts(&ctx, tree);
+    let eligible = eligible::eligible_lines(source, tree);
+    let module_qname = names::qualified_name(tree.root_node(), bytes);
+    let (candidates, nodes) = candidates(tree, bytes);
+    let regions = regions::assign(candidates, &eligible, &module_qname);
+    let mut ambiguous = facts.imports.ambiguous.clone();
+    let per_region = regions
+        .iter()
+        .map(|region| {
+            let node = region.origin.map_or_else(|| tree.root_node(), |i| nodes[i]);
+            let mut rc =
+                coupling::region_coupling(&ctx, &facts, node, &region.lines, &mut ambiguous);
+            if region.origin.is_none() {
+                rc.deps.extend(facts.graph.iter().cloned());
+            }
+            rc
+        })
+        .collect();
+    Some(FileCoupling {
+        graph: facts.graph.clone(),
+        regions: per_region,
+    })
 }
 
 /// Measure one file. `source` must already be universal-newline decoded,
