@@ -55,7 +55,9 @@ fn reproduces_oracle_reports_and_refusals() {
             };
             let (gated, policy) = policy(run["argv"].as_array().map_or(&[], Vec::as_slice));
             let (out, code) = if gated {
-                apply(report, &policy).unwrap_or_default()
+                apply(report, &policy)
+                    .map(|g| (g.output, g.code))
+                    .unwrap_or_default()
             } else {
                 (report, 0)
             };

@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use emi_scan::{OnSyntaxError, Options, Probe};
 
+mod diffcli;
 mod gatecli;
 
 #[derive(Parser)]
@@ -68,9 +69,16 @@ enum Command {
         #[command(flatten)]
         gate: gatecli::GateArgs,
     },
+    /// Measure a change between two git refs; with --guardrail, review
+    /// and gate it.
+    Diff(diffcli::DiffArgs),
+    /// Gate consecutive first-parent commit pairs and report the verdict
+    /// curve (calibrate allowances before enforcing).
+    Backtest(diffcli::BacktestArgs),
 }
 
 fn review(input: &std::path::Path, gate: &gatecli::GateArgs) -> anyhow::Result<u8> {
+    gate.validate()?;
     let report = fs::read_to_string(input)
         .map_err(|e| e.to_string())
         .and_then(|text| emi_ledger::strict::loads(&text))
@@ -81,7 +89,20 @@ fn review(input: &std::path::Path, gate: &gatecli::GateArgs) -> anyhow::Result<u
                 input.display()
             )
         })?;
-    let (out, code) = gatecli::apply(report, gate)?;
+    let mut record = serde_json::Map::new();
+    for (k, v) in [("repo", ""), ("source", "")] {
+        record.insert(k.into(), v.into());
+    }
+    for k in ["before", "after", "before_ref", "after_ref"] {
+        record.insert(k.into(), serde_json::Value::Null);
+    }
+    let profile = report
+        .get("measurement_profile")
+        .cloned()
+        .unwrap_or_default();
+    record.insert("probe".into(), profile.clone());
+    record.insert("measurement_profile".into(), profile);
+    let (out, code) = gatecli::apply(report, gate, record)?;
     writeln!(
         std::io::stdout().lock(),
         "{}",
@@ -129,6 +150,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             Ok(0)
         }
         Command::Review { input, gate } => review(&input, &gate),
+        Command::Diff(args) => diffcli::run(&args),
+        Command::Backtest(args) => diffcli::backtest(&args),
     }
 }
 

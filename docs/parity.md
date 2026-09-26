@@ -21,6 +21,7 @@ Values must be equal (floats bit-for-bit); record order is reported separately.
 | 1 | `components[].{id, sloc, burden.E}`, `functions[].{file, function, line, sloc, cc, erosion_mass}` (+ `lines`, `erosion_exact` for JS), `regions[].{file, id, sloc, sha, E}`, `source_sha256`, JS `fallbacks`, JS syntax-error lines |
 | 2 | redundancy (`burden.V`, clone groups, waste rules, test-value findings), coupling (`burden.C`, region `C`/`in_cycle`, cycles, unresolved calls), tsconfig resolution |
 | 2 | scope metadata: full `errors` (with raw-byte `sha256`, CPython codec/OS wording, JS `ConfigError` diagnostics), `measurement_options`, Python `status`/`scope_complete`/`inventory`/`inventory_summary`, `.gitignore` selection, refusal messages for empty, missing, and test-only scopes (`tools/scope_cases.py`) |
+| 2 | `emi diff` (whole gated report, identity fields aside) and `emi backtest` (golden express curve, checked in CI), trajectory rows |
 | 2 | calculator and gate: the whole `review()` report, `guardrail()` verdicts, `compact_verdict`, exit codes, refusal messages |
 
 ## The calculator and gate
@@ -50,6 +51,8 @@ implementation).
 | npm's bundled dependencies | JS | 6,189 | identical, same order (1 D1 file excluded) |
 | `~/.opencode/node_modules` (effect-ts etc.) | JS/TS | 24,816 | identical, same order (6 D1 files excluded) |
 | TypeScript reference cases (`tools/ts_fixtures.py`) | JS/TS | 58 runs | identical |
+| `tools/diff_parity.py`, express (40 pairs, allowance 0 and 10) and the oracle's own history | diff + gate | identical reports and verdicts |
+| `backtest-express` golden | backtest | identical rows and summary |
 | `tools/ledger_diff.py`, seeds 1–6 | calculator + gate | 15,876 runs | byte-identical output, same refusals |
 
 ## Divergences (intentional)

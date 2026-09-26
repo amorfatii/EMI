@@ -2,8 +2,10 @@
 //! exit-code contract: 0 pass, 0 warn, 2 block (warn exits 2 with
 //! `--fail-on-warn`), and 2 whenever scope is incomplete.
 
+use std::path::PathBuf;
+
 use clap::Args;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Args, Clone)]
 pub struct GateArgs {
@@ -31,20 +33,45 @@ pub struct GateArgs {
     /// With --guardrail, emit only the token-cheap verdict payload.
     #[arg(long)]
     pub compact: bool,
+    /// Append one JSONL row per gate run to DIR/emi-trajectory.jsonl.
+    #[arg(long, value_name = "DIR")]
+    pub log_trajectory: Option<PathBuf>,
+    /// Fail (exit 2) instead of warning when the trajectory append fails.
+    #[arg(long)]
+    pub trajectory_strict: bool,
 }
 
-/// Apply the gate to a review report; returns the JSON to print and the
-/// exit code.
-pub fn apply(report: Value, args: &GateArgs) -> anyhow::Result<(Value, u8)> {
-    if args.max_evidence < 0 {
-        anyhow::bail!("--max-evidence must be >= 0; use 0 for margins only");
-    }
-    if !args.guardrail {
-        if args.compact {
+impl GateArgs {
+    /// Flag combinations the oracle refuses before doing any work.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.max_evidence < 0 {
+            anyhow::bail!("--max-evidence must be >= 0; use 0 for margins only");
+        }
+        if self.trajectory_strict && self.log_trajectory.is_none() {
+            anyhow::bail!("--trajectory-strict needs --log-trajectory DIR");
+        }
+        if !self.guardrail && (self.compact || self.log_trajectory.is_some()) {
             anyhow::bail!(
                 "--compact and --log-trajectory need --guardrail; re-run with --guardrail to get a verdict to compact or log"
             );
         }
+        Ok(())
+    }
+
+    pub fn headroom(&self) -> f64 {
+        self.allow_headroom.unwrap_or(self.allow_growth)
+    }
+}
+
+/// Gate a review report (when `--guardrail`) and log the run. `record`
+/// holds the trajectory row's leading fields; `allowance` and `headroom`
+/// are appended to it. Returns the JSON to print and the exit code.
+pub fn apply(
+    report: Value,
+    args: &GateArgs,
+    mut record: Map<String, Value>,
+) -> anyhow::Result<(Value, u8)> {
+    if !args.guardrail {
         return Ok((report, 0));
     }
     let policy = emi_ledger::gate::Policy {
@@ -54,5 +81,13 @@ pub fn apply(report: Value, args: &GateArgs) -> anyhow::Result<(Value, u8)> {
         max_evidence: args.max_evidence,
         compact: args.compact,
     };
-    emi_ledger::gate::apply(report, &policy).map_err(anyhow::Error::msg)
+    let gated = emi_ledger::gate::apply(report, &policy).map_err(anyhow::Error::msg)?;
+    if let Some(dir) = &args.log_trajectory {
+        record.insert("allowance".into(), Value::from(args.allow_growth));
+        record.insert("headroom".into(), Value::from(args.headroom()));
+        let row = emi_diff::trajectory::row(record, &gated.report, &gated.gate);
+        emi_diff::trajectory::append(dir, &row, args.trajectory_strict)
+            .map_err(|e| anyhow::anyhow!("trajectory log failed in strict mode: {e}"))?;
+    }
+    Ok((gated.output, gated.code))
 }

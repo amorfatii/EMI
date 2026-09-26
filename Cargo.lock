@@ -322,9 +322,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "emi-diff",
  "emi-ir",
  "emi-ledger",
  "emi-scan",
+ "serde_json",
+]
+
+[[package]]
+name = "emi-diff"
+version = "0.1.0"
+dependencies = [
+ "emi-ir",
+ "emi-ledger",
+ "emi-scan",
+ "rayon",
  "serde_json",
 ]
 

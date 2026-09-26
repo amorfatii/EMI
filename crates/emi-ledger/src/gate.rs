@@ -477,7 +477,7 @@ impl Default for Policy {
 /// Gate a review report: the JSON to print and the exit code (0 pass,
 /// 0 warn, 2 block; warn exits 2 with `fail_on_warn`; 2 whenever scope is
 /// incomplete).
-pub fn apply(mut report: Value, policy: &Policy) -> Result<(Value, u8)> {
+pub fn apply(mut report: Value, policy: &Policy) -> Result<Gated> {
     let gate = guardrail(
         &report,
         policy.allowance,
@@ -489,13 +489,29 @@ pub fn apply(mut report: Value, policy: &Policy) -> Result<(Value, u8)> {
     let incomplete =
         report.get("scope").and_then(|s| s.get("complete")) == Some(&Value::Bool(false));
     let code = if fails || incomplete { 2 } else { 0 };
-    if policy.compact {
+    let compact = if policy.compact {
         let headroom = policy.headroom.unwrap_or(policy.allowance);
-        return Ok((
-            compact_verdict(&report, &gate, policy.allowance, headroom)?,
-            code,
-        ));
-    }
-    report["guardrail"] = gate;
-    Ok((report, code))
+        Some(compact_verdict(&report, &gate, policy.allowance, headroom)?)
+    } else {
+        None
+    };
+    report["guardrail"] = gate.clone();
+    let output = compact.unwrap_or_else(|| report.clone());
+    Ok(Gated {
+        output,
+        code,
+        report,
+        gate,
+    })
+}
+
+/// A gated report: what to print, the exit code, and the parts a
+/// trajectory row records.
+#[derive(Clone, Debug)]
+pub struct Gated {
+    pub output: Value,
+    pub code: u8,
+    /// The full report with its `guardrail` verdict attached.
+    pub report: Value,
+    pub gate: Value,
 }

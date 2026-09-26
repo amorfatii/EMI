@@ -198,6 +198,42 @@ fn escape_ascii_into(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// `json.dumps(v)`: one line, `", "`/`": "` separators, ASCII-escaped.
+pub fn dumps_line(v: &Value) -> String {
+    let mut out = String::new();
+    line(v, &mut out);
+    out
+}
+
+fn line(v: &Value, out: &mut String) {
+    match v {
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                line(item, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            out.push('{');
+            for (i, (k, item)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                escape_ascii_into(out, k);
+                out.push_str(": ");
+                line(item, out);
+            }
+            out.push('}');
+        }
+        Value::String(s) => escape_ascii_into(out, s),
+        scalar => canonical(scalar, out),
+    }
+}
+
 fn pretty(v: &Value, depth: usize, out: &mut String) {
     let pad = |n: usize| "  ".repeat(n);
     match v {

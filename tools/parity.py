@@ -69,8 +69,8 @@ def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
                           capture_output=True, check=True).stdout
 
 
-def fetch(entry: dict) -> Path:
-    """Shallow-fetch the pinned commit into the cache (reused across runs)."""
+def fetch(entry: dict, depth: int = 1) -> Path:
+    """Fetch the pinned commit (plus `depth` history) into the cache."""
     repo = CACHE / entry["name"]
     if not (repo / ".git").is_dir():
         repo.mkdir(parents=True, exist_ok=True)
@@ -78,9 +78,29 @@ def fetch(entry: dict) -> Path:
         git(repo, "remote", "add", "origin", f"https://github.com/{entry['repository']}.git")
     probe = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", entry["commit"] + "^{commit}"],
                            capture_output=True)
-    if probe.returncode != 0:
-        git(repo, "fetch", "-q", "--depth=1", "origin", entry["commit"])
+    shallow = (repo / ".git" / "shallow").is_file()
+    if probe.returncode != 0 or (depth > 1 and shallow and int(
+            git(repo, "rev-list", "--count", entry["commit"]).decode()) < depth):
+        git(repo, "fetch", "-q", f"--depth={depth}", "origin", entry["commit"])
     return repo
+
+
+def check_backtest(binary: Path, spec: dict, entry: dict) -> list:
+    """Replay a golden backtest: the whole verdict curve must match."""
+    golden = json.loads(gzip.decompress(
+        (REPO / "corpus" / "golden" / f"backtest-{spec['name']}.json.gz").read_bytes()))
+    repo = fetch(entry, depth=spec["history_depth"])
+    cmd = [str(binary), "backtest", "--repo", str(repo), "--source", entry["scope"],
+           "--probe", entry["probe"], "--head", entry["commit"],
+           "--commits", str(spec["commits"] + 1), "--allow-growth", str(spec["allowance"]),
+           "--format", "json"]
+    for headroom in spec["headrooms"]:
+        cmd += ["--headroom", str(headroom)]
+    done = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        return [f"emi backtest failed: {done.stderr.strip()}"]
+    got, want = json.loads(done.stdout), golden["result"]
+    return [f"{key} differs" for key in want if want[key] != got.get(key)]
 
 
 def materialize(repo: Path, commit: str, dest: Path) -> None:
@@ -226,6 +246,15 @@ def main() -> int:
         status = "PASS" if not report else "FAIL"
         failures += bool(report)
         print(f"{status} {entry['name']:13} {n:6} functions")
+        for line in report:
+            print(f"     {line}")
+    entries = {e["name"]: e for e in spec["repos"]}
+    for bt in spec.get("backtests", []):
+        if args.only and bt["name"] not in args.only:
+            continue
+        report = check_backtest(args.binary, bt, entries[bt["name"]])
+        failures += bool(report)
+        print(f"{'PASS' if not report else 'FAIL'} backtest-{bt['name']} {bt['commits']} pairs")
         for line in report:
             print(f"     {line}")
     return 1 if failures else 0
