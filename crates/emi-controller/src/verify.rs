@@ -473,13 +473,11 @@ pub fn hook_check(store: &Store, reference: &str) -> Result<(bool, String)> {
     let done = store.rows("completion").into_iter().any(|c| {
         c["candidate_id"] == sha.as_str() && c["contract_id"] == cid && c["completed"] == true
     });
+    let task = contract["task_id"].as_str().unwrap_or("");
     let msg = if done {
-        format!("{sha} completed task {}", contract["task_id"])
+        format!("{sha} completed task {task}")
     } else {
-        format!(
-            "{sha} has not completed task {} under its current contract",
-            contract["task_id"]
-        )
+        format!("{sha} has not completed task {task} under its current contract")
     };
     Ok((done, msg))
 }
