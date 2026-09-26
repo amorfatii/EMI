@@ -3,7 +3,7 @@ rules:
   - id: todo-marker
     languages: [js, ts, python]
     severity: note
-    message: "Unresolved {{marker}} marker"
+    message: "Unresolved deferred-work marker (TODO/FIXME/XXX/HACK)"
     description: >
       TODO/FIXME/XXX/HACK comments are deferred work. Agents in particular
       leave them behind when a task is only partly done; the marker makes

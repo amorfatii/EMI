@@ -60,6 +60,12 @@ pub struct DiffArgs {
     /// Write JSON to a file instead of stdout.
     #[arg(short, long)]
     output: Option<PathBuf>,
+    /// Output: the JSON document, or a Markdown PR comment (needs --guardrail).
+    #[arg(long, default_value = "json", value_parser = ["json", "markdown"])]
+    format: String,
+    /// Markdown: URL prefix for file links (e.g. https://github.com/o/r/blob/SHA).
+    #[arg(long, value_name = "URL")]
+    link_base: Option<String>,
     #[command(flatten)]
     gate: gatecli::GateArgs,
 }
@@ -131,6 +137,9 @@ fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
 
 pub fn run(args: &DiffArgs) -> anyhow::Result<u8> {
     args.gate.validate()?;
+    if args.format == "markdown" && (!args.gate.guardrail || args.gate.compact) {
+        anyhow::bail!("--format markdown needs --guardrail (and not --compact)");
+    }
     let (out, code) = payload(args).map_err(|e| {
         anyhow::anyhow!(
             "emi diff --repo {} --source {} --before {} --after {}: {e}",
@@ -140,7 +149,12 @@ pub fn run(args: &DiffArgs) -> anyhow::Result<u8> {
             args.after
         )
     })?;
-    let text = emi_ledger::pyfmt::dumps_pretty(&out);
+    let text = if args.format == "markdown" {
+        let source = emi_diff::snapshot::normalize_source(&args.source).unwrap_or_default();
+        crate::markdown::render(&out, &source, args.link_base.as_deref(), 8)
+    } else {
+        emi_ledger::pyfmt::dumps_pretty(&out)
+    };
     match &args.output {
         Some(path) => std::fs::write(path, text)?,
         None => writeln!(std::io::stdout().lock(), "{text}")?,

@@ -15,35 +15,45 @@ Two jobs cover a pull request.
 
 ## GitHub Actions
 
+The repository is a composite action (`action.yml`). It gates the PR
+against its merge base, posts or updates a short Markdown verdict comment
+(also written to the job summary), and uploads scan plus rule findings as
+one SARIF file:
+
 ```yaml
 name: emi
 on: pull_request
 jobs:
   emi:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
+    permissions: {contents: read, pull-requests: write, security-events: write}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0            # merge base and history
+        with: {fetch-depth: 0}
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install --git <emi repository> emi-cli --locked
-      - name: Gate
-        run: >
-          emi diff --repo . --source src --probe js --profile precise
-          --before origin/${{ github.base_ref }} --after HEAD --merge-base
-          --guardrail --compact --allow-growth 10 --allow-headroom 50
-      - name: Annotate
-        if: always()
-        run: emi scan src --probe js --profile precise --format sarif -o emi.sarif
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: emi.sarif
-          category: emi
+      - uses: <owner>/emi@main
+        with: {source: src, probe: js, allow-growth: "10", allow-headroom: "50"}
 ```
+
+This repository dogfoods it (`.github/workflows/emi.yml`) on its own
+Python tooling (`tools/`) until the Rust adapter exists. The comment comes
+from `emi diff --guardrail --format markdown --link-base URL`. It stays
+under 60 lines (checked in tests), and file names link to the PR head.
+
+## GitLab
+
+`ci/emi.gitlab-ci.yml` runs the same job on merge requests. It keeps the
+comment and a merged SARIF as artifacts.
+
+## pre-commit
+
+`.pre-commit-hooks.yaml` offers two hooks:
+- `emi-check`: the rule catalog, plus `.emi/rules`.
+- `emi-gate`: the staged working tree against `HEAD`. It uses `EMI_SOURCE`
+  and `EMI_PROBE` from the environment.
+
+The action and templates install emi with `cargo install --git`. Point
+their URL at wherever this repository is published.
 
 Calibrate `--allow-headroom` first with `emi backtest` over your recent
 history: it prints the pass/warn/block curve per headroom. Choose the

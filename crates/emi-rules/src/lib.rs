@@ -299,11 +299,30 @@ pub fn read_baseline(path: &Path) -> Result<BTreeSet<String>, String> {
         .collect())
 }
 
+/// Message placeholders must name captures of the rule's query.
+fn placeholder_problems(rule: &Rule) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = rule.message.as_str();
+    while let Some(i) = rest.find("{{") {
+        let Some(j) = rest[i..].find("}}") else { break };
+        let name = &rest[i + 2..i + j];
+        if !rule.query.contains(&format!("@{name}")) {
+            out.push(format!(
+                "{}: message placeholder {{{{{name}}}}} names no capture",
+                rule.id
+            ));
+        }
+        rest = &rest[i + j + 2..];
+    }
+    out
+}
+
 /// Run every rule's `examples`: each `match` snippet must hit, each
 /// `no_match` snippet must not. Returns the failures.
 pub fn self_test(rules: &[Rule]) -> Vec<String> {
     let mut failures = Vec::new();
     for rule in rules {
+        failures.extend(placeholder_problems(rule));
         let compiled = match engine::compile(rule.clone()) {
             Ok(c) => c,
             Err(e) => {

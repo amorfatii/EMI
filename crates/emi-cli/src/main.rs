@@ -13,6 +13,7 @@ mod checkcli;
 mod diffcli;
 mod gatecli;
 mod historycli;
+mod markdown;
 mod mergecli;
 mod sarif;
 mod taskcli;

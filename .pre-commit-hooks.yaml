@@ -1,0 +1,17 @@
+# pre-commit (https://pre-commit.com) hooks. `emi` must be on PATH
+# (cargo install --git https://github.com/andrej/emi emi-cli).
+- id: emi-check
+  name: emi rules
+  description: Run EMI's rule catalog (and .emi/rules if present) on staged files' directories.
+  entry: emi check
+  args: ["."]
+  language: system
+  pass_filenames: false
+  types_or: [python, javascript, ts, tsx]
+- id: emi-gate
+  name: emi gate
+  description: Gate the staged working tree against HEAD on proven burden growth.
+  entry: sh -c 'emi diff --repo . --source "${EMI_SOURCE:-src}" --probe "${EMI_PROBE:-python}" --profile precise --before HEAD --worktree --guardrail --compact'
+  language: system
+  pass_filenames: false
+  types_or: [python, javascript, ts, tsx]

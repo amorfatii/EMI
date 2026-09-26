@@ -1,0 +1,34 @@
+# Include in .gitlab-ci.yml:
+#   include:
+#     - remote: https://raw.githubusercontent.com/andrej/emi/main/ci/emi.gitlab-ci.yml
+#   variables:
+#     EMI_SOURCE: src
+#     EMI_PROBE: python
+emi:
+  stage: test
+  image: rust:1-bookworm
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    GIT_DEPTH: 0
+    EMI_SOURCE: src
+    EMI_PROBE: python
+    EMI_PROFILE: precise
+    EMI_ALLOW_GROWTH: "10"
+    EMI_ALLOW_HEADROOM: "50"
+  script:
+    - cargo install --locked --git https://github.com/andrej/emi emi-cli
+    - >
+      emi diff --repo . --source "$EMI_SOURCE" --probe "$EMI_PROBE" --profile "$EMI_PROFILE"
+      --before "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --after "$CI_COMMIT_SHA" --guardrail
+      --allow-growth "$EMI_ALLOW_GROWTH" --allow-headroom "$EMI_ALLOW_HEADROOM"
+      --format markdown --link-base "$CI_PROJECT_URL/-/blob/$CI_COMMIT_SHA" -o emi-comment.md
+      || code=$?
+    - emi scan "$EMI_SOURCE" --probe "$EMI_PROBE" --profile "$EMI_PROFILE" --tolerate-syntax-errors --format sarif -o emi-scan.sarif
+    - emi check "$EMI_SOURCE" --format sarif --fail-on never -o emi-rules.sarif
+    - emi sarif-merge emi-scan.sarif emi-rules.sarif -o gl-emi.sarif
+    - cat emi-comment.md
+    - exit ${code:-0}
+  artifacts:
+    when: always
+    paths: [emi-comment.md, gl-emi.sarif]

@@ -1,0 +1,87 @@
+name: EMI
+description: >
+  Gate a pull request on proven structural burden growth, comment the
+  verdict on the PR, and upload findings to code scanning.
+branding:
+  icon: activity
+  color: blue
+inputs:
+  source:
+    description: Product scope directory (repository-relative).
+    default: src
+  probe:
+    description: python or js
+    default: python
+  profile:
+    description: precise (default) or parity
+    default: precise
+  allow-growth:
+    description: Burden units of proven growth tolerated.
+    default: "10"
+  allow-headroom:
+    description: Possible growth behind missing evidence tolerated before a warn.
+    default: "50"
+  fail-on-warn:
+    description: Fail the job on warn as well as block.
+    default: "false"
+  comment:
+    description: Post (or update) the verdict as a PR comment.
+    default: "true"
+  sarif:
+    description: Upload scan and rule findings to code scanning.
+    default: "true"
+  emi-version:
+    description: Git ref of emi to build.
+    default: main
+runs:
+  using: composite
+  steps:
+    - name: Install emi
+      shell: bash
+      run: |
+        if ! command -v emi >/dev/null; then
+          cargo install --locked --git https://github.com/andrej/emi --rev "${{ inputs.emi-version }}" emi-cli
+        fi
+    - name: Gate
+      id: gate
+      shell: bash
+      env:
+        BASE: ${{ github.event.pull_request.base.sha }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+        LINK: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}
+      run: |
+        set +e
+        flags=""
+        [ "${{ inputs.fail-on-warn }}" = "true" ] && flags="--fail-on-warn"
+        emi diff --repo . --source "${{ inputs.source }}" --probe "${{ inputs.probe }}" \
+          --profile "${{ inputs.profile }}" --before "$BASE" --after "$HEAD" --merge-base \
+          --guardrail --allow-growth "${{ inputs.allow-growth }}" \
+          --allow-headroom "${{ inputs.allow-headroom }}" $flags \
+          --format markdown --link-base "$LINK" -o emi-comment.md
+        echo "code=$?" >> "$GITHUB_OUTPUT"
+        cat emi-comment.md >> "$GITHUB_STEP_SUMMARY"
+    - name: Comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh pr comment "${{ github.event.pull_request.number }}" --edit-last --body-file emi-comment.md \
+          || gh pr comment "${{ github.event.pull_request.number }}" --body-file emi-comment.md
+    - name: Findings
+      if: ${{ inputs.sarif == 'true' }}
+      shell: bash
+      run: |
+        emi scan "${{ inputs.source }}" --probe "${{ inputs.probe }}" --profile "${{ inputs.profile }}" \
+          --tolerate-syntax-errors --format sarif -o emi-scan.sarif
+        emi check "${{ inputs.source }}" --format sarif --fail-on never -o emi-rules.sarif
+        emi sarif-merge emi-scan.sarif emi-rules.sarif -o emi.sarif
+    - name: Upload findings
+      if: ${{ inputs.sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: emi.sarif
+        category: emi
+    - name: Verdict
+      shell: bash
+      run: exit ${{ steps.gate.outputs.code }}
