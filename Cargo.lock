@@ -323,6 +323,7 @@ dependencies = [
  "anyhow",
  "clap",
  "emi-diff",
+ "emi-history",
  "emi-ir",
  "emi-ledger",
  "emi-scan",
@@ -333,10 +334,20 @@ dependencies = [
 name = "emi-diff"
 version = "0.1.0"
 dependencies = [
+ "emi-history",
  "emi-ir",
  "emi-ledger",
  "emi-scan",
  "rayon",
+ "serde_json",
+]
+
+[[package]]
+name = "emi-history"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
  "serde_json",
 ]
 

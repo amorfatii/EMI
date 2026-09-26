@@ -30,6 +30,11 @@ target/release/emi review change.json --guardrail          # gate a saved change
 target/release/emi backtest --repo . --source src --commits 41 --headroom 10 --headroom 50
 ```
 
+History: `emi hotspots --repo . --source src --probe js` ranks files by
+burden × change frequency, with change coupling, authorship and AI-attributed
+share (`docs/history.md`); `emi diff --history` adds the churn-weighted
+exposure view to reviews.
+
 Profiles: `--profile parity` (default) reproduces the v0.5.1 oracle;
 `--profile precise` measures static coupling with value origins and cuts
 unknown coupling by 97% on the corpus (`docs/profiles.md`).
@@ -53,6 +58,7 @@ Exit code 2 on any error.
 | `emi-scan` | Scope enumeration and parallel measurement |
 | `emi-ledger` | Calculator (ledger, review report) and gate, with CPython-exact arithmetic and JSON |
 | `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
+| `emi-history` | History mining with rename tracking, churn/authorship/AI attribution, change coupling, hotspots |
 | `emi-cli` | The `emi` binary |
 
 `corpus/` holds the golden measurements from the v0.5.1 oracle and their pinned

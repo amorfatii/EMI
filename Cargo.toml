@@ -14,6 +14,7 @@ emi-ir = { path = "crates/emi-ir" }
 emi-lang-python = { path = "crates/emi-lang-python" }
 emi-lang-js = { path = "crates/emi-lang-js" }
 emi-scan = { path = "crates/emi-scan" }
+emi-history = { path = "crates/emi-history" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

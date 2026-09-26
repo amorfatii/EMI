@@ -11,6 +11,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 
 mod diffcli;
 mod gatecli;
+mod historycli;
 
 #[derive(Parser)]
 #[command(
@@ -95,6 +96,9 @@ enum Command {
     /// Gate consecutive first-parent commit pairs and report the verdict
     /// curve (calibrate allowances before enforcing).
     Backtest(diffcli::BacktestArgs),
+    /// Rank files by measured burden × change frequency; report change
+    /// coupling, authorship and AI attribution over a history window.
+    Hotspots(historycli::HotspotsArgs),
 }
 
 fn review(input: &std::path::Path, gate: &gatecli::GateArgs) -> anyhow::Result<u8> {
@@ -174,6 +178,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Review { input, gate } => review(&input, &gate),
         Command::Diff(args) => diffcli::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
+        Command::Hotspots(args) => historycli::run(&args),
     }
 }
 

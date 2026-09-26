@@ -1,0 +1,16 @@
+[package]
+name = "emi-history"
+description = "Behavioral analysis from git history: churn, authorship, AI attribution, change coupling, hotspots"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

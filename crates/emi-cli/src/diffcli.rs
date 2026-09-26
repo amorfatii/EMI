@@ -49,6 +49,10 @@ pub struct DiffArgs {
     /// Python: treat test files as product source.
     #[arg(long)]
     no_test_detection: bool,
+    /// Attach 90-day churn before the base commit, enabling the review's
+    /// exposure (churn-weighted) view.
+    #[arg(long)]
+    history: bool,
     /// Write JSON to a file instead of stdout.
     #[arg(short, long)]
     output: Option<PathBuf>,
@@ -91,6 +95,7 @@ fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
     req.use_gitignore = args.use_gitignore;
     req.detect_tests = !args.no_test_detection;
     req.profile = args.profile.into();
+    req.history = args.history;
     let change = build_change(&req)?;
     if !args.gate.guardrail {
         return Ok((change, 0));

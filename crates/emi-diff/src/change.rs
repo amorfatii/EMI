@@ -27,6 +27,9 @@ pub struct Request {
     pub use_gitignore: bool,
     pub detect_tests: bool,
     pub profile: emi_scan::Profile,
+    /// Attach 90-day churn (before the base commit) to the base components,
+    /// enabling the review's exposure view.
+    pub history: bool,
 }
 
 impl Request {
@@ -50,6 +53,7 @@ impl Request {
             use_gitignore: false,
             detect_tests: true,
             profile: emi_scan::Profile::Parity,
+            history: false,
         }
     }
 
@@ -297,6 +301,41 @@ fn contract_id(before_m: &Value, after_m: &Value) -> String {
     )
 }
 
+/// Measure the scope at one ref (resolved and materialized from raw
+/// blobs): its pinned SHA and the measurement (`None` for an empty scope).
+pub fn measure_ref(req: &Request, reference: &str) -> Result<(String, Option<Value>)> {
+    let source = snapshot::normalize_source(&req.source)?;
+    let sha = snapshot::resolve_ref(&req.repo, reference)?;
+    let tmp = TempDir::new("emi-measure-")?;
+    let side = measure(req, &sha, &tmp.path.join("ref"), &source)?;
+    Ok((sha, side.measurement))
+}
+
+/// Churn window the calculator's exposure view is defined for.
+const HISTORY_DAYS: u32 = 90;
+
+/// Set `churn_lines` (lines added + deleted in the 90 days before the base
+/// commit, following renames) on every base component.
+fn attach_churn(req: &Request, before: &str, source: &str, change: &mut Value) -> Result<()> {
+    let query = emi_history::Query {
+        repo: req.repo.clone(),
+        source: source.to_owned(),
+        head: before.to_owned(),
+        days: Some(HISTORY_DAYS),
+        ai_pattern: emi_history::DEFAULT_AI_PATTERN.to_owned(),
+    };
+    let histories = emi_history::file_histories(&emi_history::mine(&query)?);
+    if let Some(items) = change["before"].as_array_mut() {
+        for item in items {
+            let id = item["id"].as_str().unwrap_or("");
+            let churn = histories.get(id).map_or(0, |h| h.added + h.deleted);
+            item["churn_lines"] = json!(churn);
+        }
+    }
+    change["history_days"] = json!(HISTORY_DAYS);
+    Ok(())
+}
+
 /// `build_change`.
 pub fn build_change(req: &Request) -> Result<Value> {
     let source = snapshot::normalize_source(&req.source)?;
@@ -363,7 +402,10 @@ pub fn build_change(req: &Request) -> Result<Value> {
             &after_side.inventory.tree
         )),
     );
-    let change = Value::Object(change);
+    let mut change = Value::Object(change);
+    if req.history {
+        attach_churn(req, &pinned.before, &source, &mut change)?;
+    }
     emi_ledger::contracts::validate_change(&change)?;
     Ok(change)
 }
