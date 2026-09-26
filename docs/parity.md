@@ -19,6 +19,26 @@ Values must be equal (floats bit-for-bit); record order is reported separately.
 | Phase | Fields |
 |---|---|
 | 1 | `components[].{id, sloc, burden.E}`, `functions[].{file, function, line, sloc, cc, erosion_mass}` (+ `lines`, `erosion_exact` for JS), `regions[].{file, id, sloc, sha, E}`, `source_sha256`, JS `fallbacks`, JS syntax-error lines |
+| 2 | redundancy (`burden.V`, clone groups, waste rules, test-value findings), coupling (`burden.C`, region `C`/`in_cycle`, cycles, unresolved calls), tsconfig resolution |
+| 2 | calculator and gate: the whole `review()` report, `guardrail()` verdicts, `compact_verdict`, exit codes, refusal messages |
+
+## The calculator and gate
+
+`tools/ledger_diff.py` fuzzes change documents (exact, unknown and partial
+evidence, regions, unchanged components, incomplete scope, unverified
+identity, history exposure, and corrupted variants) and requires
+`emi review` to print **byte-identical** JSON to the oracle's `review()` +
+`guardrail()` under five gate policies, or to refuse with the oracle's own
+message. `corpus/golden/ledger.jsonl` records the oracle's answers (output
+digests) for 250 cases, which `cargo test` replays without Python.
+
+Floats match to the bit, which needed three CPython behaviors: `math.fsum`
+(ported, including its half-even correction), `repr(float)`/`format(x, "g")`
+for text, and `x ** 2`, which CPython computes with libm `pow` — not always
+the correctly rounded `x * x` (about 0.1% of inputs differ in the last
+place). `pyfmt::square` calls the host libm's `pow` like CPython does, so
+parity holds against a CPython on the same libm (glibc and musl share the
+implementation).
 
 ## Results (2026-09-26)
 
@@ -28,6 +48,8 @@ Values must be equal (floats bit-for-bit); record order is reported separately.
 | `/usr/lib/python3.14` (stdlib + site-packages) | Python | 35,525 | identical, same order |
 | npm's bundled dependencies | JS | 6,189 | identical, same order (1 D1 file excluded) |
 | `~/.opencode/node_modules` (effect-ts etc.) | JS/TS | 24,816 | identical, same order (6 D1 files excluded) |
+| TypeScript reference cases (`tools/ts_fixtures.py`) | JS/TS | 58 runs | identical |
+| `tools/ledger_diff.py`, seeds 1–6 | calculator + gate | 15,876 runs | byte-identical output, same refusals |
 
 ## Divergences (intentional)
 

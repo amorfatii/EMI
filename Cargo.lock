@@ -323,6 +323,7 @@ dependencies = [
  "anyhow",
  "clap",
  "emi-ir",
+ "emi-ledger",
  "emi-scan",
  "serde_json",
 ]
@@ -358,6 +359,18 @@ dependencies = [
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
+ "sha2",
+]
+
+[[package]]
+name = "emi-ledger"
+version = "0.1.0"
+dependencies = [
+ "emi-ir",
+ "hex",
+ "indexmap",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 

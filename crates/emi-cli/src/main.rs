@@ -9,6 +9,8 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use emi_scan::{OnSyntaxError, Options, Probe};
 
+mod gatecli;
+
 #[derive(Parser)]
 #[command(
     name = "emi",
@@ -56,9 +58,36 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Review a change JSON (before/after component measurements).
+    Review {
+        /// Change JSON as produced by `emi diff` or build_change.
+        input: PathBuf,
+        #[command(flatten)]
+        gate: gatecli::GateArgs,
+    },
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn review(input: &std::path::Path, gate: &gatecli::GateArgs) -> anyhow::Result<u8> {
+    let report = fs::read_to_string(input)
+        .map_err(|e| e.to_string())
+        .and_then(|text| emi_ledger::strict::loads(&text))
+        .and_then(|change| emi_ledger::review(&change))
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "cannot review {}: {e}; pass a build_change JSON file with matching measurement_profile_before/after",
+                input.display()
+            )
+        })?;
+    let (out, code) = gatecli::apply(report, gate)?;
+    writeln!(
+        std::io::stdout().lock(),
+        "{}",
+        emi_ledger::pyfmt::dumps_pretty(&out)
+    )?;
+    Ok(code)
+}
+
+fn run(cli: Cli) -> anyhow::Result<u8> {
     match cli.command {
         Command::Scan {
             source,
@@ -92,14 +121,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     .with_context(|| format!("writing {}", path.display()))?,
                 None => writeln!(std::io::stdout().lock(), "{json}")?,
             }
-            Ok(())
+            Ok(0)
         }
+        Command::Review { input, gate } => review(&input, &gate),
     }
 }
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("emi: error: {e:#}");
             ExitCode::from(2)

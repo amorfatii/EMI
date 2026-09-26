@@ -1,0 +1,23 @@
+[package]
+name = "emi-ledger"
+description = "EMI calculator: burden ledger with evidence intervals, review reports and the block/warn/pass gate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+serde.workspace = true
+sha2.workspace = true
+hex.workspace = true
+indexmap.workspace = true
+emi-ir.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+hex.workspace = true
+
+[lints]
+workspace = true
