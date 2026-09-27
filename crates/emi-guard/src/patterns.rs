@@ -144,10 +144,40 @@ pub fn count_assertions(lang: Lang, text: &str) -> usize {
     r.find_iter(text).count()
 }
 
-/// First pattern of `set` matching `line`.
+/// `line` with the contents of its string literals removed (quotes kept),
+/// so a marker quoted in a test name or fixture string is not a marker.
+pub fn strip_strings(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in line.chars() {
+        match quote {
+            Some(q) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                    out.push(c);
+                }
+            }
+            None => {
+                if matches!(c, '"' | '\'' | '`') {
+                    quote = Some(c);
+                }
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// First pattern of `set` matching `line` outside string literals.
 pub fn first_match(set: &[(&'static str, Regex)], line: &str) -> Option<&'static str> {
+    let code = strip_strings(line);
     set.iter()
-        .find(|(_, r)| r.is_match(line))
+        .find(|(_, r)| r.is_match(&code))
         .map(|(name, _)| *name)
 }
 
@@ -176,6 +206,7 @@ mod tests {
             assert!(first_match(&SKIP, line).is_some(), "{line}");
         }
         let miss = [
+            "it(\"should run with conditional `this.skip()`\", function (done) {",
             "it('skips nothing', () => {})",
             "exit(1)",
             "# ignore this",
@@ -212,6 +243,7 @@ mod tests {
             "# emi-ignore[erosion]: generated table, reviewed",
             "allow(x)",
             "def noqa_helper(): pass",
+            "  \"test.js\": \"/* eslint-disable eqeqeq */\",",
             "type Ignore = string",
         ];
         for line in miss {

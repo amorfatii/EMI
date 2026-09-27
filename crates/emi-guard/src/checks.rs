@@ -173,15 +173,29 @@ fn enclosing(text: &str, line: u32, pick: impl Fn(&str) -> bool) -> Option<&str>
         .map(str::trim)
 }
 
+/// nox: the session a line belongs to decides; a decorator line belongs to
+/// the function after it, any other line to the function before it.
+fn nox_line_is_test(text: &str, line: u32) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = (line as usize).saturating_sub(1);
+    let current = lines.get(at).map_or("", |l| l.trim_start());
+    if current.starts_with('@') {
+        let next_def = lines
+            .iter()
+            .skip(at)
+            .find(|l| l.trim_start().starts_with("def "));
+        return !non_test_name(current) && next_def.is_none_or(|d| !non_test_name(d));
+    }
+    enclosing(text, line, |l| l.trim_start().starts_with("def ")).is_none_or(|d| !non_test_name(d))
+}
+
 /// Does changed `line` of `text` configure tests in file `name`?
 fn configures_tests(name: &str, text: &str, line: u32) -> bool {
     match name {
         // tox: every environment runs tests unless it is a lint/docs one
         "tox.ini" => enclosing(text, line, |l| l.trim_start().starts_with('['))
             .is_none_or(|s| !non_test_name(s)),
-        // nox: the enclosing session function decides
-        "noxfile.py" => enclosing(text, line, |l| l.trim_start().starts_with("def "))
-            .is_none_or(|d| !non_test_name(d)),
+        "noxfile.py" => nox_line_is_test(text, line),
         _ => enclosing(text, line, |l| l.trim_start().starts_with('['))
             .is_some_and(|s| TEST_SECTIONS.iter().any(|t| s.starts_with(t))),
     }
@@ -383,4 +397,26 @@ pub fn growth(files: &[FileChange], policy: &Policy) -> Vec<Finding> {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOX: &str = "import nox\n\n@nox.session(python=['3.12'])\ndef tests(session):\n    session.run('pytest')\n\n@nox.session(name=\"mypy\")\ndef typing(session):\n    session.run('mypy')\n";
+
+    #[test]
+    fn nox_lines_belong_to_their_session() {
+        assert!(nox_line_is_test(NOX, 3), "decorator of the tests session");
+        assert!(nox_line_is_test(NOX, 5), "body of the tests session");
+        assert!(!nox_line_is_test(NOX, 7), "decorator of the mypy session");
+        assert!(!nox_line_is_test(NOX, 9), "body of the typing session");
+    }
+
+    #[test]
+    fn tox_environments() {
+        let tox = "[testenv]\ncommands = pytest\n\n[testenv:lint]\ndeps = flake8\n";
+        assert!(configures_tests("tox.ini", tox, 2));
+        assert!(!configures_tests("tox.ini", tox, 5));
+    }
 }

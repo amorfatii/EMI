@@ -102,6 +102,7 @@ const TEST_CONFIG_STEMS: &[&str] = &[
     "playwright.config",
     "cypress.config",
 ];
+const EXAMPLE_DIRS: &[&str] = &["example", "examples", "samples", "sample", "demo", "demos"];
 const TEST_DIRS: &[&str] = &[
     "test",
     "tests",
@@ -201,6 +202,8 @@ pub fn classify(path: &str) -> PathClass {
         PathClass::Vendored
     } else if fixture && !is_test_config(name) {
         PathClass::Test
+    } else if !fixture && dirs(path).any(|d| EXAMPLE_DIRS.contains(&d)) {
+        PathClass::Docs
     } else if is_secret(name) {
         PathClass::SecretLike
     } else if LOCKFILES.contains(&name) {
@@ -281,6 +284,7 @@ mod tests {
         );
         assert_eq!(classify("tests/fixtures/project/poetry.lock"), Test);
         assert_eq!(classify("tests/conftest.py"), TestConfig);
+        assert_eq!(classify("example/config/.mocharc.js"), Docs);
     }
 
     #[test]
