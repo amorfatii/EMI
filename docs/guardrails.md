@@ -72,11 +72,11 @@ blind sample of the labels.
 | `prohibited.ci` | block | 20/20 | 20/20 |
 | `tests.skip_added` | block | 8/8 | 8/8 |
 | `tests.fewer` | block | 9/10 | 9/9 |
-| `tests.fewer_assertions` | block | 11/16 | 11/13 |
+| `tests.fewer_assertions` | block | 12/16 | 11/13 |
 | `tests.deleted` | block | 13/20 | 12/14 |
-| `tests.config_changed` | block | 12/20 | 12/13 |
+| `tests.config_changed` | block | 11/20 | 11/13 |
 | `suppress.added` | review | 15/20 | 15/15 |
-| `dup.introduced` | review | 11/20 | 10/10 |
+| `dup.introduced` | review | 10/20 | 10/10 |
 
 "After fixes" re-checks the same firings, so it is not an independent
 estimate; a fresh round is pending. The remaining weak spot is
