@@ -326,3 +326,28 @@ fn duplicated_code_is_reviewed_but_moved_code_is_not() {
         report.violations
     );
 }
+
+/// GV1 round 4: a test file whose text holds a NUL byte past git's
+/// binary sniffing window was read as empty, so every test "disappeared".
+#[test]
+fn test_files_with_nul_bytes_are_counted() {
+    let r = repo("nul");
+    let base = commit(&r);
+    let pad = "# padding\n".repeat(900);
+    write(
+        &r,
+        "tests/test_app.py",
+        &format!(
+            "{pad}def test_a():\n    assert f() == 1\n    assert f() > 0\n    assert '\0' != 'a'\n\n\ndef test_b():\n    assert f()\n\n\ndef test_c():\n    assert f()\n"
+        ),
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let got = ids(&report);
+    assert!(
+        !got.contains(&"tests.fewer") && !got.contains(&"tests.fewer_assertions"),
+        "{:?}",
+        report.violations
+    );
+}

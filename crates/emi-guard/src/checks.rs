@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use emi_diff::hunks::{FileChange, Status, file_at};
+use emi_diff::hunks::{FileChange, Status, text_at};
 use emi_scan::classify::{PathClass, classify, is_test};
 use emi_scan::walk::fnmatch;
 
@@ -166,7 +166,7 @@ fn added_markers<'a>(
             continue;
         }
         let kinds = kinds.get_or_insert_with(|| match lang_of(&fc.path) {
-            Some(lang) => file_at(repo, head, &fc.path)
+            Some(lang) => text_at(repo, head, &fc.path)
                 .map(|t| line_kinds(lang, &t))
                 .unwrap_or_default(),
             None => Vec::new(),
@@ -298,9 +298,9 @@ fn config_section_changed(
     ) {
         return None;
     }
-    let new = file_at(repo, head, &fc.path).unwrap_or_default();
+    let new = text_at(repo, head, &fc.path).unwrap_or_default();
     let old =
-        file_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path)).unwrap_or_default();
+        text_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path)).unwrap_or_default();
     fc.added
         .iter()
         .find(|(l, _)| configures_tests(name, &new, *l))
@@ -404,12 +404,18 @@ fn counts(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> 
         let Some(lang) = lang_of(&fc.path) else {
             continue;
         };
-        let new = file_at(repo, head, &fc.path).unwrap_or_default();
+        // a side that cannot be read is unknown, not empty
+        let Some(new) = text_at(repo, head, &fc.path) else {
+            continue;
+        };
         let old = if fc.status == Status::Added {
             String::new()
         } else {
-            file_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path))
-                .unwrap_or_default()
+            let Some(old) = text_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path))
+            else {
+                continue;
+            };
+            old
         };
         let entry = totals.entry(format!("{lang:?}")).or_default();
         let (t0, a0) = (count_tests(lang, &old), count_assertions(lang, &old));

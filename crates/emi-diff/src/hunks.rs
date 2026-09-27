@@ -90,6 +90,12 @@ pub fn changes(repo: &Path, base: &str, head: Option<&str>) -> Result<Vec<FileCh
 /// Text of `path` at commit `rev`, or in the working tree when `None`;
 /// `None` when the path does not exist there or is not valid text.
 pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Option<String> {
+    text_at(repo, rev, path).filter(|t| !t.contains('\0'))
+}
+
+/// Like [`file_at`], but keeps files with NUL bytes: for a path the diff
+/// already treats as text (a test of a tokenizer may contain `"\0"`).
+pub fn text_at(repo: &Path, rev: Option<&str>, path: &str) -> Option<String> {
     let bytes = match rev {
         Some(r) => git_bytes(repo, &["show", &format!("{r}:{path}")]).ok()?,
         None => {
@@ -100,9 +106,6 @@ pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Option<String> {
             std::fs::read(Path::new(&top).join(path)).ok()?
         }
     };
-    if bytes.contains(&0) {
-        return None;
-    }
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
