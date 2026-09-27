@@ -76,7 +76,7 @@ blind sample of the labels.
 | `tests.deleted` | block | 13/20 | 12/14 |
 | `tests.config_changed` | block | 12/20 | 12/13 |
 | `suppress.added` | review | 15/20 | 15/15 |
-| `dup.introduced` | review | 11/20 | 9/11 |
+| `dup.introduced` | review | 11/20 | 10/10 |
 
 "After fixes" re-checks the same firings, so it is not an independent
 estimate; a fresh round is pending. The remaining weak spot is
