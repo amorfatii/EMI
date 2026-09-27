@@ -283,3 +283,133 @@ fn guardrails_can_be_disabled_or_retiered_in_the_contract() {
         "an invalid policy is refused at freeze"
     );
 }
+
+/// A repository with a buggy `add`, a visible test, and a task whose
+/// verification trusts `tests/*` and holds out one more test.
+fn verification_task(name: &str, extra: Value) -> (Dir, Dir, Store) {
+    let repo = scratch(&format!("{name}-repo"));
+    let authority = scratch(&format!("{name}-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("tests/test_app.py"),
+        "import app\n\ndef test_one():\n    assert app.add(1, 2) == 3\n\ndef test_two():\n    assert app.add(0, 0) == 0\n\ntest_one()\ntest_two()\n",
+    )
+    .unwrap_or_default();
+    std::fs::write(repo.0.join("skip.txt"), "").unwrap_or_default();
+    // a stand-in test runner: lists test ids, leaving out those in skip.txt
+    std::fs::write(
+        repo.0.join("runner.py"),
+        "import glob, re\nskip = set(open('skip.txt').read().split())\nfor f in sorted(glob.glob('tests/test_*.py')):\n    for n in re.findall(r'^def (test_\\w+)', open(f).read(), re.M):\n        if n not in skip:\n            print(f'{f}::{n}')\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "buggy"]);
+    let run = |f: &str| {
+        json!({"command": ["python3", "-c", format!("import runpy; runpy.run_path('{f}')")],
+               "success": {"exit_code": 0}, "timeout_s": 30})
+    };
+    let mut spec = json!({
+        "task_id": name, "repo": repo.0, "baseline": "HEAD", "objective": "make add() add",
+        "requirements": [{"id": "R1", "acceptance": "add adds", "checks": ["visible", "hidden"]}],
+        "checks": {"visible": run("tests/test_app.py"), "hidden": run("tests/test_hidden.py")},
+        "envelope": {"permitted_paths": ["app.py", "tests/*", "skip.txt"]},
+        "verification": {
+            "trusted": ["tests/*"],
+            "held_out": {"tests/test_hidden.py": {"content": "import app\nassert app.add(2, 5) == 7\n"}},
+        },
+    });
+    if let (Some(v), Some(extra)) = (spec["verification"].as_object_mut(), extra.as_object()) {
+        v.extend(extra.clone());
+    }
+    create(&authority.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, name, &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    (repo, authority, store)
+}
+
+#[test]
+fn trusted_tests_are_restored_and_held_out_tests_catch_special_casing() {
+    let (repo, _a, store) = verification_task("v1", json!({}));
+    // tampering: the visible test is gutted, the bug stays
+    std::fs::write(repo.0.join("tests/test_app.py"), "assert True\n").unwrap_or_default();
+    let tampered = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&tampered), "rejected", "{tampered}");
+    assert_eq!(
+        tampered["gates"]["verification"]["restored"],
+        json!(["tests/test_app.py"])
+    );
+    git(&repo.0, &["checkout", "-q", "tests/test_app.py"]);
+
+    // special-casing: the visible test passes, the held-out one does not
+    std::fs::write(
+        repo.0.join("app.py"),
+        "def add(a, b):\n    if (a, b) == (1, 2):\n        return 3\n    return a - b\n",
+    )
+    .unwrap_or_default();
+    let special = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&special), "rejected", "{special}");
+    let states: Vec<&Value> = special["checks"]
+        .as_array()
+        .map(|c| c.iter().map(|r| &r["status"]).collect())
+        .unwrap_or_default();
+    assert!(states.contains(&&json!("failed")), "{special}");
+
+    // an honest fix with a new test file is accepted
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("tests/test_more.py"),
+        "import app\nassert app.add(3, 4) == 7\n",
+    )
+    .unwrap_or_default();
+    let honest = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&honest), "accepted", "{honest}");
+    assert_eq!(honest["gates"]["verification"]["state"], "pass");
+    assert_eq!(
+        honest["gates"]["verification"]["held_out"],
+        json!(["tests/test_hidden.py"])
+    );
+
+    // a change to a trusted file still ships, so it needs review
+    std::fs::write(
+        repo.0.join("tests/test_app.py"),
+        "# reworded\nimport app\n\ndef test_one():\n    assert app.add(1, 2) == 3\n\ndef test_two():\n    assert app.add(0, 0) == 0\n\ntest_one()\ntest_two()\n",
+    )
+    .unwrap_or_default();
+    let reviewed = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&reviewed), "needs_review", "{reviewed}");
+}
+
+#[test]
+fn inventory_rejects_tests_removed_by_configuration() {
+    let inventory = json!({"inventory": {"command": ["python3", "runner.py"], "format": "pytest"}});
+    let (repo, _a, store) = verification_task("v2", inventory);
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    let fixed = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&fixed), "accepted", "{fixed}");
+    assert_eq!(fixed["gates"]["verification"]["inventory"]["baseline"], 2);
+
+    // an untrusted configuration file deselects a test
+    std::fs::write(repo.0.join("skip.txt"), "test_two\n").unwrap_or_default();
+    let skipped = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&skipped), "rejected", "{skipped}");
+    assert_eq!(
+        skipped["gates"]["verification"]["inventory"]["missing"],
+        json!(["tests/test_app.py::test_two"])
+    );
+}
+
+#[test]
+fn verification_policy_is_validated_at_freeze() {
+    let repo = scratch("v3-repo");
+    let authority = scratch("v3-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "c"]);
+    let mut bad = spec(&repo.0, "v3");
+    bad["verification"] = json!({"held_out": {"../escape.py": {"content": "x"}}});
+    assert!(create(&authority.0, &bad).is_err_and(|e| e.contains("inside the workspace")));
+    bad["verification"] = json!({"trusted": ["tests/*"], "restore": true});
+    assert!(create(&authority.0, &bad).is_err_and(|e| e.contains("unknown key")));
+}

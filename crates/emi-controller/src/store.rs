@@ -130,7 +130,12 @@ impl Store {
             ) {
                 return Err(format!("{k} cannot be revised"));
             }
-            core[k] = v.clone();
+            core[k] = if k == "verification" {
+                // validated (and held-out files frozen) like at creation
+                contract::verification(Some(v))?.unwrap_or(Value::Null)
+            } else {
+                v.clone()
+            };
         }
         core["revision"] = json!(old["revision"].as_u64().unwrap_or(1) + 1);
         core["predecessor"] = old["contract_id"].clone();

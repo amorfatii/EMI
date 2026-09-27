@@ -176,6 +176,98 @@ fn guardrails(v: Option<&Value>) -> Result<Value> {
     }
 }
 
+/// Most bytes of held-out files one contract may carry.
+const MAX_HELD_OUT_BYTES: usize = 2_000_000;
+
+/// A workspace-relative path that cannot escape the workspace.
+fn safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
+/// The verification policy frozen into the contract (absent: none).
+///
+/// - `trusted`: globs of existing files (tests, their configuration) whose
+///   baseline versions are restored before the checks run; new files the
+///   candidate adds still run. A candidate that changes one needs review.
+/// - `held_out`: files injected into the workspace before the checks run,
+///   frozen here, so they never live in the repository:
+///   `{"tests/test_hidden.py": {"file": "/path/at/create"}}` or `{"content": …}`.
+/// - `inventory`: a command listing test ids (one per line; `format`
+///   `pytest` keeps `path::name` lines); an id the baseline has and the
+///   candidate lacks rejects the candidate.
+pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(obj) = v.as_object() else {
+        return Err("verification must be an object".into());
+    };
+    if let Some(k) = obj
+        .keys()
+        .find(|k| !matches!(k.as_str(), "trusted" | "held_out" | "inventory"))
+    {
+        return Err(format!("verification: unknown key {k}"));
+    }
+    let trusted = string_list(obj.get("trusted"), "verification.trusted", false)?;
+    let mut held_out = Map::new();
+    let mut total = 0;
+    for (dest, src) in obj
+        .get("held_out")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        if !safe_relative(dest) {
+            return Err(format!(
+                "verification.held_out: {dest:?} must be a relative path inside the workspace"
+            ));
+        }
+        let content = match (
+            src.get("content").and_then(Value::as_str),
+            src.get("file").and_then(Value::as_str),
+        ) {
+            (Some(c), _) => c.to_owned(),
+            (None, Some(f)) => std::fs::read_to_string(f)
+                .map_err(|e| format!("verification.held_out {dest}: cannot read {f}: {e}"))?,
+            _ => {
+                return Err(format!(
+                    "verification.held_out {dest}: needs content or file"
+                ));
+            }
+        };
+        total += content.len();
+        held_out.insert(
+            dest.clone(),
+            json!({"content": content, "digest": digest("held-out", &json!(content))}),
+        );
+    }
+    if total > MAX_HELD_OUT_BYTES {
+        return Err(format!(
+            "verification.held_out: {total} bytes exceeds {MAX_HELD_OUT_BYTES}"
+        ));
+    }
+    let inventory = match obj.get("inventory") {
+        None | Some(Value::Null) => Value::Null,
+        Some(inv) => {
+            let command = string_list(inv.get("command"), "verification.inventory.command", true)?;
+            let format = inv.get("format").and_then(Value::as_str).unwrap_or("lines");
+            if !matches!(format, "lines" | "pytest") {
+                return Err("verification.inventory.format must be lines or pytest".into());
+            }
+            json!({"command": command, "format": format,
+                   "timeout_s": inv.get("timeout_s").and_then(Value::as_f64).unwrap_or(300.0)})
+        }
+    };
+    Ok(Some(
+        json!({"trusted": trusted, "held_out": held_out, "inventory": inventory}),
+    ))
+}
+
 /// The spec a controller writes; `baseline` is a ref resolved at freeze.
 pub struct Frozen {
     pub contract: Value,
@@ -210,7 +302,8 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
     if !matches!(treatment, "blocking" | "review" | "advisory") {
         return Err("warning_policy.treatment must be one of advisory, blocking, review".into());
     }
-    let core = json!({
+    let verification = verification(spec.get("verification"))?;
+    let mut core = json!({
         "schema_version": SCHEMA,
         "task_id": task_id,
         "revision": 1,
@@ -232,6 +325,10 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
         "completion_policy": spec.get("completion_policy").cloned().unwrap_or_else(|| json!({"require_all_requirements_verified": true})),
         "exceptions": [],
     });
+    // only when configured, so contracts without it keep their ids
+    if let Some(v) = verification {
+        core["verification"] = v;
+    }
     Ok(Frozen {
         contract: finalize(core),
     })

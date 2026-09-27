@@ -212,6 +212,134 @@ fn materialize(repo: &Path, candidate: &str, dest: &Path, contract: &Value) -> R
     Ok(())
 }
 
+/// Restore the baseline version of every trusted file the candidate
+/// modified or deleted; files it added stay. Returns the restored paths.
+fn restore_trusted(
+    repo: &Path,
+    baseline: &str,
+    workspace: &Path,
+    trusted: &[String],
+    changed: &[(String, &'static str)],
+) -> Result<Vec<String>> {
+    let mut restored = Vec::new();
+    for (path, kind) in changed {
+        let is_trusted = trusted.iter().any(|g| emi_scan::walk::fnmatch(path, g));
+        if !is_trusted || !matches!(*kind, "modify" | "delete") {
+            continue;
+        }
+        let bytes = git(repo, &["show", &format!("{baseline}:{path}")])?;
+        let dest = workspace.join(path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("restore {path}: {e}"))?;
+        }
+        std::fs::write(&dest, bytes).map_err(|e| format!("restore {path}: {e}"))?;
+        restored.push(path.clone());
+    }
+    Ok(restored)
+}
+
+/// Write the contract's held-out files into the workspace (they win over
+/// any file of the same name the candidate wrote).
+fn inject_held_out(workspace: &Path, held_out: &Value) -> Result<Vec<String>> {
+    let mut written = Vec::new();
+    for (dest, file) in held_out.as_object().into_iter().flatten() {
+        let path = workspace.join(dest);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("held-out {dest}: {e}"))?;
+        }
+        std::fs::write(&path, file["content"].as_str().unwrap_or(""))
+            .map_err(|e| format!("held-out {dest}: {e}"))?;
+        written.push(dest.clone());
+    }
+    Ok(written)
+}
+
+/// Test ids the inventory command lists in `workspace`, or why it could not.
+fn inventory_ids(
+    inv: &Value,
+    workspace: &Path,
+    execution: &Value,
+) -> std::result::Result<std::collections::BTreeSet<String>, String> {
+    let argv: Vec<&str> = inv["command"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let mut spec = Spec::new(&argv, workspace);
+    spec.timeout = Duration::from_secs_f64(inv["timeout_s"].as_f64().unwrap_or(300.0));
+    spec.isolation = isolation(execution);
+    if let Some(env) = execution["env"].as_object() {
+        spec.env.extend(
+            env.iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))),
+        );
+    }
+    let o = emi_exec::run(&spec);
+    if o.status != Status::Exited || o.exit_code != Some(0) {
+        return Err(format!(
+            "inventory command did not succeed ({:?}, exit {:?}): {}",
+            o.status,
+            o.exit_code,
+            tail(&o.stderr, 400)
+        ));
+    }
+    let pytest = inv["format"] == "pytest";
+    Ok(o.stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && (!pytest || l.contains("::")))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// The verification gate: trusted files restored, held-out files injected
+/// (both before the checks run), and the test inventory compared.
+fn verification_gate(
+    contract: &Value,
+    repo: &Path,
+    baseline: &str,
+    restored: Vec<String>,
+    held_out: Vec<String>,
+    candidate_ids: Option<std::result::Result<std::collections::BTreeSet<String>, String>>,
+    scratch: &Scratch,
+) -> Value {
+    let spec = &contract["verification"];
+    if spec.is_null() {
+        return json!({"state": "not_required"});
+    }
+    let mut gate =
+        json!({"restored": restored, "held_out": held_out, "inventory": {"state": "not_required"}});
+    let mut state = if restored.is_empty() {
+        "pass"
+    } else {
+        "needs_review"
+    };
+    if let Some(candidate_ids) = candidate_ids {
+        let base_ws = scratch.0.join("baseline");
+        let base_ids = materialize(repo, baseline, &base_ws, contract)
+            .and_then(|()| inventory_ids(&spec["inventory"], &base_ws, &contract["execution"]));
+        match (base_ids, candidate_ids) {
+            (Ok(base), Ok(cand)) => {
+                let missing: Vec<&String> = base.difference(&cand).collect();
+                if !missing.is_empty() {
+                    state = "fail";
+                }
+                gate["inventory"] = json!({"state": if missing.is_empty() { "pass" } else { "fail" },
+                    "baseline": base.len(), "candidate": cand.len(), "missing": missing});
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                if state != "fail" {
+                    state = "unverified";
+                }
+                gate["inventory"] = json!({"state": "unverified", "error": e});
+            }
+        }
+    }
+    gate["state"] = json!(state);
+    gate
+}
+
 fn isolation(execution: &Value) -> Isolation {
     let network = execution["network"].as_bool().unwrap_or(false);
     match execution["isolation"].as_str().unwrap_or("best") {
@@ -348,75 +476,114 @@ struct Gates<'a> {
     envelope: &'a Value,
     structural: &'a Value,
     guardrails: &'a Value,
+    verification: &'a Value,
 }
 
-fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, Vec<String>) {
-    let (envelope, structural, guardrails) = (gates.envelope, gates.structural, gates.guardrails);
+/// Ids of the requirements in `state`.
+fn ids_in(ledger: &[Value], state: &str) -> Vec<String> {
+    ledger
+        .iter()
+        .filter(|r| r["state"] == state)
+        .map(|r| r["id"].as_str().unwrap_or("").to_owned())
+        .collect()
+}
+
+/// Why the candidate is rejected (empty: it is not).
+fn rejections(ledger: &[Value], g: &Gates) -> Vec<String> {
     let mut reasons = Vec::new();
-    let by = |state: &str| -> Vec<String> {
-        ledger
-            .iter()
-            .filter(|r| r["state"] == state)
-            .map(|r| r["id"].as_str().unwrap_or("").to_owned())
-            .collect()
-    };
-    let failed = by("failed");
+    let failed = ids_in(ledger, "failed");
     if !failed.is_empty() {
         reasons.push(format!(
             "requirements failed their checks: {}",
             failed.join(", ")
         ));
     }
-    if envelope["state"] == "fail" {
+    if g.envelope["state"] == "fail" {
         reasons.push(format!(
             "{} change(s) outside the task envelope",
-            envelope["violations"].as_array().map_or(0, Vec::len)
+            g.envelope["violations"].as_array().map_or(0, Vec::len)
         ));
     }
-    if guardrails["state"] == "fail" {
+    if g.guardrails["state"] == "fail" {
         reasons.push(format!(
             "blocking guardrail violations: {}",
-            guard_ids(guardrails, "block")
+            guard_ids(g.guardrails, "block")
         ));
     }
-    if structural["state"] == "fail" {
+    if g.verification["state"] == "fail" {
+        reasons.push(format!(
+            "{} test(s) of the baseline are missing from the candidate's inventory",
+            g.verification["inventory"]["missing"]
+                .as_array()
+                .map_or(0, Vec::len)
+        ));
+    }
+    if g.structural["state"] == "fail" {
         reasons.push(format!(
             "structural gate: {}",
-            structural["verdict"]["reasons"][0]
+            g.structural["verdict"]["reasons"][0]
                 .as_str()
                 .unwrap_or("block")
         ));
     }
-    if !reasons.is_empty() {
-        return ("rejected", reasons);
-    }
-    let unverified = by("unverified");
+    reasons
+}
+
+/// What could not be verified (empty: everything was).
+fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let unverified = ids_in(ledger, "unverified");
     if require_all && !unverified.is_empty() {
         reasons.push(format!(
             "requirements not verified (errors, timeouts or unverified cleanup): {}",
             unverified.join(", ")
         ));
     }
-    if structural["state"] == "unverified" {
+    if g.structural["state"] == "unverified" {
         reasons.push("structural gate could not measure the candidate".into());
     }
-    if guardrails["state"] == "unverified" {
+    if g.guardrails["state"] == "unverified" {
         reasons.push("guardrails could not be checked".into());
     }
-    if !reasons.is_empty() {
-        return ("incomplete", reasons);
+    if g.verification["state"] == "unverified" {
+        reasons.push("the test inventory could not be taken".into());
     }
-    if structural["state"] == "needs_review" {
+    reasons
+}
+
+/// What a person should look at before accepting (empty: nothing).
+fn reviews(g: &Gates) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if g.structural["state"] == "needs_review" {
         reasons.push("structural gate warned; the task's warning policy asks for review".into());
     }
-    if guardrails["state"] == "needs_review" {
+    if g.guardrails["state"] == "needs_review" {
         reasons.push(format!(
             "guardrails need review: {}",
-            guard_ids(guardrails, "review")
+            guard_ids(g.guardrails, "review")
         ));
     }
-    if !reasons.is_empty() {
-        return ("needs_review", reasons);
+    if g.verification["state"] == "needs_review" {
+        reasons.push(format!(
+            "trusted files changed (verified against their baseline versions): {}",
+            globs(&g.verification["restored"]).join(", ")
+        ));
+    }
+    reasons
+}
+
+fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, Vec<String>) {
+    let rejected = rejections(ledger, gates);
+    if !rejected.is_empty() {
+        return ("rejected", rejected);
+    }
+    let missing = gaps(ledger, gates, require_all);
+    if !missing.is_empty() {
+        return ("incomplete", missing);
+    }
+    let review = reviews(gates);
+    if !review.is_empty() {
+        return ("needs_review", review);
     }
     (
         "accepted",
@@ -437,6 +604,32 @@ fn budget_exhausted(contract: &Value, state: &Value) -> Option<String> {
         .as_f64()
         .filter(|m| spent >= *m)
         .map(|m| format!("time budget exhausted ({spent:.0}s of {m:.0}s)"))
+}
+
+/// Run every frozen check in `workspace`, recording each run.
+fn run_checks(
+    store: &Store,
+    contract: &Value,
+    workspace: &Path,
+    candidate_id: &str,
+) -> Result<(BTreeMap<String, String>, Vec<Value>)> {
+    let mut statuses = BTreeMap::new();
+    let mut runs = Vec::new();
+    for (id, def) in contract["checks"].as_object().into_iter().flatten() {
+        let (status, _, mut record) = run_check(id, def, workspace, &contract["execution"]);
+        record["candidate_id"] = json!(candidate_id);
+        record["contract_id"] = contract["contract_id"].clone();
+        store.append("check_run", &record)?;
+        statuses.insert(id.clone(), status);
+        runs.push(record);
+    }
+    Ok((statuses, runs))
+}
+
+fn check_summary(r: &Value) -> Value {
+    json!({"check_id": r["check_id"], "status": r["status"], "attribution": r["attribution"],
+           "exit_code": r["exit_code"], "duration_ms": r["duration_ms"],
+           "verified_clean": r["receipt"]["verified_clean"], "isolation": r["receipt"]["isolation"]})
 }
 
 /// Verify a candidate: run every frozen check, compute the gates, reduce,
@@ -463,22 +656,36 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         return Ok(d);
     }
     let started = std::time::Instant::now();
-    let envelope = envelope_gate(&contract, &changes(&repo, &baseline, &candidate_id)?);
+    let changed = changes(&repo, &baseline, &candidate_id)?;
+    let envelope = envelope_gate(&contract, &changed);
     let scratch = Scratch::new()?;
     let workspace = scratch.0.join("candidate");
     materialize(&repo, &candidate_id, &workspace, &contract)?;
-    let mut statuses = BTreeMap::new();
-    let mut runs = Vec::new();
-    for (id, def) in contract["checks"].as_object().into_iter().flatten() {
-        let (status, _, mut record) = run_check(id, def, &workspace, &contract["execution"]);
-        record["candidate_id"] = json!(candidate_id);
-        record["contract_id"] = contract["contract_id"].clone();
-        store.append("check_run", &record)?;
-        statuses.insert(id.clone(), status);
-        runs.push(record);
-    }
+    // verification policy: the checks see trusted files as they were at the
+    // baseline, plus the held-out files the candidate never saw
+    let vspec = &contract["verification"];
+    let restored = restore_trusted(
+        &repo,
+        &baseline,
+        &workspace,
+        &globs(&vspec["trusted"]),
+        &changed,
+    )?;
+    let held_out = inject_held_out(&workspace, &vspec["held_out"])?;
+    let candidate_ids = (!vspec["inventory"].is_null())
+        .then(|| inventory_ids(&vspec["inventory"], &workspace, &contract["execution"]));
+    let (statuses, runs) = run_checks(store, &contract, &workspace, &candidate_id)?;
     let structural = structural_gate(&contract, &repo, &baseline, &candidate_id);
     let guardrails = guardrails_gate(&contract, &repo, &baseline, &candidate_id);
+    let verification = verification_gate(
+        &contract,
+        &repo,
+        &baseline,
+        restored,
+        held_out,
+        candidate_ids,
+        &scratch,
+    );
     let ledger = ledger(&contract, &statuses);
     let require_all = contract["completion_policy"]["require_all_requirements_verified"]
         .as_bool()
@@ -487,6 +694,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         envelope: &envelope,
         structural: &structural,
         guardrails: &guardrails,
+        verification: &verification,
     };
     let (decision, reasons) = reduce(&ledger, &gates, require_all);
     let elapsed = started.elapsed().as_secs_f64();
@@ -497,10 +705,9 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     store.save_state(&state)?;
     let mut d = head(decision, reasons);
     d["requirements"] = Value::Array(ledger);
-    d["gates"] = json!({"envelope": envelope, "structural": structural, "guardrails": guardrails});
-    d["checks"] = Value::Array(runs.iter().map(|r| json!({"check_id": r["check_id"], "status": r["status"],
-        "attribution": r["attribution"], "exit_code": r["exit_code"], "duration_ms": r["duration_ms"],
-        "verified_clean": r["receipt"]["verified_clean"], "isolation": r["receipt"]["isolation"]})).collect());
+    d["gates"] = json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
+                        "verification": verification});
+    d["checks"] = Value::Array(runs.iter().map(check_summary).collect());
     d["budget"] =
         json!({"retries_used": state["cumulative"]["retries"], "budgets": contract["budgets"]});
     store.append("decision", &d)?;

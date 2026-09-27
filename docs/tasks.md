@@ -19,8 +19,10 @@ emi task install-hook --authority ~/.emi-authority --task fix-add --repo .    # 
 ```
 
 Every verify also runs the **guardrails** (docs/guardrails.md):
-- **Blocking violations reject the candidate:** weakened, skipped or deleted tests, changed test config, CI or secret edits.
-- **Review-tier violations make it `needs_review`:** new suppressions, pasted duplicates, lockfiles, growth.
+- **Blocking violations reject the candidate:** existing tests skipped or deleted, CI, secret or vendored-code edits.
+- **Review-tier violations make it `needs_review`:**
+  - fewer tests or assertions, test configuration changes, skips on new tests, assertions that cannot fail;
+  - new suppressions, pasted duplicates, lockfiles, growth.
 - **Configuration:** the spec's `"guardrails"` holds a policy object (tiers, allowed classes, budgets); `false` opts out.
 
 Exit codes: `verify` returns 0 when accepted and 3 otherwise; `complete`
@@ -63,14 +65,55 @@ and `hook-check` return 0 or 3. Agents get the same through MCP as
   - *Structural:* EMI's own gate from baseline to candidate. A block
     rejects. A warn is treated per `warning_policy`: `blocking` rejects,
     `review` gives needs-review, `advisory` passes.
+  - *Verification* (below): trusted tests restored, held-out tests run,
+    test inventory compared.
+
+## Verification that tampering cannot pass
+
+Detectors such as the guardrails can miss things. For a supervised task,
+the stronger move is to make weakened or gamed tests unable to pass. The
+optional `verification` section does this the way benchmarks grade:
+
+```json
+"verification": {
+  "trusted": ["tests/*", "conftest.py"],
+  "held_out": {"tests/test_acceptance_hidden.py": {"file": "/secure/acceptance.py"}},
+  "inventory": {"command": ["python3", "-m", "pytest", "--collect-only", "-q"], "format": "pytest"}
+}
+```
+
+- **`trusted`:** existing files matching these globs are restored to their
+  baseline version before the checks run.
+  - An agent that guts, skips or deletes a trusted test is verified against
+    the original, so the change fails like the bug it hides.
+  - New files the agent adds (new regression tests) still run.
+  - The candidate still carries its edit to a trusted file, so such a
+    candidate is `needs_review` even when the checks pass.
+  - Changing what a trusted test expects takes a contract revision.
+- **`held_out`:** files frozen into the contract (outside the repository)
+  and written into the workspace before the checks run. They catch code
+  that special-cases the visible tests. Keep the authority directory out of
+  the agent's reach.
+- **`inventory`:** a command that lists test ids (one per line; `pytest`
+  keeps `path::name` lines). It runs on the baseline and on the verified
+  workspace. A baseline test missing from the candidate rejects it, which
+  catches tests dropped through configuration (`collect_ignore`,
+  `--deselect`, a runner option) rather than by editing test files.
+
+This mirrors ImpossibleBench's finding: agents facing contradictory tests
+cheated about half the time, mostly by editing tests, and read-only tests
+restored at scoring stopped that without hurting legitimate performance
+([arXiv 2510.20270](https://arxiv.org/abs/2510.20270)). Special-casing
+product code gets past restored tests, and held-out tests are the answer
+to that.
 
 ## Decisions
 
 | Decision | When |
 |---|---|
-| `rejected` | a requirement's check failed, a change left the envelope, the structural gate blocked, or the budget is exhausted |
-| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate could not measure |
-| `needs_review` | everything verified, but the structural gate warned under `treatment: review` |
+| `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, the structural gate blocked, or the budget is exhausted |
+| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run |
+| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, or a trusted file was changed |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 
 Every verification charges the budget and appends its check runs (with
