@@ -402,3 +402,40 @@ fn fixtures_and_formatting_are_not_test_changes() {
         report.violations
     );
 }
+
+/// GV1 round 4 spot-check: re-indenting an existing duplicated block under
+/// a new condition does not introduce the duplication.
+#[test]
+fn reindented_existing_duplicate_is_not_introduced() {
+    let r = repo("reindent");
+    let body = "    total = compute_total(items)\n    taxed = apply_tax(total, rate)\n    rounded = round_money(taxed)\n    logged = log_amount(rounded)\n    stored = store_amount(logged)\n    return notify_owner(stored)\n";
+    write(&r, "src/a.py", &format!("def a(items, rate):\n{body}"));
+    write(&r, "src/b.py", &format!("def b(items, rate):\n{body}"));
+    let base = commit(&r);
+    let nested = body
+        .lines()
+        .map(|l| format!("    {l}\n"))
+        .collect::<String>();
+    write(
+        &r,
+        "src/b.py",
+        &format!("def b(items, rate):\n    if items:\n{nested}    return None\n"),
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !ids(&report).contains(&"dup.introduced"),
+        "{:?}",
+        report.violations
+    );
+    write(&r, "src/c.py", &format!("def c(items, rate):\n{body}"));
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        ids(&report).contains(&"dup.introduced"),
+        "{:?}",
+        report.violations
+    );
+}

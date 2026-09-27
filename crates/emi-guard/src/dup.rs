@@ -184,9 +184,23 @@ pub fn introduced(
     let index = corpus(repo, base, head, files, &exts)?;
     let mut out = Vec::new();
     for (fc, blocks) in candidates {
+        // shingles the file already had: re-indenting or re-wrapping an
+        // existing block does not introduce its duplication
+        let before: HashSet<u64> = match fc.status {
+            Status::Added => HashSet::new(),
+            _ => file_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path))
+                .map(|t| {
+                    shingles(t.lines().enumerate().map(|(i, l)| (i as u32 + 1, l)))
+                        .into_iter()
+                        .map(|(h, _)| h)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
         for block in blocks {
             let hit = shingles(block.iter().copied())
                 .into_iter()
+                .filter(|(h, _)| !before.contains(h))
                 .find_map(|(h, line)| {
                     index
                         .get(&h)?
