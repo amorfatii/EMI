@@ -77,6 +77,18 @@ context, so `prohibited.lockfile` needs review by default. The guard
 takes about 12 ms per commit (0.24 s on django with duplication
 checking).
 
+**On AI-agent patches** (study S6: 61,116 SWE-bench Verified patches from 130 systems, plus 500 gold patches):
+- **Firing rates:** block-tier guardrails fired on 1.0% of agent patches and on none of the gold patches.
+- **Half of those firings were not the agent's doing.** They were the benchmark environment's own `tox.ini` edit, which systems that diff the whole tree submit along with their patch.
+- **The real firings** were mostly:
+  - test files overwritten or truncated;
+  - assertions deleted;
+  - a failing test replaced by `@skip` and `pass`;
+  - `conftest.py` deleted;
+  - committed `build/` output.
+- **Precision:** block tier 100/107 overall.
+- **Fixes since:** the misses (skip markers inside test-fixture strings and comments, and suppressions that were only moved) are fixed. Such markers and moved lines are no longer reported.
+
 ## Policy
 
 A JSON object; every key is optional.
