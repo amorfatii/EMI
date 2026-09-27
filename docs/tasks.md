@@ -18,6 +18,11 @@ emi task revise   --authority ~/.emi-authority --task fix-add --changes '{"objec
 emi task install-hook --authority ~/.emi-authority --task fix-add --repo .    # pre-push: completed commits only
 ```
 
+Every verify also runs the **guardrails** (docs/guardrails.md):
+- **Blocking violations reject the candidate:** weakened, skipped or deleted tests, changed test config, CI or secret edits.
+- **Review-tier violations make it `needs_review`:** new suppressions, pasted duplicates, lockfiles, growth.
+- **Configuration:** the spec's `"guardrails"` holds a policy object (tiers, allowed classes, budgets); `false` opts out.
+
 Exit codes: `verify` returns 0 when accepted and 3 otherwise; `complete`
 and `hook-check` return 0 or 3. Agents get the same through MCP as
 `emi_task_verify` and `emi_task_status` (docs/agents.md).
