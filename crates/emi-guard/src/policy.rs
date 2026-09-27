@@ -42,11 +42,17 @@ impl Tier {
 /// Default tier by guardrail family: unambiguous violations block,
 /// judgment calls need review.
 pub fn default_tier(id: &str) -> Tier {
-    // GV1: lockfiles change in 11.7% of human commits (dependency
-    // updates), too common to block without context. Fewer assertions can
-    // be a refactor into table-driven tests that checks the same cases,
-    // which counting cannot tell apart (GV1 round 4).
-    if matches!(id, "prohibited.lockfile" | "tests.fewer_assertions") {
+    // Review by default, from GV1 (human commits):
+    // - lockfiles change in 11.7% of commits (dependency updates);
+    // - fewer assertions/tests can be a refactor (table-driven or
+    //   parametrized tests) checking the same cases, which counting cannot
+    //   tell apart;
+    // - test configuration edits were real only 17/20 times in round 5.
+    // Round 5 is final: an id below 0.95 precision is demoted, not tuned.
+    if matches!(
+        id,
+        "prohibited.lockfile" | "tests.fewer_assertions" | "tests.fewer" | "tests.config_changed"
+    ) {
         return Tier::Review;
     }
     let family = id.split('.').next().unwrap_or(id);

@@ -38,10 +38,10 @@ and evidence.
 |---|---|---|
 | `scope.outside` / `.excluded` / `.protected` / `.kind` | Edits outside the permitted paths, to excluded or protected paths, or of a forbidden kind (policy scope; tasks use their envelope) | block |
 | `tests.deleted` | A test file deleted, or moved out of the test layout | block |
-| `tests.fewer` | Fewer test definitions across the change's test files (Python `def test_*`, JS/TS `it`/`test`, Go `func Test*`, Rust `#[test]`, JUnit `@Test`) | block |
+| `tests.fewer` | Fewer test definitions across the change's test files (Python `def test_*`, JS/TS `it`/`test`, Go `func Test*`, Rust `#[test]`, JUnit `@Test`); merging tests into a parametrized one also lowers the count | review |
 | `tests.fewer_assertions` | Fewer assertions across the change's test files (a table-driven refactor can check the same cases with fewer asserts) | review |
 | `tests.skip_added` | Skip, ignore or xfail added: `@pytest.mark.skip/skipif/xfail`, `pytest.skip()`, `unittest.skip*`, `it.skip`/`xit`/`describe.skip`, `this.skip()`, `t.Skip`, `#[ignore]`, `@Disabled` | block |
-| `tests.config_changed` | Test or coverage configuration changed: `pytest.ini`, `conftest.py`, jest/vitest/karma/mocha/playwright configs, `.coveragerc`, `.nycrc`, codecov; test sections of `pyproject.toml`/`setup.cfg`/`Cargo.toml`; test environments of `tox.ini` and test sessions of `noxfile.py` | block |
+| `tests.config_changed` | Test or coverage configuration changed: `pytest.ini`, `conftest.py`, jest/vitest/karma/mocha/playwright configs, `.coveragerc`, `.nycrc`, codecov; test sections of `pyproject.toml`/`setup.cfg`/`Cargo.toml`; test environments of `tox.ini` and test sessions of `noxfile.py` | review |
 | `prohibited.ci` | CI configuration (`.github/workflows`, `.gitlab-ci.yml`, …) changed | block |
 | `prohibited.secret` | A secret-like file (`.env*`, `*.pem`, `id_rsa*`, `.npmrc`, …) changed | block |
 | `prohibited.vendored` | Vendored third-party code (`vendor/`, `node_modules/`, `third_party/`) changed | block |
@@ -63,26 +63,26 @@ happened. A new skip, not a reformatted one, counts; a deleted fixture
 is not a deleted test; a formatting-only edit is not a test-configuration
 change.
 
-It was measured in `emi-lab` (study GV1, round 4) on 1,696 human
-commits from 20 open-source repositories. A second reviewer checked a
-blind sample of the labels.
+It was measured in `emi-lab` (study GV1) on 1,696 human commits from
+20 open-source repositories, with a second reviewer blind-checking a
+sample of the labels. Round 5 (emi `2e0efd9`, a fresh sample) is final
+for v0.1: a blocking guardrail below 0.95 was demoted to review by
+default rather than tuned further.
 
-| Guardrail | Tier | Measured (v`053d6f0`) | After fixes (same sample) |
-|---|---|---|---|
-| `prohibited.ci` | block | 20/20 | 20/20 |
-| `tests.skip_added` | block | 8/8 | 8/8 |
-| `tests.fewer` | block | 9/10 | 9/9 |
-| `tests.fewer_assertions` | review | 12/16 | 11/13 |
-| `tests.deleted` | block | 13/20 | 12/14 |
-| `tests.config_changed` | block | 11/20 | 11/13 |
-| `suppress.added` | review | 15/20 | 15/15 |
-| `dup.introduced` | review | 10/20 | 10/10 |
+| Guardrail | Default tier | Round 5 precision |
+|---|---|---|
+| `prohibited.ci` | block | 20/20 |
+| `tests.deleted` | block | 8/8 |
+| `tests.skip_added` | block | 8/8 |
+| `tests.fewer` | review | 7/8 (a merge into a parametrized test) |
+| `tests.config_changed` | review | 17/20 (a comment-only edit; no-op coverage settings) |
+| `tests.fewer_assertions` | review | 7/9 (refactors that check the same cases) |
+| `prohibited.lockfile` | review | 20/20 |
+| `suppress.added` | review | 19/20 |
+| `dup.introduced` | review | 16/20 (docs example variants; a generated file) |
 
-"After fixes" re-checks the same firings, so it is not an independent
-estimate; a fresh round is pending. `tests.fewer_assertions` needs review
-by default: a refactor into table-driven tests checks the same cases with
-fewer assert statements, which counting cannot tell apart from deleted
-checks.
+The block tier was right 36 of 36 times. Any id can be made blocking
+for a project with the policy's `tiers`.
 
 Lockfiles changed in 11.7% of human commits, too often to block without
 context, so `prohibited.lockfile` needs review by default. The guard
