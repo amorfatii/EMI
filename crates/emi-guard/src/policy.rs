@@ -49,9 +49,15 @@ pub fn default_tier(id: &str) -> Tier {
     //   tell apart;
     // - test configuration edits were real only 17/20 times in round 5.
     // Round 5 is final: an id below 0.95 precision is demoted, not tuned.
+    // v0.2 ids start at review until their precision is measured.
     if matches!(
         id,
-        "prohibited.lockfile" | "tests.fewer_assertions" | "tests.fewer" | "tests.config_changed"
+        "prohibited.lockfile"
+            | "tests.fewer_assertions"
+            | "tests.fewer"
+            | "tests.config_changed"
+            | "tests.skip_new_test"
+            | "tests.assertion_trivialized"
     ) {
         return Tier::Review;
     }

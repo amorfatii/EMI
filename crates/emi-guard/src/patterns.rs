@@ -42,6 +42,32 @@ pub static SKIP: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     ]
 });
 
+/// An assertion that cannot fail (a check replaced by a tautology).
+pub static TRIVIAL: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    vec![
+        (
+            "assert True",
+            re(r"^\s*assert\s+(True|1|not\s+(False|None|0))\s*(,.*)?$"),
+        ),
+        (
+            "unittest assertTrue(True)",
+            re(r"\bself\.assert(True|Truthy)\s*\(\s*(True|1)\s*\)"),
+        ),
+        (
+            "expect(true)",
+            re(
+                r"\bexpect\s*\(\s*(true|1)\s*\)\s*\.\s*(toBe|toEqual|toStrictEqual|toBeTruthy)\s*\(\s*(true|1)?\s*\)",
+            ),
+        ),
+        ("assert(true)", re(r"\bassert(\.ok)?\s*\(\s*true\s*\)")),
+        ("Rust assert!(true)", re(r"\bassert!\s*\(\s*true\s*\)")),
+        (
+            "Go assert.True(t, true)",
+            re(r"\b(assert|require)\.True\s*\(\s*\w+\s*,\s*true\s*\)"),
+        ),
+    ]
+});
+
 /// A lint, type-check or EMI finding silenced in code.
 pub static SUPPRESS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     vec![
@@ -364,6 +390,33 @@ mod tests {
         ];
         for line in miss {
             assert!(first_match(&SUPPRESS, line).is_none(), "{line}");
+        }
+    }
+
+    #[test]
+    fn trivial_assertions() {
+        for line in [
+            "    assert True",
+            "assert True, 'placeholder'",
+            "    assert not None",
+            "self.assertTrue(True)",
+            "expect(true).toBe(true);",
+            "expect(1).toBeTruthy()",
+            "assert(true);",
+            "assert!(true);",
+            "assert.True(t, true)",
+        ] {
+            assert!(first_match(&TRIVIAL, line).is_some(), "{line}");
+        }
+        for line in [
+            "assert total == 3",
+            "assert True_value",
+            "self.assertTrue(result)",
+            "expect(ok).toBe(true)",
+            "assert!(v.is_empty());",
+            "assert.True(t, ok)",
+        ] {
+            assert!(first_match(&TRIVIAL, line).is_none(), "{line}");
         }
     }
 

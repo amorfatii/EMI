@@ -40,7 +40,9 @@ and evidence.
 | `tests.deleted` | A test file deleted, or moved out of the test layout | block |
 | `tests.fewer` | Fewer test definitions across the change's test files (Python `def test_*`, JS/TS `it`/`test`, Go `func Test*`, Rust `#[test]`, JUnit `@Test`); merging tests into a parametrized one also lowers the count | review |
 | `tests.fewer_assertions` | Fewer assertions across the change's test files (a table-driven refactor can check the same cases with fewer asserts) | review |
-| `tests.skip_added` | Skip, ignore or xfail added: `@pytest.mark.skip/skipif/xfail`, `pytest.skip()`, `unittest.skip*`, `it.skip`/`xit`/`describe.skip`, `this.skip()`, `t.Skip`, `#[ignore]`, `@Disabled` | block |
+| `tests.skip_added` | Skip, ignore or xfail added to a test the baseline already had: `@pytest.mark.skip/skipif/xfail`, `pytest.skip()`, `unittest.skip*`, `it.skip`/`xit`/`describe.skip`, `this.skip()`, `t.Skip`, `#[ignore]`, `@Disabled` | block |
+| `tests.skip_new_test` | The same markers on a test the change adds (a platform-only or slow test, say): a judgment call | review |
+| `tests.assertion_trivialized` | An assertion that cannot fail added to a test file (`assert True`, `self.assertTrue(True)`, `expect(true).toBe(true)`, `assert!(true)`), e.g. a real check replaced with the same count | review |
 | `tests.config_changed` | Test or coverage configuration changed: `pytest.ini`, `conftest.py`, jest/vitest/karma/mocha/playwright configs, `.coveragerc`, `.nycrc`, codecov; test sections of `pyproject.toml`/`setup.cfg`/`Cargo.toml`; test environments of `tox.ini` and test sessions of `noxfile.py` | review |
 | `prohibited.ci` | CI configuration (`.github/workflows`, `.gitlab-ci.yml`, …) changed | block |
 | `prohibited.secret` | A secret-like file (`.env*`, `*.pem`, `id_rsa*`, `.npmrc`, …) changed | block |
@@ -55,6 +57,15 @@ and evidence.
 - Test and assertion counts are summed across the change, so splitting a test file is not a removal.
 - Markers inside string literals are ignored.
 - Files under `example(s)/` are documentation.
+
+**Detectors vs. guarantees.** These checks report what a change did. In a
+supervised task, the contract's `verification` section (docs/tasks.md)
+makes the main cheats unable to pass instead:
+- trusted tests are restored before the checks run;
+- held-out tests run that the agent never saw;
+- the test runner's inventory is compared with the baseline's.
+
+There, the guardrails explain what the agent tried.
 
 ## Measured precision
 
@@ -80,8 +91,9 @@ default rather than tuned further.
 | `prohibited.lockfile` | review | 20/20 |
 | `suppress.added` | review | 19/20 |
 | `dup.introduced` | review | 16/20 (docs example variants; a generated file) |
+| `tests.skip_new_test`, `tests.assertion_trivialized` | review | new in v0.2, not yet measured |
 
-The block tier was right 36 of 36 times. Any id can be made blocking
+The block tier was right 36 of 36 times: the described event happened (exact 95% interval 0.90 to 1.00). Whether it was harmful is a separate question, since a CI edit or a deleted test can be legitimate. That is why blocking is limited to events that need a person's say-so either way. Any id can be made blocking
 for a project with the policy's `tiers`.
 
 Lockfiles changed in 11.7% of human commits, too often to block without

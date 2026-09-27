@@ -9,7 +9,8 @@ use emi_scan::classify::{PathClass, classify, is_test};
 use emi_scan::walk::fnmatch;
 
 use crate::patterns::{
-    LineKind, SKIP, SUPPRESS, count_assertions, count_tests, first_match, lang_of, line_kinds,
+    LineKind, SKIP, SUPPRESS, TRIVIAL, count_assertions, count_tests, first_match, lang_of,
+    line_kinds,
 };
 use crate::policy::Policy;
 
@@ -430,6 +431,7 @@ fn config_changed(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) 
 /// configuration, and fewer tests or assertions across the change.
 pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
     let mut moved = Moved::of(files, &SKIP);
+    let mut moved_trivial = Moved::of(files, &TRIVIAL);
     let mut out = Vec::new();
     for fc in files.iter().filter(|f| !f.binary) {
         if let Some(f) = deleted(repo, base, fc) {
@@ -437,17 +439,97 @@ pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) 
             continue;
         }
         out.extend(config_changed(repo, base, head, fc));
-        for (line, kind, text) in added_markers(repo, head, fc, &SKIP, &mut moved, true) {
+        let skips = added_markers(repo, head, fc, &SKIP, &mut moved, true);
+        let (new, old) = if skips.is_empty() {
+            (None, None)
+        } else {
+            let old = (fc.status != Status::Added)
+                .then(|| text_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path)))
+                .flatten();
+            (text_at(repo, head, &fc.path), old)
+        };
+        for (line, kind, text) in skips {
+            // a skip on a test the baseline already had weakens it; one on a
+            // new test (a platform-only case, say) is a judgment call
+            let existing = new
+                .as_deref()
+                .is_none_or(|n| skips_existing_test(n, old.as_deref(), line, kind));
             out.push(finding(
-                "tests.skip_added",
+                if existing {
+                    "tests.skip_added"
+                } else {
+                    "tests.skip_new_test"
+                },
                 &fc.path,
                 Some(line),
                 format!("{kind}: {}", text.trim()),
             ));
         }
+        if is_test(&fc.path) {
+            for (line, kind, text) in
+                added_markers(repo, head, fc, &TRIVIAL, &mut moved_trivial, true)
+            {
+                out.push(finding(
+                    "tests.assertion_trivialized",
+                    &fc.path,
+                    Some(line),
+                    format!("{kind}: {}", text.trim()),
+                ));
+            }
+        }
     }
     out.extend(counts(repo, base, head, files));
     out
+}
+
+/// A test (or test class) header and its name: Python `def`/`class`,
+/// JS/TS `it`/`test`/`describe` titles, Go `func`, Rust `fn`.
+static TEST_HEADER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r#"^\s*(?:async\s+)?def\s+(\w+)|^\s*class\s+(\w+)|\b(?:it|test|describe)(?:\.\w+)?\s*\(\s*['"`]([^'"`]+)['"`]|^func\s+(\w+)|^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)"#,
+    )
+    .unwrap_or_else(|e| panic!("bad built-in pattern: {e}"))
+});
+
+fn header_name(line: &str) -> Option<String> {
+    let c = TEST_HEADER.captures(line)?;
+    (1..=5)
+        .find_map(|i| c.get(i))
+        .map(|m| m.as_str().to_owned())
+}
+
+/// Whether the skip at 1-based `line` of `new` applies to a test the old
+/// version already had. Markers (decorators, attributes, `it.skip(`) apply
+/// to the header at or after them; calls (`pytest.skip()`, `t.Skip()`,
+/// `this.skip()`) to the enclosing header. No header found: assume existing.
+fn skips_existing_test(new: &str, old: Option<&str>, line: u32, kind: &str) -> bool {
+    let Some(old) = old else {
+        return false;
+    };
+    let lines: Vec<&str> = new.lines().collect();
+    let at = (line as usize).saturating_sub(1).min(lines.len());
+    let call = matches!(
+        kind,
+        "pytest.skip() call" | "unittest SkipTest" | "mocha this.skip()" | "Go t.Skip"
+    );
+    let before = || {
+        lines[..at]
+            .iter()
+            .rev()
+            .take(200)
+            .find_map(|l| header_name(l))
+    };
+    let name = if call {
+        before()
+    } else {
+        lines.iter().skip(at).take(8).find_map(|l| header_name(l))
+    };
+    match name {
+        Some(n) => old
+            .lines()
+            .any(|l| header_name(l).as_deref() == Some(n.as_str())),
+        None => true,
+    }
 }
 
 /// (test cases, assertions) on one side of the change.

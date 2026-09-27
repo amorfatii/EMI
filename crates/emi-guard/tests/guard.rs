@@ -449,3 +449,63 @@ fn reindented_existing_duplicate_is_not_introduced() {
         report.violations
     );
 }
+
+/// The independent S8 review's probes: a tautology replacing an assertion
+/// is reported; a skip blocks only when it lands on an existing test.
+#[test]
+fn review_probes_trivialized_assertion_and_skip_on_new_vs_existing_test() {
+    let r = repo("probes");
+    let base = commit(&r);
+    // same assertion count, one check replaced by a tautology
+    write(
+        &r,
+        "tests/test_app.py",
+        "def test_a():\n    assert True\n    assert f() > 0\n\n\ndef test_b():\n    assert f()\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let trivial = report
+        .violations
+        .iter()
+        .find(|v| v.id == "tests.assertion_trivialized")
+        .map(|v| (v.tier, v.line));
+    assert_eq!(
+        trivial,
+        Some((Tier::Review, Some(2))),
+        "{:?}",
+        report.violations
+    );
+
+    // a platform skip on a new test: review
+    write(
+        &r,
+        "tests/test_app.py",
+        "import sys\n\nimport pytest\n\n\ndef test_a():\n    assert f() == 1\n    assert f() > 0\n\n\ndef test_b():\n    assert f()\n\n\n@pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only API')\ndef test_windows_paths():\n    assert f()\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let got = ids(&report);
+    assert!(got.contains(&"tests.skip_new_test"), "{got:?}");
+    assert!(!got.contains(&"tests.skip_added"), "{got:?}");
+    assert_eq!(report.decision(), "review");
+
+    // the same marker on an existing test, and a skip call inside one: block
+    write(
+        &r,
+        "tests/test_app.py",
+        "import sys\n\nimport pytest\n\n\n@pytest.mark.skipif(sys.platform != 'win32', reason='flaky')\ndef test_a():\n    assert f() == 1\n    assert f() > 0\n\n\ndef test_b():\n    pytest.skip('later')\n    assert f()\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let blocked: Vec<Option<u32>> = report
+        .violations
+        .iter()
+        .filter(|v| v.id == "tests.skip_added")
+        .map(|v| v.line)
+        .collect();
+    assert_eq!(blocked, vec![Some(6), Some(13)], "{:?}", report.violations);
+    assert_eq!(report.decision(), "block");
+}
