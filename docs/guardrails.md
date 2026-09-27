@@ -60,14 +60,15 @@ and evidence.
 
 Precision is "when a guardrail fires, the described event really
 happened". It was measured in `emi-lab` (study GV1) on 1,696 human
-commits from 20 open-source repositories, per round. Every block-tier id
-that fired met the ≥ 0.95 bar in the final round:
+commits from 20 open-source repositories, per round. In the final round
+every block-tier id but one met the ≥ 0.95 bar (labels re-audited after a
+blind second-reviewer check):
 
 | Guardrail | Precision |
 |---|---|
 | `prohibited.ci` | 20/20 |
 | `tests.deleted` | 20/20 |
-| `tests.skip_added` | 19/19 |
+| `tests.skip_added` | 16/19 (three were reformatted existing markers, fixed since) |
 | `tests.fewer` | 8/8 |
 | `tests.fewer_assertions` | 15/15 |
 | `tests.config_changed` | 19/20 |
