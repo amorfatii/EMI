@@ -20,7 +20,7 @@ fn is_sha(s: &str) -> bool {
 }
 
 /// `git -C repo args...`; failures carry the oracle's message shape.
-fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo)
