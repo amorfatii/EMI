@@ -49,7 +49,7 @@ pub fn list() -> Vec<Value> {
                    "before": {"type": "string", "description": "Base ref (default: HEAD)."},
                    "after": {"type": "string", "description": "Refactored ref; omit for the working tree."}}))}),
         json!({"name": "emi_task_verify",
-               "description": "Verify your work against a supervised task the controller froze: runs the task's frozen checks in an isolated snapshot, checks the change stays inside the task's scope envelope, applies the structural gate, and returns accepted / rejected / needs_review / incomplete with per-requirement states. Consumes one retry from the task budget. You cannot change the task's checks or criteria.",
+               "description": "Verify your work against a supervised task the controller froze: runs the task's frozen checks in an isolated snapshot, checks the change stays inside the task's scope envelope, applies the guardrails (weakened or skipped tests, prohibited files, new suppressions, growth; each violation with an id, file and line) and the structural gate, and returns accepted / rejected / needs_review / incomplete with per-requirement states. Consumes one retry from the task budget. You cannot change the task's checks or criteria.",
                "inputSchema": {"type": "object", "required": ["authority", "task"], "properties": {
                    "authority": {"type": "string", "description": "Controller authority directory."},
                    "task": {"type": "string", "description": "Task id."},

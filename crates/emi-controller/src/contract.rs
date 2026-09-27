@@ -160,6 +160,22 @@ fn structural(v: Option<&Value>) -> Result<Value> {
     Ok(s.clone())
 }
 
+/// The guardrail policy frozen into the contract: `false` disables the
+/// guardrails gate; an object (default `{}`) is an `emi_guard::Policy`
+/// whose tiers, allowed classes and budgets apply (scope stays with the
+/// envelope).
+fn guardrails(v: Option<&Value>) -> Result<Value> {
+    match v {
+        Some(Value::Bool(false)) => Ok(Value::Null),
+        None | Some(Value::Bool(true)) => Ok(json!({})),
+        Some(policy @ Value::Object(_)) => {
+            emi_guard::Policy::from_json(policy).map_err(|e| format!("guardrails: {e}"))?;
+            Ok(policy.clone())
+        }
+        Some(_) => Err("guardrails must be false or a policy object".into()),
+    }
+}
+
 /// The spec a controller writes; `baseline` is a ref resolved at freeze.
 pub struct Frozen {
     pub contract: Value,
@@ -208,6 +224,7 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
         "gate_policy_id": gate_policy_id(&structural),
         "checks": checks,
         "envelope": envelope(spec.get("envelope"))?,
+        "guardrails": guardrails(spec.get("guardrails"))?,
         "execution": spec.get("execution").cloned().unwrap_or_else(|| json!({})),
         "structural": structural,
         "budgets": budgets(spec.get("budgets"))?,

@@ -146,6 +146,51 @@ fn envelope_gate(contract: &Value, changed: &[(String, &'static str)]) -> Value 
     json!({"state": if violations.is_empty() { "pass" } else { "fail" }, "changed": changed.len(), "violations": violations})
 }
 
+/// The guardrails gate: verifiable checks on the change (weakened tests,
+/// prohibited files, new suppressions, growth). Scope is the envelope's.
+fn guardrails_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &str) -> Value {
+    let spec = &contract["guardrails"];
+    if spec.is_null() {
+        return json!({"state": "not_required"});
+    }
+    let mut policy = match emi_guard::Policy::from_json(spec) {
+        Ok(p) => p,
+        Err(e) => return json!({"state": "unverified", "error": e}),
+    };
+    policy.tiers.insert("scope".into(), emi_guard::Tier::Off);
+    let head = (candidate != WORKTREE).then_some(candidate);
+    match emi_guard::guard(repo, baseline, head, &policy) {
+        Ok(report) => {
+            let state = match report.decision() {
+                "block" => "fail",
+                "review" => "needs_review",
+                _ => "pass",
+            };
+            let active: Vec<Value> = report
+                .violations
+                .iter()
+                .filter(|v| v.tier != emi_guard::Tier::Off)
+                .map(emi_guard::Violation::to_json)
+                .collect();
+            json!({"state": state, "schema": emi_guard::SCHEMA, "violations": active})
+        }
+        Err(e) => json!({"state": "unverified", "error": e}),
+    }
+}
+
+/// `id` list of the guardrail violations with the given tier.
+fn guard_ids(gate: &Value, tier: &str) -> String {
+    let mut ids: Vec<&str> = gate["violations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| v["tier"] == tier)
+        .filter_map(|v| v["id"].as_str())
+        .collect();
+    ids.dedup();
+    ids.join(", ")
+}
+
 fn materialize(repo: &Path, candidate: &str, dest: &Path, contract: &Value) -> Result<()> {
     if candidate == WORKTREE {
         snapshot::materialize_worktree(repo, dest)?;
@@ -298,12 +343,15 @@ fn ledger(contract: &Value, statuses: &BTreeMap<String, String>) -> Vec<Value> {
         .collect()
 }
 
-fn reduce(
-    ledger: &[Value],
-    envelope: &Value,
-    structural: &Value,
-    require_all: bool,
-) -> (&'static str, Vec<String>) {
+/// The gates a decision reduces over.
+struct Gates<'a> {
+    envelope: &'a Value,
+    structural: &'a Value,
+    guardrails: &'a Value,
+}
+
+fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, Vec<String>) {
+    let (envelope, structural, guardrails) = (gates.envelope, gates.structural, gates.guardrails);
     let mut reasons = Vec::new();
     let by = |state: &str| -> Vec<String> {
         ledger
@@ -323,6 +371,12 @@ fn reduce(
         reasons.push(format!(
             "{} change(s) outside the task envelope",
             envelope["violations"].as_array().map_or(0, Vec::len)
+        ));
+    }
+    if guardrails["state"] == "fail" {
+        reasons.push(format!(
+            "blocking guardrail violations: {}",
+            guard_ids(guardrails, "block")
         ));
     }
     if structural["state"] == "fail" {
@@ -346,14 +400,23 @@ fn reduce(
     if structural["state"] == "unverified" {
         reasons.push("structural gate could not measure the candidate".into());
     }
+    if guardrails["state"] == "unverified" {
+        reasons.push("guardrails could not be checked".into());
+    }
     if !reasons.is_empty() {
         return ("incomplete", reasons);
     }
     if structural["state"] == "needs_review" {
-        return (
-            "needs_review",
-            vec!["structural gate warned; the task's warning policy asks for review".into()],
-        );
+        reasons.push("structural gate warned; the task's warning policy asks for review".into());
+    }
+    if guardrails["state"] == "needs_review" {
+        reasons.push(format!(
+            "guardrails need review: {}",
+            guard_ids(guardrails, "review")
+        ));
+    }
+    if !reasons.is_empty() {
+        return ("needs_review", reasons);
     }
     (
         "accepted",
@@ -415,11 +478,17 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         runs.push(record);
     }
     let structural = structural_gate(&contract, &repo, &baseline, &candidate_id);
+    let guardrails = guardrails_gate(&contract, &repo, &baseline, &candidate_id);
     let ledger = ledger(&contract, &statuses);
     let require_all = contract["completion_policy"]["require_all_requirements_verified"]
         .as_bool()
         .unwrap_or(true);
-    let (decision, reasons) = reduce(&ledger, &envelope, &structural, require_all);
+    let gates = Gates {
+        envelope: &envelope,
+        structural: &structural,
+        guardrails: &guardrails,
+    };
+    let (decision, reasons) = reduce(&ledger, &gates, require_all);
     let elapsed = started.elapsed().as_secs_f64();
     state["cumulative"]["retries"] =
         json!(state["cumulative"]["retries"].as_u64().unwrap_or(0) + 1);
@@ -428,7 +497,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     store.save_state(&state)?;
     let mut d = head(decision, reasons);
     d["requirements"] = Value::Array(ledger);
-    d["gates"] = json!({"envelope": envelope, "structural": structural});
+    d["gates"] = json!({"envelope": envelope, "structural": structural, "guardrails": guardrails});
     d["checks"] = Value::Array(runs.iter().map(|r| json!({"check_id": r["check_id"], "status": r["status"],
         "attribution": r["attribution"], "exit_code": r["exit_code"], "duration_ms": r["duration_ms"],
         "verified_clean": r["receipt"]["verified_clean"], "isolation": r["receipt"]["isolation"]})).collect());
