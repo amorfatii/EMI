@@ -93,6 +93,9 @@ pub fn prohibited(files: &[FileChange], policy: &Policy) -> Vec<Finding> {
     for fc in files {
         for (path, kind) in touches(fc) {
             let class = classify(path);
+            if class == PathClass::SecretLike && public_certificates(fc) {
+                continue;
+            }
             let id = match class {
                 PathClass::Lockfile => "prohibited.lockfile",
                 PathClass::Ci => "prohibited.ci",
@@ -113,22 +116,25 @@ pub fn prohibited(files: &[FileChange], policy: &Policy) -> Vec<Finding> {
     out
 }
 
-/// Removed lines across the change, trimmed, so a line that is only moved
-/// (removed in one place and added in another) is not reported as added.
-struct Moved(HashMap<String, usize>);
+/// Markers on removed lines across the change, by kind, so a marker that
+/// is only moved, or kept on an edited line, is not reported as new: each
+/// removed marker pairs with one added marker of the same kind.
+struct Moved(HashMap<&'static str, usize>);
 
 impl Moved {
-    fn of(files: &[FileChange]) -> Self {
+    fn of(files: &[FileChange], set: &[(&'static str, regex::Regex)]) -> Self {
         let mut m = HashMap::new();
         for (_, text) in files.iter().flat_map(|f| &f.removed) {
-            *m.entry(text.trim().to_owned()).or_insert(0) += 1;
+            if let Some(kind) = first_match(set, text) {
+                *m.entry(kind).or_insert(0) += 1;
+            }
         }
         Moved(m)
     }
 
-    /// Whether `text` was removed elsewhere; each removal pairs with one addition.
-    fn take(&mut self, text: &str) -> bool {
-        match self.0.get_mut(text.trim()) {
+    /// Whether an added marker of `kind` pairs with a removed one.
+    fn take(&mut self, kind: &'static str) -> bool {
+        match self.0.get_mut(kind) {
             Some(n) if *n > 0 => {
                 *n -= 1;
                 true
@@ -139,8 +145,9 @@ impl Moved {
 }
 
 /// Added lines of `fc` matching `set` as `(line, pattern, text)`, leaving
-/// out moved lines, lines inside multi-line strings (test fixtures,
-/// templates) and, when `code_only`, comment lines.
+/// out markers paired with a removed one (moved, or kept on an edited
+/// line), lines inside multi-line strings (test fixtures, templates) and,
+/// when `code_only`, comment lines.
 fn added_markers<'a>(
     repo: &Path,
     head: Option<&str>,
@@ -155,7 +162,7 @@ fn added_markers<'a>(
         let Some(kind) = first_match(set, text) else {
             continue;
         };
-        if moved.take(text) {
+        if moved.take(kind) {
             continue;
         }
         let kinds = kinds.get_or_insert_with(|| match lang_of(&fc.path) {
@@ -174,9 +181,21 @@ fn added_markers<'a>(
     out
 }
 
+/// A `.pem` change that adds certificates and no private key (a CA
+/// bundle such as `cacert.pem`): public data, not a secret.
+fn public_certificates(fc: &FileChange) -> bool {
+    fc.path.ends_with(".pem")
+        && fc.status != Status::Deleted
+        && fc
+            .added
+            .iter()
+            .any(|(_, t)| t.contains("BEGIN CERTIFICATE"))
+        && !fc.added.iter().any(|(_, t)| t.contains("PRIVATE KEY"))
+}
+
 /// `suppress.added`: a suppression comment or attribute on an added line.
 pub fn suppress(repo: &Path, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
-    let mut moved = Moved::of(files);
+    let mut moved = Moved::of(files, &SUPPRESS);
     let mut out = Vec::new();
     for fc in files.iter().filter(|f| !f.binary) {
         for (line, kind, text) in added_markers(repo, head, fc, &SUPPRESS, &mut moved, false) {
@@ -348,7 +367,7 @@ fn config_changed(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) 
 /// `tests.*`: deleted test files, skip markers added, changed test
 /// configuration, and fewer tests or assertions across the change.
 pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
-    let mut moved = Moved::of(files);
+    let mut moved = Moved::of(files, &SKIP);
     let mut out = Vec::new();
     for fc in files.iter().filter(|f| !f.binary) {
         if let Some(f) = deleted(fc) {

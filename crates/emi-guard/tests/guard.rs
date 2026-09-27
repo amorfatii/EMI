@@ -145,7 +145,8 @@ fn every_core_guardrail_fires() {
     assert_eq!(outside.as_deref(), Some("docs/notes.md"));
 }
 
-/// S6 false positives: markers in test fixtures or comments, and moved lines.
+/// S6 false positives: markers in test fixtures or comments, moved or
+/// kept on an edited line, and public certificate bundles.
 #[test]
 fn fixture_text_comments_and_moved_lines_are_not_new_markers() {
     let r = repo("fixture");
@@ -158,7 +159,12 @@ fn fixture_text_comments_and_moved_lines_are_not_new_markers() {
     write(
         &r,
         "src/app.py",
-        "def g():\n    return 2\n\n\ndef f():\n    return 1  # type: ignore\n",
+        "def g():\n    return 2\n\n\ndef f():\n    return 1 + 0  # type: ignore\n",
+    );
+    write(
+        &r,
+        "build/lib/certifi/cacert.pem",
+        "## CA bundle\n-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n",
     );
     write(
         &r,
@@ -182,6 +188,21 @@ fn fixture_text_comments_and_moved_lines_are_not_new_markers() {
         "{:?}",
         report.violations
     );
+    write(
+        &r,
+        "deploy/server.pem",
+        "-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let secrets: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|v| v.id == "prohibited.secret")
+        .map(|v| v.path.as_str())
+        .collect();
+    assert_eq!(secrets, vec!["deploy/server.pem"], "a CA bundle is public");
 }
 
 #[test]
