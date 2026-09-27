@@ -19,6 +19,7 @@ emi-diff = { path = "../emi-diff" }
 emi-history.workspace = true
 emi-mcp = { path = "../emi-mcp" }
 emi-rules.workspace = true
+emi-guard.workspace = true
 emi-controller.workspace = true
 emi-lsp.workspace = true
 anyhow.workspace = true

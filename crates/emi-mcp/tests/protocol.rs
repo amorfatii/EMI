@@ -41,6 +41,7 @@ fn handshake_lists_tools_and_rejects_unknowns() {
             "emi_accept_rewrite",
             "emi_task_verify",
             "emi_task_status",
+            "emi_guard",
             "emi_scan"
         ]
     );
@@ -145,4 +146,35 @@ fn gate_blocks_an_uncommitted_sprawling_function() {
         verdict["next_step"].as_str(),
         Some("split" | "shrink")
     ));
+}
+
+#[test]
+fn guard_reports_a_skipped_test_in_the_worktree() {
+    let r = Repo(std::env::temp_dir().join(format!("emi-mcp-guard-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&r.0);
+    std::fs::create_dir_all(r.0.join("tests")).unwrap_or_default();
+    git(&r.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        r.0.join("tests/test_a.py"),
+        "def test_a():\n    assert True\n",
+    )
+    .unwrap_or_default();
+    git(&r.0, &["add", "-A"]);
+    git(&r.0, &["commit", "-q", "-m", "base"]);
+    std::fs::write(
+        r.0.join("tests/test_a.py"),
+        "import pytest\n\n\n@pytest.mark.skip\ndef test_a():\n    assert True\n",
+    )
+    .unwrap_or_default();
+    let out = call(
+        1,
+        "tools/call",
+        json!({"name": "emi_guard", "arguments": {"repo": r.0}}),
+    );
+    let report: Value =
+        serde_json::from_str(out["result"]["content"][0]["text"].as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert_eq!(report["decision"], "block", "{report}");
+    assert_eq!(report["violations"][0]["id"], "tests.skip_added");
+    assert_eq!(report["violations"][0]["line"], 4);
 }

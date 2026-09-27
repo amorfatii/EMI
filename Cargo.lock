@@ -324,6 +324,7 @@ dependencies = [
  "clap",
  "emi-controller",
  "emi-diff",
+ "emi-guard",
  "emi-history",
  "emi-ir",
  "emi-ledger",
@@ -479,6 +480,7 @@ version = "0.1.0"
 dependencies = [
  "emi-controller",
  "emi-diff",
+ "emi-guard",
  "emi-history",
  "emi-ledger",
  "emi-scan",

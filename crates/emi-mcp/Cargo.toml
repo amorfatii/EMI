@@ -13,6 +13,7 @@ emi-history.workspace = true
 emi-controller.workspace = true
 emi-ledger = { path = "../emi-ledger" }
 emi-scan.workspace = true
+emi-guard.workspace = true
 serde_json.workspace = true
 
 [lints]

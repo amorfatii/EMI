@@ -12,6 +12,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 mod checkcli;
 mod diffcli;
 mod gatecli;
+mod guardcli;
 mod historycli;
 mod markdown;
 mod mergecli;
@@ -140,6 +141,9 @@ enum Command {
     Task(taskcli::TaskCommand),
     /// Write a self-contained HTML report (burden, hotspots, coupling, findings).
     Report(report::ReportArgs),
+    /// Verifiable guardrails on a change: scope, weakened tests, prohibited
+    /// files, new suppressions, growth (exit 2 on a blocking violation).
+    Guard(guardcli::GuardArgs),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
     /// Language server (stdio): rule diagnostics, erosion hints, burden-delta code lenses.
@@ -269,6 +273,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::SarifMerge(args) => mergecli::run(&args),
         Command::Task(cmd) => taskcli::run(&cmd),
         Command::Report(args) => report::run(&args),
+        Command::Guard(args) => guardcli::run(&args),
         Command::Lsp => {
             emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)

@@ -59,6 +59,13 @@ pub fn list() -> Vec<Value> {
                "inputSchema": {"type": "object", "required": ["authority", "task"], "properties": {
                    "authority": {"type": "string"}, "task": {"type": "string"},
                    "candidate": {"type": "string", "description": "Commit/ref; omit for the working tree."}}}}),
+        json!({"name": "emi_guard",
+               "description": "Check your change against verifiable guardrails before finishing: edits outside the permitted scope, deleted/skipped/weakened tests (fewer test cases or assertions, skip or xfail markers), changed test or coverage config, lockfile/CI/secret/vendored edits, newly added lint or type suppressions, and growth beyond budget. Each violation has a stable id, file and line, and a tier: block (fix it) or review (justify it). Deterministic; no scores.",
+               "inputSchema": {"type": "object", "properties": {
+                   "repo": {"type": "string", "description": "Path to the git repository (default: current directory)."},
+                   "base": {"type": "string", "description": "Baseline ref (default: HEAD)."},
+                   "head": {"type": "string", "description": "Candidate ref; omit to check the working tree."},
+                   "policy": {"type": "object", "description": "Optional guardrail policy: permitted_paths, excluded_paths, protected_paths, allow_classes, tiers, max_net_sloc, max_files."}}}}),
         json!({"name": "emi_scan",
                "description": "Summarize the scope at a ref or the working tree: files, SLOC, burden totals per dimension, unknown-coupling share, cycles, and the most burdened files.",
                "inputSchema": common_schema(json!({
@@ -76,8 +83,23 @@ pub fn call(name: &str, args: &Value) -> Option<Out> {
         "emi_scan" => summary(args),
         "emi_task_verify" => task_verify(args),
         "emi_task_status" => task_status(args),
+        "emi_guard" => guard(args),
         _ => return None,
     })
+}
+
+fn guard(args: &Value) -> Out {
+    let repo = PathBuf::from(text(args, "repo", "."));
+    let policy = match args.get("policy") {
+        Some(p) if !p.is_null() => emi_guard::Policy::from_json(p)?,
+        _ => emi_guard::Policy::default(),
+    };
+    let base = emi_diff::snapshot::resolve_ref(&repo, text(args, "base", "HEAD"))?;
+    let head = match args.get("head").and_then(Value::as_str) {
+        Some(h) => Some(emi_diff::snapshot::resolve_ref(&repo, h)?),
+        None => None,
+    };
+    Ok(emi_guard::guard(&repo, &base, head.as_deref(), &policy)?.to_json())
 }
 
 fn text<'a>(args: &'a Value, key: &str, default: &'a str) -> &'a str {
