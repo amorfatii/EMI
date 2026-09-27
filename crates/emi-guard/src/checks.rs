@@ -1,14 +1,16 @@
 //! The guardrail checks. Each takes the change and returns raw findings
 //! `(id, path, line, evidence)`; the engine assigns tiers from the policy.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use emi_diff::hunks::{FileChange, Status, file_at};
 use emi_scan::classify::{PathClass, classify, is_test};
 use emi_scan::walk::fnmatch;
 
-use crate::patterns::{SKIP, SUPPRESS, count_assertions, count_tests, first_match, lang_of};
+use crate::patterns::{
+    LineKind, SKIP, SUPPRESS, count_assertions, count_tests, first_match, lang_of, line_kinds,
+};
 use crate::policy::Policy;
 
 /// A guardrail finding before its tier is known.
@@ -111,19 +113,79 @@ pub fn prohibited(files: &[FileChange], policy: &Policy) -> Vec<Finding> {
     out
 }
 
+/// Removed lines across the change, trimmed, so a line that is only moved
+/// (removed in one place and added in another) is not reported as added.
+struct Moved(HashMap<String, usize>);
+
+impl Moved {
+    fn of(files: &[FileChange]) -> Self {
+        let mut m = HashMap::new();
+        for (_, text) in files.iter().flat_map(|f| &f.removed) {
+            *m.entry(text.trim().to_owned()).or_insert(0) += 1;
+        }
+        Moved(m)
+    }
+
+    /// Whether `text` was removed elsewhere; each removal pairs with one addition.
+    fn take(&mut self, text: &str) -> bool {
+        match self.0.get_mut(text.trim()) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Added lines of `fc` matching `set` as `(line, pattern, text)`, leaving
+/// out moved lines, lines inside multi-line strings (test fixtures,
+/// templates) and, when `code_only`, comment lines.
+fn added_markers<'a>(
+    repo: &Path,
+    head: Option<&str>,
+    fc: &'a FileChange,
+    set: &[(&'static str, regex::Regex)],
+    moved: &mut Moved,
+    code_only: bool,
+) -> Vec<(u32, &'static str, &'a str)> {
+    let mut kinds: Option<Vec<LineKind>> = None;
+    let mut out = Vec::new();
+    for (line, text) in &fc.added {
+        let Some(kind) = first_match(set, text) else {
+            continue;
+        };
+        if moved.take(text) {
+            continue;
+        }
+        let kinds = kinds.get_or_insert_with(|| match lang_of(&fc.path) {
+            Some(lang) => file_at(repo, head, &fc.path)
+                .map(|t| line_kinds(lang, &t))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        });
+        let at = usize::try_from(*line).ok().and_then(|l| l.checked_sub(1));
+        match at.and_then(|i| kinds.get(i)) {
+            Some(LineKind::InString) => continue,
+            Some(LineKind::Comment) if code_only => continue,
+            _ => out.push((*line, kind, text.as_str())),
+        }
+    }
+    out
+}
+
 /// `suppress.added`: a suppression comment or attribute on an added line.
-pub fn suppress(files: &[FileChange]) -> Vec<Finding> {
+pub fn suppress(repo: &Path, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
+    let mut moved = Moved::of(files);
     let mut out = Vec::new();
     for fc in files.iter().filter(|f| !f.binary) {
-        for (line, text) in &fc.added {
-            if let Some(kind) = first_match(&SUPPRESS, text) {
-                out.push(finding(
-                    "suppress.added",
-                    &fc.path,
-                    Some(*line),
-                    format!("{kind}: {}", text.trim()),
-                ));
-            }
+        for (line, kind, text) in added_markers(repo, head, fc, &SUPPRESS, &mut moved, false) {
+            out.push(finding(
+                "suppress.added",
+                &fc.path,
+                Some(line),
+                format!("{kind}: {}", text.trim()),
+            ));
         }
     }
     out
@@ -286,6 +348,7 @@ fn config_changed(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) 
 /// `tests.*`: deleted test files, skip markers added, changed test
 /// configuration, and fewer tests or assertions across the change.
 pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
+    let mut moved = Moved::of(files);
     let mut out = Vec::new();
     for fc in files.iter().filter(|f| !f.binary) {
         if let Some(f) = deleted(fc) {
@@ -293,15 +356,13 @@ pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) 
             continue;
         }
         out.extend(config_changed(repo, base, head, fc));
-        for (line, text) in &fc.added {
-            if let Some(kind) = first_match(&SKIP, text) {
-                out.push(finding(
-                    "tests.skip_added",
-                    &fc.path,
-                    Some(*line),
-                    format!("{kind}: {}", text.trim()),
-                ));
-            }
+        for (line, kind, text) in added_markers(repo, head, fc, &SKIP, &mut moved, true) {
+            out.push(finding(
+                "tests.skip_added",
+                &fc.path,
+                Some(line),
+                format!("{kind}: {}", text.trim()),
+            ));
         }
     }
     out.extend(counts(repo, base, head, files));

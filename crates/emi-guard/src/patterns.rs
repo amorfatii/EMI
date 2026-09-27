@@ -173,6 +173,120 @@ pub fn strip_strings(line: &str) -> String {
     out
 }
 
+/// What a line of source starts as, for telling a marker in code from one
+/// in fixture text or prose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineKind {
+    Code,
+    /// Starts with a line comment, or inside a block comment.
+    Comment,
+    /// Starts inside a string literal that spans lines: a Python
+    /// triple-quoted string, a JS template literal, a Go raw string, ...
+    InString,
+}
+
+/// Lexer state between characters.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum St {
+    Code,
+    Str(char),
+    Triple(char),
+    Block,
+}
+
+/// Comment and quote syntax of a language.
+struct Syntax {
+    hash_comment: bool,
+    slash_comments: bool,
+    triple: bool,
+    /// Quotes whose strings may span lines.
+    multiline: &'static [char],
+    /// Quotes whose strings end at the line (apostrophes that are not
+    /// always quotes, as in Rust lifetimes, are left out).
+    single: &'static [char],
+}
+
+fn syntax(lang: Lang) -> Syntax {
+    let (hash_comment, triple, multiline, single): (bool, bool, &[char], &[char]) = match lang {
+        Lang::Python => (true, true, &[], &['"', '\'']),
+        Lang::Js | Lang::Go => (false, false, &['`'], &['"', '\'']),
+        Lang::Rust => (false, false, &['"'], &[]),
+        Lang::Java => (false, true, &[], &['"', '\'']),
+    };
+    Syntax {
+        hash_comment,
+        slash_comments: !hash_comment,
+        triple,
+        multiline,
+        single,
+    }
+}
+
+/// The kind of each line of `text` (index 0 is line 1). Approximate by
+/// design: it only has to tell code from comments and multi-line strings.
+pub fn line_kinds(lang: Lang, text: &str) -> Vec<LineKind> {
+    let syn = syntax(lang);
+    let mut st = St::Code;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        out.push(match st {
+            St::Triple(_) | St::Str(_) => LineKind::InString,
+            St::Block => LineKind::Comment,
+            St::Code
+                if (syn.hash_comment && t.starts_with('#'))
+                    || (syn.slash_comments && (t.starts_with("//") || t.starts_with("/*"))) =>
+            {
+                LineKind::Comment
+            }
+            St::Code => LineKind::Code,
+        });
+        st = lex_line(&syn, line, st);
+    }
+    out
+}
+
+/// Lexer state after `line`, starting from `st`.
+fn lex_line(syn: &Syntax, line: &str, mut st: St) -> St {
+    let c: Vec<char> = line.chars().collect();
+    let three = |i: usize, q: char| c.get(i..i + 3).is_some_and(|w| w.iter().all(|&x| x == q));
+    let mut i = 0;
+    while i < c.len() {
+        let next = c.get(i + 1).copied();
+        match st {
+            St::Code if (syn.hash_comment && c[i] == '#') => break,
+            St::Code if syn.slash_comments && c[i] == '/' && next == Some('/') => break,
+            St::Code if syn.slash_comments && c[i] == '/' && next == Some('*') => {
+                st = St::Block;
+                i += 1;
+            }
+            St::Code if syn.triple && (three(i, '"') || three(i, '\'')) => {
+                st = St::Triple(c[i]);
+                i += 2;
+            }
+            St::Code if syn.multiline.contains(&c[i]) || syn.single.contains(&c[i]) => {
+                st = St::Str(c[i]);
+            }
+            St::Str(_) | St::Triple(_) if c[i] == '\\' => i += 1,
+            St::Str(q) if c[i] == q => st = St::Code,
+            St::Triple(q) if three(i, q) => {
+                st = St::Code;
+                i += 2;
+            }
+            St::Block if c[i] == '*' && next == Some('/') => {
+                st = St::Code;
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    match st {
+        St::Str(q) if !syn.multiline.contains(&q) => St::Code,
+        other => other,
+    }
+}
+
 /// First pattern of `set` matching `line` outside string literals.
 pub fn first_match(set: &[(&'static str, Regex)], line: &str) -> Option<&'static str> {
     let code = strip_strings(line);
@@ -249,6 +363,30 @@ mod tests {
         for line in miss {
             assert!(first_match(&SUPPRESS, line).is_none(), "{line}");
         }
+    }
+
+    #[test]
+    fn line_kinds_tell_code_from_fixture_text() {
+        use LineKind::{Code, Comment, InString};
+        let py = "def test_x(testdir):\n    testdir.makepyfile(\n        \"\"\"\n        @pytest.mark.skip\n        def test_a(): pass\n    \"\"\"\n    )\n# @unittest.skipIf here\n@pytest.mark.skip\ns = '''one'''\n@x\n";
+        assert_eq!(
+            line_kinds(Lang::Python, py),
+            vec![
+                Code, Code, Code, InString, InString, InString, Code, Comment, Code, Code, Code
+            ]
+        );
+        let js = "const src = `\nit.skip('a', () => {})\n`;\n/* block\n xit('b')\n*/\nit.skip('c')\nconst s = \"`\";\nx()\n";
+        assert_eq!(
+            line_kinds(Lang::Js, js),
+            vec![
+                Code, InString, InString, Comment, Comment, Comment, Code, Code, Code
+            ]
+        );
+        let rs = "fn f<'a>(x: &'a str) {}\nlet s = \"a\n#[ignore]\nb\";\n#[ignore]\n";
+        assert_eq!(
+            line_kinds(Lang::Rust, rs),
+            vec![Code, Code, InString, InString, Code]
+        );
     }
 
     #[test]

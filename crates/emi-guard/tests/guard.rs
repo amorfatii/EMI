@@ -145,6 +145,45 @@ fn every_core_guardrail_fires() {
     assert_eq!(outside.as_deref(), Some("docs/notes.md"));
 }
 
+/// S6 false positives: markers in test fixtures or comments, and moved lines.
+#[test]
+fn fixture_text_comments_and_moved_lines_are_not_new_markers() {
+    let r = repo("fixture");
+    write(
+        &r,
+        "src/app.py",
+        "def f():\n    return 1  # type: ignore\n\n\ndef g():\n    return 2\n",
+    );
+    let base = commit(&r);
+    write(
+        &r,
+        "src/app.py",
+        "def g():\n    return 2\n\n\ndef f():\n    return 1  # type: ignore\n",
+    );
+    write(
+        &r,
+        "tests/test_app.py",
+        "def test_a(testdir):\n    testdir.makepyfile(\n        \"\"\"\n        import pytest\n        @pytest.mark.skip\n        def test_x(): pass\n        \"\"\"\n    )\n    assert f() == 1\n    assert f() > 0\n\n\n# Case 2: @unittest.skipIf is honoured\ndef test_b():\n    assert f()\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(ids(&report), Vec::<&str>::new());
+    write(
+        &r,
+        "tests/test_app.py",
+        "import pytest\n\n\ndef test_a():\n    assert f() == 1\n    assert f() > 0\n\n\n@pytest.mark.skip\ndef test_b():\n    assert f()\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        ids(&report).contains(&"tests.skip_added"),
+        "{:?}",
+        report.violations
+    );
+}
+
 #[test]
 fn policy_overrides_tiers_and_allows_classes() {
     let r = repo("policy");

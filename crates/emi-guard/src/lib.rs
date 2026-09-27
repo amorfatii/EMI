@@ -109,7 +109,7 @@ pub fn evaluate(
     let mut found = checks::scope(files, policy);
     found.extend(checks::prohibited(files, policy));
     found.extend(checks::tests(repo, base, head, files));
-    found.extend(checks::suppress(files));
+    found.extend(checks::suppress(repo, head, files));
     found.extend(checks::growth(files, policy));
     match dup::introduced(repo, base, head, files) {
         Ok(d) => found.extend(d),
