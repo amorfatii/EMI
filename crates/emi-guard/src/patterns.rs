@@ -98,7 +98,9 @@ pub fn lang_of(path: &str) -> Option<Lang> {
 
 static PY_TEST: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^\s*(async\s+)?def\s+test\w*\s*\("));
 static PY_ASSERT: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?m)(^\s*assert\b|\bself\.assert\w+\s*\(|\bpytest\.raises\s*\(|\bpytest\.approx\s*\()")
+    re(
+        r"(?m)(^\s*assert\b|\bself\.assert\w+\s*\(|\bpytest\.(raises|warns|deprecated_call|approx)\s*\()",
+    )
 });
 /// Test definitions, skipped ones included: skipping is `tests.skip_added`,
 /// `tests.fewer` means definitions were removed.
@@ -107,7 +109,7 @@ static JS_TEST: LazyLock<Regex> = LazyLock::new(|| {
 });
 static JS_ASSERT: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(\bexpect\s*\(|\bassert(\.\w+)?\s*\(|\.should\b|\bt\.(is|deepEqual|true|false|throws)\s*\()",
+        r"(\bexpect\s*\(|\bassert(\s*\.\s*\w+)?\s*\(|\.should\b|\bt\.(is|deepEqual|true|false|throws)\s*\()",
     )
 });
 static GO_TEST: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^func\s+(Test|Fuzz)\w*\s*\("));
@@ -391,19 +393,19 @@ mod tests {
 
     #[test]
     fn counts_tests_and_assertions() {
-        let py = "def test_a():\n    assert f() == 1\n\nasync def test_b(self):\n    self.assertEqual(x, 1)\n    with pytest.raises(E):\n        g()\n\ndef helper():\n    pass\n";
+        let py = "def test_a():\n    assert f() == 1\n\nasync def test_b(self):\n    self.assertEqual(x, 1)\n    with pytest.raises(E):\n        g()\n    with pytest.warns(UserWarning):\n        h()\n\ndef helper():\n    pass\n";
         assert_eq!(
             (
                 count_tests(Lang::Python, py),
                 count_assertions(Lang::Python, py)
             ),
-            (2, 3)
+            (2, 4)
         );
-        let js = "describe('x', () => {\n  it('a', () => { expect(f()).toBe(1); });\n  test.each([1])('b', () => { assert.equal(1, 1); });\n  it.skip('c', () => {});\n});\n";
+        let js = "describe('x', () => {\n  void assert\n    .rejects(f);\n  it('a', () => { expect(f()).toBe(1); });\n  test.each([1])('b', () => { assert.equal(1, 1); });\n  it.skip('c', () => {});\n});\n";
         assert_eq!(
             (count_tests(Lang::Js, js), count_assertions(Lang::Js, js)),
-            (3, 2),
-            "it.skip still defines a test"
+            (3, 3),
+            "it.skip still defines a test; a split `assert\\n.rejects(` is one assertion"
         );
         let go = "func TestA(t *testing.T) {\n\tif f() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n\trequire.NoError(t, err)\n}\nfunc helper() {}\n";
         assert_eq!(

@@ -197,7 +197,9 @@ fn public_certificates(fc: &FileChange) -> bool {
 pub fn suppress(repo: &Path, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
     let mut moved = Moved::of(files, &SUPPRESS);
     let mut out = Vec::new();
-    for fc in files.iter().filter(|f| !f.binary) {
+    // a snapshot records output (a formatter's test data), not code
+    let snapshot = |p: &str| p.ends_with(".snap") || p.contains("__snapshots__/");
+    for fc in files.iter().filter(|f| !f.binary && !snapshot(&f.path)) {
         for (line, kind, text) in added_markers(repo, head, fc, &SUPPRESS, &mut moved, false) {
             out.push(finding(
                 "suppress.added",
@@ -267,7 +269,11 @@ fn nox_line_is_test(text: &str, line: u32) -> bool {
             .find(|l| l.trim_start().starts_with("def "));
         return !non_test_name(current) && next_def.is_none_or(|d| !non_test_name(d));
     }
-    enclosing(text, line, |l| l.trim_start().starts_with("def ")).is_none_or(|d| !non_test_name(d))
+    match enclosing(text, line, |l| l.trim_start().starts_with("def ")) {
+        Some(d) => !non_test_name(d),
+        // module level: an import configures nothing by itself
+        None => !(current.starts_with("import ") || current.starts_with("from ")),
+    }
 }
 
 /// Does changed `line` of `text` configure tests in file `name`?
@@ -320,24 +326,77 @@ fn multipurpose(path: &str) -> bool {
     )
 }
 
-/// `tests.deleted` for one file change, if it deletes a test file or moves
-/// one out of the test layout.
-fn deleted(fc: &FileChange) -> Option<Finding> {
+/// Whether `path` at `rev` defines test cases: fixtures, helpers and
+/// snapshots under a test directory are not tests.
+fn defines_tests(repo: &Path, rev: &str, path: &str) -> bool {
+    lang_of(path).is_some_and(|lang| {
+        text_at(repo, Some(rev), path).is_some_and(|t| count_tests(lang, &t) > 0)
+    })
+}
+
+/// `tests.deleted` for one file change, if it deletes a file defining
+/// tests or moves one out of the test layout.
+fn deleted(repo: &Path, base: &str, fc: &FileChange) -> Option<Finding> {
     let old_path = fc.old_path.as_deref().unwrap_or(&fc.path);
+    let gone = match fc.status {
+        Status::Deleted => is_test(&fc.path),
+        Status::Renamed => is_test(old_path) && !is_test(&fc.path),
+        _ => false,
+    };
+    if !gone || !defines_tests(repo, base, old_path) {
+        return None;
+    }
     match fc.status {
-        Status::Deleted if is_test(&fc.path) => Some(finding(
+        Status::Deleted => Some(finding(
             "tests.deleted",
             &fc.path,
             None,
             "test file deleted",
         )),
-        Status::Renamed if is_test(old_path) && !is_test(&fc.path) => Some(finding(
+        _ => Some(finding(
             "tests.deleted",
             old_path,
             None,
             format!("test file moved out of the test layout to {}", fc.path),
         )),
-        _ => None,
+    }
+}
+
+/// `text` without whitespace, commas and semicolons, with one quote
+/// style: equal for two versions that differ only in formatting.
+fn normalized(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, ',' | ';'))
+        .map(|c| if c == '\'' { '"' } else { c })
+        .collect()
+}
+
+/// Lines of a `conftest.py` that configure the test run, as opposed to
+/// fixtures and helpers.
+static CONFTEST_CONFIG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"\bpytest_\w+|collect_ignore|pytest_plugins|register_assert_rewrite|autouse|addopts|\bsys\.path\b|\bos\.environ\b",
+    )
+    .unwrap_or_else(|e| panic!("bad built-in pattern: {e}"))
+});
+
+/// Whether a whole-file test configuration change configures anything:
+/// not formatting only, and for `conftest.py` not only fixtures/helpers.
+fn configures(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) -> bool {
+    if fc.status == Status::Deleted {
+        return true;
+    }
+    if fc.path.rsplit('/').next() == Some("conftest.py") {
+        return fc
+            .added
+            .iter()
+            .chain(&fc.removed)
+            .any(|(_, t)| CONFTEST_CONFIG.is_match(t));
+    }
+    let old = text_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path));
+    match (old, text_at(repo, head, &fc.path)) {
+        (Some(old), Some(new)) => normalized(&old) != normalized(&new),
+        _ => true,
     }
 }
 
@@ -347,6 +406,9 @@ fn config_changed(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) 
         && fc.status != Status::Added
         && !multipurpose(&fc.path)
     {
+        if !configures(repo, base, head, fc) {
+            return None;
+        }
         return Some(finding(
             "tests.config_changed",
             &fc.path,
@@ -370,7 +432,7 @@ pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) 
     let mut moved = Moved::of(files, &SKIP);
     let mut out = Vec::new();
     for fc in files.iter().filter(|f| !f.binary) {
-        if let Some(f) = deleted(fc) {
+        if let Some(f) = deleted(repo, base, fc) {
             out.push(f);
             continue;
         }

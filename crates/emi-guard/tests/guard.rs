@@ -351,3 +351,54 @@ fn test_files_with_nul_bytes_are_counted() {
         report.violations
     );
 }
+
+/// GV1 round 4: deleting a fixture is not deleting tests, and reformatting
+/// test configuration or adding a fixture to conftest.py configures nothing.
+#[test]
+fn fixtures_and_formatting_are_not_test_changes() {
+    let r = repo("fixtures");
+    write(&r, "tests/fixtures/data.py", "VALUE = {'a': 1}\n");
+    write(
+        &r,
+        ".nycrc",
+        "{\n  \"reporter\": [\n    \"json\",\n    \"text\"\n  ]\n}\n",
+    );
+    write(
+        &r,
+        "tests/conftest.py",
+        "import pytest\n\n\n@pytest.fixture\ndef a():\n    return 1\n",
+    );
+    let base = commit(&r);
+    git(&r.0, &["rm", "-q", "tests/fixtures/data.py"]);
+    write(&r, ".nycrc", "{\n  \"reporter\": [\"json\", \"text\"]\n}\n");
+    write(
+        &r,
+        "tests/conftest.py",
+        "import pytest\n\n\n@pytest.fixture\ndef a():\n    return 1\n\n\n@pytest.fixture\ndef b():\n    return 2\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(ids(&report), Vec::<&str>::new(), "{:?}", report.violations);
+    write(&r, ".nycrc", "{\n  \"reporter\": [\"json\"]\n}\n");
+    write(
+        &r,
+        "tests/conftest.py",
+        "import pytest\n\ncollect_ignore = ['test_slow.py']\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let paths: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|v| v.id == "tests.config_changed")
+        .map(|v| v.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![".nycrc", "tests/conftest.py"],
+        "{:?}",
+        report.violations
+    );
+}
