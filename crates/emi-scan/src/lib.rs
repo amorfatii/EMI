@@ -2,6 +2,7 @@
 //! the v0.5 selection rules, measure them in parallel, and assemble the
 //! result in the oracle's order.
 
+pub mod classify;
 mod coupling;
 mod go;
 mod js;
