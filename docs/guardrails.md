@@ -58,20 +58,31 @@ and evidence.
 
 ## Measured precision
 
-Precision is "when a guardrail fires, the described event really
-happened". It was measured in `emi-lab` (study GV1) on 1,696 human
-commits from 20 open-source repositories, per round. In the final round
-every block-tier id but one met the ≥ 0.95 bar (labels re-audited after a
-blind second-reviewer check):
+Precision means: when a guardrail fires, the event it *means* really
+happened. A new skip, not a reformatted one, counts; a deleted fixture
+is not a deleted test; a formatting-only edit is not a test-configuration
+change.
 
-| Guardrail | Precision |
-|---|---|
-| `prohibited.ci` | 20/20 |
-| `tests.deleted` | 20/20 |
-| `tests.skip_added` | 16/19 (three were reformatted existing markers, fixed since) |
-| `tests.fewer` | 8/8 |
-| `tests.fewer_assertions` | 15/15 |
-| `tests.config_changed` | 19/20 |
+It was measured in `emi-lab` (study GV1, round 4) on 1,696 human
+commits from 20 open-source repositories. A second reviewer checked a
+blind sample of the labels.
+
+| Guardrail | Tier | Measured (v`053d6f0`) | After fixes (same sample) |
+|---|---|---|---|
+| `prohibited.ci` | block | 20/20 | 20/20 |
+| `tests.skip_added` | block | 8/8 | 8/8 |
+| `tests.fewer` | block | 9/10 | 9/9 |
+| `tests.fewer_assertions` | block | 11/16 | 11/13 |
+| `tests.deleted` | block | 13/20 | 12/14 |
+| `tests.config_changed` | block | 12/20 | 12/13 |
+| `suppress.added` | review | 15/20 | 15/15 |
+| `dup.introduced` | review | 11/20 | 9/11 |
+
+"After fixes" re-checks the same firings, so it is not an independent
+estimate; a fresh round is pending. The remaining weak spot is
+`tests.fewer_assertions`: a refactor into table-driven tests checks the
+same cases with fewer assert statements, which counting cannot tell
+apart.
 
 Lockfiles changed in 11.7% of human commits, too often to block without
 context, so `prohibited.lockfile` needs review by default. The guard
