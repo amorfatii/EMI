@@ -13,9 +13,11 @@
 //! | `tests.config_changed` | test or coverage configuration changed |
 //! | `prohibited.lockfile/ci/secret/vendored` | changes to those file classes unless allowed |
 //! | `suppress.added` | lint, type-check or EMI suppressions added |
+//! | `dup.introduced` | added product code that repeats code elsewhere in the tree |
 //! | `growth.net_sloc/files` | growth beyond the task's budget |
 
 pub mod checks;
+pub mod dup;
 pub mod patterns;
 pub mod policy;
 
@@ -109,6 +111,15 @@ pub fn evaluate(
     found.extend(checks::tests(repo, base, head, files));
     found.extend(checks::suppress(files));
     found.extend(checks::growth(files, policy));
+    match dup::introduced(repo, base, head, files) {
+        Ok(d) => found.extend(d),
+        Err(e) => found.push(Finding {
+            id: "dup.unverified",
+            path: ".".into(),
+            line: None,
+            evidence: format!("duplication not checked: {e}"),
+        }),
+    }
     let mut violations: Vec<Violation> = found
         .into_iter()
         .map(|f| Violation {

@@ -224,3 +224,45 @@ fn lockfile_changes_need_review_by_default() {
         guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(report.decision(), "review");
 }
+
+const HELPER: &str = "def normalize(record):\n    name = record['name'].strip().lower()\n    email = record['email'].strip().lower()\n    phone = record['phone'].replace('-', '')\n    city = record['city'].title()\n    country = record['country'].upper()\n    return {'name': name, 'email': email, 'phone': phone, 'city': city, 'country': country}\n";
+
+#[test]
+fn duplicated_code_is_reviewed_but_moved_code_is_not() {
+    let r = repo("dup");
+    write(&r, "src/users.py", HELPER);
+    let base = commit(&r);
+    write(
+        &r,
+        "src/orders.py",
+        &format!(
+            "import os\n\n\n{}",
+            HELPER.replace("normalize", "normalize_order")
+        ),
+    );
+    let copied = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&copied), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        ids(&report),
+        vec!["dup.introduced"],
+        "{:?}",
+        report.violations
+    );
+    assert_eq!(report.decision(), "review");
+    assert!(report.violations[0].evidence.contains("src/users.py"));
+
+    // moving the helper (old copy deleted) is not duplication
+    git(&r.0, &["rm", "-q", "src/orders.py"]);
+    let reset = commit(&r);
+    git(&r.0, &["mv", "src/users.py", "src/people.py"]);
+    write(&r, "src/people.py", &format!("# moved\n{HELPER}"));
+    let moved = commit(&r);
+    let report =
+        guard(&r.0, &reset, Some(&moved), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !ids(&report).contains(&"dup.introduced"),
+        "{:?}",
+        report.violations
+    );
+}

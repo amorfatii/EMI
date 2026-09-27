@@ -242,6 +242,35 @@ fn os_path(bytes: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
+/// Text files at commit `rev` whose path satisfies `keep`, as
+/// `(path, text)`; binary blobs (NUL bytes) and files over `max_bytes`
+/// are skipped. One `ls-tree` and one `cat-file --batch`.
+pub fn text_files_at(
+    repo: &Path,
+    rev: &str,
+    keep: impl Fn(&str) -> bool,
+    max_bytes: usize,
+) -> Result<Vec<(String, String)>> {
+    let entries = parse_ls_tree(&git_bytes(
+        repo,
+        &["ls-tree", "-r", "-z", "--full-tree", rev, "--"],
+    )?)?;
+    let wanted: Vec<(String, String)> = entries
+        .into_iter()
+        .filter(|e| e.kind == "blob" && e.mode != "120000")
+        .map(|e| (String::from_utf8_lossy(&e.path).into_owned(), e.sha))
+        .filter(|(p, _)| keep(p))
+        .collect();
+    let shas: Vec<String> = wanted.iter().map(|(_, s)| s.clone()).collect();
+    let blobs = read_blobs(repo, &shas)?;
+    Ok(wanted
+        .into_iter()
+        .zip(blobs)
+        .filter(|(_, b)| b.len() <= max_bytes && !b.contains(&0))
+        .map(|((p, _), b)| (p, String::from_utf8_lossy(&b).into_owned()))
+        .collect())
+}
+
 /// Read many blobs through one `git cat-file --batch`.
 fn read_blobs(repo: &Path, shas: &[String]) -> Result<Vec<Vec<u8>>> {
     let mut child = Command::new("git")
