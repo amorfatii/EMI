@@ -86,8 +86,13 @@ checking).
   - a failing test replaced by `@skip` and `pass`;
   - `conftest.py` deleted;
   - committed `build/` output.
-- **Precision:** block tier 100/107 overall.
-- **Fixes since:** the misses (skip markers inside test-fixture strings and comments, and suppressions that were only moved) are fixed. Such markers and moved lines are no longer reported.
+- **Precision:** after a blind spot-check by a second reviewer, the test guardrails were right 66/66 times. The block tier overall was 80/107.
+- **The misses, all fixed since:**
+  - skip markers inside test-fixture strings and comments;
+  - suppressions that were moved, or kept on an edited line;
+  - public CA bundles (`cacert.pem`) reported as secrets.
+
+  These are no longer reported.
 
 ## Policy
 
