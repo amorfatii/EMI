@@ -180,11 +180,27 @@ fn is_generated(name: &str) -> bool {
         || name.ends_with("_generated.go")
 }
 
+/// Where a test directory and a vendored directory first occur on the
+/// path: a test directory first means test fixtures (webpack's
+/// `test/configCases/*/node_modules/`), a vendored one first means
+/// third-party code that happens to contain tests.
+fn first_dirs(path: &str) -> (Option<usize>, Option<usize>) {
+    let ds: Vec<&str> = dirs(path).collect();
+    (
+        ds.iter().position(|d| TEST_DIRS.contains(d)),
+        ds.iter().position(|d| VENDORED_DIRS.contains(d)),
+    )
+}
+
 /// The class of a repository-relative path (forward slashes).
 pub fn classify(path: &str) -> PathClass {
     let name = name(path);
-    if dirs(path).any(|d| VENDORED_DIRS.contains(&d)) {
+    let (test_dir, vendored_dir) = first_dirs(path);
+    let fixture = test_dir.is_some_and(|t| vendored_dir.is_none_or(|v| t < v));
+    if vendored_dir.is_some() && !fixture {
         PathClass::Vendored
+    } else if fixture && !is_test_config(name) {
+        PathClass::Test
     } else if is_secret(name) {
         PathClass::SecretLike
     } else if LOCKFILES.contains(&name) {
@@ -251,6 +267,20 @@ mod tests {
         for (path, want) in cases {
             assert_eq!(classify(path), want, "{path}");
         }
+    }
+
+    #[test]
+    fn fixtures_inside_test_directories_are_tests() {
+        assert_eq!(
+            classify("test/configCases/perf/node_modules/core-js/index.js"),
+            Test
+        );
+        assert_eq!(
+            classify("test/configCases/module/import-meta-env/.env"),
+            Test
+        );
+        assert_eq!(classify("tests/fixtures/project/poetry.lock"), Test);
+        assert_eq!(classify("tests/conftest.py"), TestConfig);
     }
 
     #[test]

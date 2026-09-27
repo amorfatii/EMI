@@ -176,3 +176,51 @@ fn worktree_and_budgets() {
     assert_eq!(report.decision(), "review");
     assert_eq!(report.to_json()["head"], "worktree");
 }
+
+#[test]
+fn a_split_is_not_weakening_but_a_lint_only_tox_change_is_not_test_config() {
+    let r = repo("split");
+    write(
+        &r,
+        "tox.ini",
+        "[testenv]\ncommands = pytest\n\n[testenv:lint]\ndeps = flake8\n",
+    );
+    let base = commit(&r);
+    // move test_b into its own file: totals unchanged
+    write(
+        &r,
+        "tests/test_app.py",
+        "def test_a():\n    assert f() == 1\n    assert f() > 0\n",
+    );
+    write(&r, "tests/test_b.py", "def test_b():\n    assert f()\n");
+    write(
+        &r,
+        "tox.ini",
+        "[testenv]\ncommands = pytest\n\n[testenv:lint]\ndeps = flake8>=7\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
+    // a change to the test environment is test configuration
+    write(
+        &r,
+        "tox.ini",
+        "[testenv]\ncommands = pytest -x --deselect tests\n\n[testenv:lint]\ndeps = flake8>=7\n",
+    );
+    let head2 = commit(&r);
+    let report =
+        guard(&r.0, &head, Some(&head2), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(ids(&report), vec!["tests.config_changed"]);
+}
+
+#[test]
+fn lockfile_changes_need_review_by_default() {
+    let r = repo("lock");
+    let base = commit(&r);
+    write(&r, "poetry.lock", "# lock v2\n");
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(report.decision(), "review");
+}

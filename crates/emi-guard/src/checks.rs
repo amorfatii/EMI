@@ -1,6 +1,7 @@
 //! The guardrail checks. Each takes the change and returns raw findings
 //! `(id, path, line, evidence)`; the engine assigns tiers from the policy.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use emi_diff::hunks::{FileChange, Status, file_at};
@@ -138,15 +139,57 @@ const TEST_SECTIONS: &[&str] = &[
     "[profile.test]",
 ];
 
-/// Section header (`[...]`) in force at 1-based `line` of `text`.
-fn section_at(text: &str, line: u32) -> Option<&str> {
+/// Names of tox environments or nox sessions that are not tests.
+const NON_TEST_WORDS: &[&str] = &[
+    "lint",
+    "format",
+    "fmt",
+    "pep8",
+    "flake8",
+    "black",
+    "ruff",
+    "mypy",
+    "typing",
+    "pyright",
+    "docs",
+    "style",
+    "zimports",
+    "isort",
+    "pre-commit",
+    "precommit",
+];
+
+fn non_test_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    NON_TEST_WORDS.iter().any(|w| lower.contains(w))
+}
+
+/// The last line of `text` up to 1-based `line` satisfying `pick`.
+fn enclosing(text: &str, line: u32, pick: impl Fn(&str) -> bool) -> Option<&str> {
     text.lines()
         .take(line as usize)
-        .filter(|l| l.trim_start().starts_with('['))
+        .filter(|l| pick(l))
         .last()
         .map(str::trim)
 }
 
+/// Does changed `line` of `text` configure tests in file `name`?
+fn configures_tests(name: &str, text: &str, line: u32) -> bool {
+    match name {
+        // tox: every environment runs tests unless it is a lint/docs one
+        "tox.ini" => enclosing(text, line, |l| l.trim_start().starts_with('['))
+            .is_none_or(|s| !non_test_name(s)),
+        // nox: the enclosing session function decides
+        "noxfile.py" => enclosing(text, line, |l| l.trim_start().starts_with("def "))
+            .is_none_or(|d| !non_test_name(d)),
+        _ => enclosing(text, line, |l| l.trim_start().starts_with('['))
+            .is_some_and(|s| TEST_SECTIONS.iter().any(|t| s.starts_with(t))),
+    }
+}
+
+/// A changed line of a shared or multipurpose config file that configures
+/// tests (pyproject/setup.cfg/Cargo sections; tox environments and nox
+/// sessions other than lint, format or docs ones).
 fn config_section_changed(
     repo: &Path,
     base: &str,
@@ -156,65 +199,86 @@ fn config_section_changed(
     let name = fc.path.rsplit('/').next().unwrap_or(&fc.path);
     if !matches!(
         name,
-        "pyproject.toml" | "setup.cfg" | "tox.ini" | "Cargo.toml"
+        "pyproject.toml" | "setup.cfg" | "tox.ini" | "Cargo.toml" | "noxfile.py"
     ) {
         return None;
     }
     let new = file_at(repo, head, &fc.path).unwrap_or_default();
     let old =
         file_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path)).unwrap_or_default();
-    let in_test_section = |text: &str, line: u32| {
-        section_at(text, line).is_some_and(|s| TEST_SECTIONS.iter().any(|t| s.starts_with(t)))
-    };
     fc.added
         .iter()
-        .find(|(l, _)| in_test_section(&new, *l))
-        .or_else(|| fc.removed.iter().find(|(l, _)| in_test_section(&old, *l)))
+        .find(|(l, _)| configures_tests(name, &new, *l))
+        .or_else(|| {
+            fc.removed
+                .iter()
+                .find(|(l, _)| configures_tests(name, &old, *l))
+        })
         .map(|(l, t)| (*l, t.trim().to_owned()))
 }
 
-/// `tests.*`: deleted test files, fewer tests or assertions in a changed
-/// test file, skip markers added, and changed test configuration.
+/// Multipurpose runners judged by content (see `config_section_changed`).
+fn multipurpose(path: &str) -> bool {
+    matches!(
+        path.rsplit('/').next().unwrap_or(path),
+        "tox.ini" | "noxfile.py"
+    )
+}
+
+/// `tests.deleted` for one file change, if it deletes a test file or moves
+/// one out of the test layout.
+fn deleted(fc: &FileChange) -> Option<Finding> {
+    let old_path = fc.old_path.as_deref().unwrap_or(&fc.path);
+    match fc.status {
+        Status::Deleted if is_test(&fc.path) => Some(finding(
+            "tests.deleted",
+            &fc.path,
+            None,
+            "test file deleted",
+        )),
+        Status::Renamed if is_test(old_path) && !is_test(&fc.path) => Some(finding(
+            "tests.deleted",
+            old_path,
+            None,
+            format!("test file moved out of the test layout to {}", fc.path),
+        )),
+        _ => None,
+    }
+}
+
+/// `tests.config_changed` for one file change.
+fn config_changed(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) -> Option<Finding> {
+    if classify(&fc.path) == PathClass::TestConfig
+        && fc.status != Status::Added
+        && !multipurpose(&fc.path)
+    {
+        return Some(finding(
+            "tests.config_changed",
+            &fc.path,
+            None,
+            "test or coverage configuration changed",
+        ));
+    }
+    config_section_changed(repo, base, head, fc).map(|(line, text)| {
+        finding(
+            "tests.config_changed",
+            &fc.path,
+            Some(line),
+            format!("test configuration: {text}"),
+        )
+    })
+}
+
+/// `tests.*`: deleted test files, skip markers added, changed test
+/// configuration, and fewer tests or assertions across the change.
 pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
     let mut out = Vec::new();
     for fc in files.iter().filter(|f| !f.binary) {
-        let old_path = fc.old_path.as_deref().unwrap_or(&fc.path);
-        match fc.status {
-            Status::Deleted if is_test(&fc.path) => {
-                out.push(finding(
-                    "tests.deleted",
-                    &fc.path,
-                    None,
-                    "test file deleted",
-                ));
-                continue;
-            }
-            Status::Renamed if is_test(old_path) && !is_test(&fc.path) => {
-                out.push(finding(
-                    "tests.deleted",
-                    old_path,
-                    None,
-                    format!("test file moved out of the test layout to {}", fc.path),
-                ));
-                continue;
-            }
-            _ => {}
+        if let Some(f) = deleted(fc) {
+            out.push(f);
+            continue;
         }
-        if classify(&fc.path) == PathClass::TestConfig && fc.status != Status::Added {
-            out.push(finding(
-                "tests.config_changed",
-                &fc.path,
-                None,
-                "test or coverage configuration changed",
-            ));
-        } else if let Some((line, text)) = config_section_changed(repo, base, head, fc) {
-            out.push(finding(
-                "tests.config_changed",
-                &fc.path,
-                Some(line),
-                format!("test/coverage section: {text}"),
-            ));
-        }
+        out.extend(config_changed(repo, base, head, fc));
         for (line, text) in &fc.added {
             if let Some(kind) = first_match(&SKIP, text) {
                 out.push(finding(
@@ -225,48 +289,67 @@ pub fn tests(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) 
                 ));
             }
         }
-        if fc.status != Status::Added && is_test(&fc.path) {
-            out.extend(counts(repo, base, head, fc, old_path));
-        }
     }
+    out.extend(counts(repo, base, head, files));
     out
 }
 
-/// Fewer tests or assertions in a test file that exists on both sides.
-fn counts(
-    repo: &Path,
-    base: &str,
-    head: Option<&str>,
-    fc: &FileChange,
-    old_path: &str,
-) -> Vec<Finding> {
-    let Some(lang) = lang_of(&fc.path) else {
-        return Vec::new();
-    };
-    let (Some(old), Some(new)) = (
-        file_at(repo, Some(base), old_path),
-        file_at(repo, head, &fc.path),
-    ) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let (t0, t1) = (count_tests(lang, &old), count_tests(lang, &new));
-    if t1 < t0 {
-        out.push(finding(
-            "tests.fewer",
-            &fc.path,
-            None,
-            format!("test cases {t0} -> {t1}"),
-        ));
+/// (test cases, assertions) on one side of the change.
+type Side = (usize, usize);
+/// Per language: old side, new side, and each file's net change.
+type Totals = std::collections::BTreeMap<String, (Side, Side, Vec<(String, i64)>)>;
+/// Test cases and assertions on each side, per language, summed over the
+/// change's test files that are not deleted (deletions are `tests.deleted`).
+/// Summing across files keeps a split or move from reading as removal.
+fn counts(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
+    let mut totals: Totals = BTreeMap::new();
+    for fc in files
+        .iter()
+        .filter(|f| !f.binary && f.status != Status::Deleted && is_test(&f.path))
+    {
+        let Some(lang) = lang_of(&fc.path) else {
+            continue;
+        };
+        let new = file_at(repo, head, &fc.path).unwrap_or_default();
+        let old = if fc.status == Status::Added {
+            String::new()
+        } else {
+            file_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path))
+                .unwrap_or_default()
+        };
+        let entry = totals.entry(format!("{lang:?}")).or_default();
+        let (t0, a0) = (count_tests(lang, &old), count_assertions(lang, &old));
+        let (t1, a1) = (count_tests(lang, &new), count_assertions(lang, &new));
+        entry.0 = (entry.0.0 + t0, entry.0.1 + a0);
+        entry.1 = (entry.1.0 + t1, entry.1.1 + a1);
+        entry
+            .2
+            .push((fc.path.clone(), (t1 + a1) as i64 - (t0 + a0) as i64));
     }
-    let (a0, a1) = (count_assertions(lang, &old), count_assertions(lang, &new));
-    if a1 < a0 {
-        out.push(finding(
-            "tests.fewer_assertions",
-            &fc.path,
-            None,
-            format!("assertions {a0} -> {a1}"),
-        ));
+    let mut out = Vec::new();
+    for ((t0, a0), (t1, a1), per_file) in totals.into_values() {
+        let files = per_file.len();
+        // report at the file that lost the most
+        let at = per_file
+            .iter()
+            .min_by_key(|(_, d)| *d)
+            .map_or(".", |(p, _)| p.as_str());
+        if t1 < t0 {
+            out.push(finding(
+                "tests.fewer",
+                at,
+                None,
+                format!("test cases {t0} -> {t1} across {files} changed test file(s)"),
+            ));
+        }
+        if a1 < a0 {
+            out.push(finding(
+                "tests.fewer_assertions",
+                at,
+                None,
+                format!("assertions {a0} -> {a1} across {files} changed test file(s)"),
+            ));
+        }
     }
     out
 }

@@ -42,6 +42,11 @@ impl Tier {
 /// Default tier by guardrail family: unambiguous violations block,
 /// judgment calls need review.
 pub fn default_tier(id: &str) -> Tier {
+    // GV1: lockfiles change in 11.7% of human commits (dependency
+    // updates), too common to block without context.
+    if id == "prohibited.lockfile" {
+        return Tier::Review;
+    }
     let family = id.split('.').next().unwrap_or(id);
     match family {
         "scope" | "tests" | "prohibited" => Tier::Block,
