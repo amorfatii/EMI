@@ -100,8 +100,11 @@ static PY_TEST: LazyLock<Regex> = LazyLock::new(|| re(r"(?m)^\s*(async\s+)?def\s
 static PY_ASSERT: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?m)(^\s*assert\b|\bself\.assert\w+\s*\(|\bpytest\.raises\s*\(|\bpytest\.approx\s*\()")
 });
-static JS_TEST: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(^|[^\w.$])(it|test)(\.only|\.each\s*\([^)]*\)|\.concurrent)?\s*\("));
+/// Test definitions, skipped ones included: skipping is `tests.skip_added`,
+/// `tests.fewer` means definitions were removed.
+static JS_TEST: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(^|[^\w.$])x?(it|test)(\.only|\.skip|\.todo|\.each\s*\([^)]*\)|\.concurrent)?\s*\(")
+});
 static JS_ASSERT: LazyLock<Regex> = LazyLock::new(|| {
     re(
         r"(\bexpect\s*\(|\bassert(\.\w+)?\s*\(|\.should\b|\bt\.(is|deepEqual|true|false|throws)\s*\()",
@@ -229,7 +232,8 @@ mod tests {
         let js = "describe('x', () => {\n  it('a', () => { expect(f()).toBe(1); });\n  test.each([1])('b', () => { assert.equal(1, 1); });\n  it.skip('c', () => {});\n});\n";
         assert_eq!(
             (count_tests(Lang::Js, js), count_assertions(Lang::Js, js)),
-            (2, 2)
+            (3, 2),
+            "it.skip still defines a test"
         );
         let go = "func TestA(t *testing.T) {\n\tif f() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n\trequire.NoError(t, err)\n}\nfunc helper() {}\n";
         assert_eq!(
