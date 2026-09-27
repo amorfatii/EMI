@@ -43,8 +43,10 @@ impl Tier {
 /// judgment calls need review.
 pub fn default_tier(id: &str) -> Tier {
     // GV1: lockfiles change in 11.7% of human commits (dependency
-    // updates), too common to block without context.
-    if id == "prohibited.lockfile" {
+    // updates), too common to block without context. Fewer assertions can
+    // be a refactor into table-driven tests that checks the same cases,
+    // which counting cannot tell apart (GV1 round 4).
+    if matches!(id, "prohibited.lockfile" | "tests.fewer_assertions") {
         return Tier::Review;
     }
     let family = id.split('.').next().unwrap_or(id);

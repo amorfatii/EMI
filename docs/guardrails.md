@@ -39,7 +39,7 @@ and evidence.
 | `scope.outside` / `.excluded` / `.protected` / `.kind` | Edits outside the permitted paths, to excluded or protected paths, or of a forbidden kind (policy scope; tasks use their envelope) | block |
 | `tests.deleted` | A test file deleted, or moved out of the test layout | block |
 | `tests.fewer` | Fewer test definitions across the change's test files (Python `def test_*`, JS/TS `it`/`test`, Go `func Test*`, Rust `#[test]`, JUnit `@Test`) | block |
-| `tests.fewer_assertions` | Fewer assertions across the change's test files | block |
+| `tests.fewer_assertions` | Fewer assertions across the change's test files (a table-driven refactor can check the same cases with fewer asserts) | review |
 | `tests.skip_added` | Skip, ignore or xfail added: `@pytest.mark.skip/skipif/xfail`, `pytest.skip()`, `unittest.skip*`, `it.skip`/`xit`/`describe.skip`, `this.skip()`, `t.Skip`, `#[ignore]`, `@Disabled` | block |
 | `tests.config_changed` | Test or coverage configuration changed: `pytest.ini`, `conftest.py`, jest/vitest/karma/mocha/playwright configs, `.coveragerc`, `.nycrc`, codecov; test sections of `pyproject.toml`/`setup.cfg`/`Cargo.toml`; test environments of `tox.ini` and test sessions of `noxfile.py` | block |
 | `prohibited.ci` | CI configuration (`.github/workflows`, `.gitlab-ci.yml`, …) changed | block |
@@ -72,17 +72,17 @@ blind sample of the labels.
 | `prohibited.ci` | block | 20/20 | 20/20 |
 | `tests.skip_added` | block | 8/8 | 8/8 |
 | `tests.fewer` | block | 9/10 | 9/9 |
-| `tests.fewer_assertions` | block | 12/16 | 11/13 |
+| `tests.fewer_assertions` | review | 12/16 | 11/13 |
 | `tests.deleted` | block | 13/20 | 12/14 |
 | `tests.config_changed` | block | 11/20 | 11/13 |
 | `suppress.added` | review | 15/20 | 15/15 |
 | `dup.introduced` | review | 10/20 | 10/10 |
 
 "After fixes" re-checks the same firings, so it is not an independent
-estimate; a fresh round is pending. The remaining weak spot is
-`tests.fewer_assertions`: a refactor into table-driven tests checks the
-same cases with fewer assert statements, which counting cannot tell
-apart.
+estimate; a fresh round is pending. `tests.fewer_assertions` needs review
+by default: a refactor into table-driven tests checks the same cases with
+fewer assert statements, which counting cannot tell apart from deleted
+checks.
 
 Lockfiles changed in 11.7% of human commits, too often to block without
 context, so `prohibited.lockfile` needs review by default. The guard

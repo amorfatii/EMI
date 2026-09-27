@@ -137,6 +137,16 @@ fn every_core_guardrail_fires() {
         .find(|v| v.id == "suppress.added")
         .map(|v| (v.tier, v.line));
     assert_eq!(noqa, Some((Tier::Review, Some(2))));
+    let assertions = report
+        .violations
+        .iter()
+        .find(|v| v.id == "tests.fewer_assertions")
+        .map(|v| v.tier);
+    assert_eq!(
+        assertions,
+        Some(Tier::Review),
+        "a refactor can drop asserts"
+    );
     let outside = report
         .violations
         .iter()
