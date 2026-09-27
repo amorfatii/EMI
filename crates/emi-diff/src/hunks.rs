@@ -87,6 +87,25 @@ pub fn changes(repo: &Path, base: &str, head: Option<&str>) -> Result<Vec<FileCh
     Ok(files)
 }
 
+/// Text of `path` at commit `rev`, or in the working tree when `None`;
+/// `None` when the path does not exist there or is not valid text.
+pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Option<String> {
+    let bytes = match rev {
+        Some(r) => git_bytes(repo, &["show", &format!("{r}:{path}")]).ok()?,
+        None => {
+            let top =
+                String::from_utf8_lossy(&git_bytes(repo, &["rev-parse", "--show-toplevel"]).ok()?)
+                    .trim()
+                    .to_owned();
+            std::fs::read(Path::new(&top).join(path)).ok()?
+        }
+    };
+    if bytes.contains(&0) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Untracked, non-ignored files of the working tree, as additions of all
 /// their lines (binary files flagged, without lines).
 fn untracked(repo: &Path) -> Result<Vec<FileChange>> {

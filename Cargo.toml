@@ -19,6 +19,7 @@ emi-lang-go = { path = "crates/emi-lang-go" }
 emi-scan = { path = "crates/emi-scan" }
 emi-history = { path = "crates/emi-history" }
 emi-rules = { path = "crates/emi-rules" }
+emi-guard = { path = "crates/emi-guard" }
 emi-exec = { path = "crates/emi-exec" }
 emi-controller = { path = "crates/emi-controller" }
 emi-lsp = { path = "crates/emi-lsp" }
