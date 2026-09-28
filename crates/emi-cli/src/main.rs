@@ -11,6 +11,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 
 mod checkcli;
 mod diffcli;
+mod explaincli;
 mod gatecli;
 mod guardcli;
 mod historycli;
@@ -148,6 +149,9 @@ enum Command {
     /// Verifiable guardrails on a change: scope, weakened tests, prohibited
     /// files, new suppressions, growth (exit 2 on a blocking violation).
     Guard(guardcli::GuardArgs),
+    /// Why each function carries graded erosion, and the small structural
+    /// steps that lower it.
+    Explain(explaincli::ExplainArgs),
     /// Print the classic per-function metrics `graded` is built from (SLOC,
     /// cognitive complexity, Halstead volume), as the lab panel defines them.
     Panel {
@@ -307,6 +311,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Report(args) => report::run(&args),
         Command::Guard(args) => guardcli::run(&args),
         Command::Panel { files } => panel(&files),
+        Command::Explain(args) => explaincli::run(&args),
         Command::Lsp => {
             emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)

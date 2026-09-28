@@ -12,6 +12,8 @@ use std::collections::HashMap;
 
 use tree_sitter::{Language, Node, Parser};
 
+pub mod explain;
+
 /// Parentheses a logical sequence and a condition may be wrapped in.
 const PARENS: [&str; 2] = ["parenthesized_expression", "condition_clause"];
 /// Punctuation that is not a Halstead operator.
@@ -205,6 +207,20 @@ pub struct Function {
     pub sloc: u32,
     pub cognitive: u32,
     pub halstead_volume: f64,
+    /// Where the cognitive complexity comes from, in source order.
+    pub increments: Vec<Increment>,
+}
+
+/// One cognitive-complexity increment: the structure that costs, where.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Increment {
+    pub line: u32,
+    pub cost: u32,
+    /// The structure's nesting level (0 at the function's top level).
+    pub nesting: u32,
+    /// `if`, `loop`, `else if`, `else`, `catch`, `switch`, `ternary`,
+    /// `boolean sequence`, `labelled jump`, `goto`, or the node kind.
+    pub reason: String,
 }
 
 /// 1-based line of a byte offset, from the source's newline offsets.
@@ -274,12 +290,24 @@ fn code_lines(root: Node, spec: &Spec, line: &LineIndex) -> std::collections::Ha
 struct Pass<'a> {
     spec: &'static Spec,
     src: &'a [u8],
+    line: &'a LineIndex,
     cognitive: u32,
+    increments: Vec<Increment>,
     operators: HashMap<&'static str, u32>,
     operands: HashMap<String, u32>,
 }
 
 impl Pass<'_> {
+    fn add(&mut self, node: Node, cost: u32, nesting: u32, reason: &str) {
+        self.cognitive += cost;
+        self.increments.push(Increment {
+            line: self.line.line(node.start_byte()),
+            cost,
+            nesting,
+            reason: reason.to_owned(),
+        });
+    }
+
     fn operator_of(node: Node<'_>) -> Option<Node<'_>> {
         node.child_by_field_name("operator")
             .or_else(|| children(node).into_iter().find(|c| !c.is_named()))
@@ -370,7 +398,7 @@ impl Pass<'_> {
             return vec![(inner[0], if chained { level } else { child_level }, chained)];
         }
         if parent_kind == self.spec.if_kind {
-            self.cognitive += 1;
+            self.add(clause, 1, level, "else");
         }
         children(clause)
             .into_iter()
@@ -395,27 +423,35 @@ impl Pass<'_> {
                 .enumerate()
                 .filter(|&(i, op)| i == 0 || counted[i - 1] != *op)
                 .count();
-            self.cognitive += u32::try_from(runs).unwrap_or(u32::MAX);
+            if runs > 0 {
+                let runs = u32::try_from(runs).unwrap_or(u32::MAX);
+                self.add(node, runs, level, "boolean sequence");
+            }
         }
         if spec.nesting_incr.contains(&kind) {
             // an else-if continuation costs 1 whatever its depth
-            self.cognitive += if chained { 1 } else { 1 + level };
+            let what = structure(kind);
+            if chained {
+                self.add(node, 1, level, "else if");
+            } else {
+                self.add(node, 1 + level, level, what);
+            }
             child_level = level + 1;
         } else if spec.nesting_only.contains(&kind) {
             child_level = level + 1;
         }
         if spec.elif == Some(kind) {
-            self.cognitive += 1;
+            self.add(node, 1, level, "else if");
         }
         if spec.jumps.contains(&kind)
             && children(node)
                 .iter()
                 .any(|c| spec.jump_label.contains(&c.kind()))
         {
-            self.cognitive += 1;
+            self.add(node, 1, level, "labelled jump");
         }
         if spec.goto.contains(&kind) {
-            self.cognitive += 1;
+            self.add(node, 1, level, "goto");
         }
         child_level
     }
@@ -449,7 +485,7 @@ impl Pass<'_> {
                 } else if child.kind() == "block"
                     && go_alternative.is_some_and(|a| a.id() == child.id())
                 {
-                    self.cognitive += 1; // Go plain else
+                    self.add(child, 1, level, "else"); // Go plain else
                     stack.push((child, child_level, false));
                 } else if spec.else_kind == Some(child.kind()) {
                     let items = self.else_children(child, kind, level, child_level);
@@ -470,6 +506,24 @@ impl Pass<'_> {
         } else {
             0.0
         }
+    }
+}
+
+/// A readable name for a costed structure.
+fn structure(kind: &str) -> &'static str {
+    match kind {
+        k if k.starts_with("if") => "if",
+        k if k.starts_with("for")
+            || k.starts_with("while")
+            || k.starts_with("do")
+            || k.starts_with("loop") =>
+        {
+            "loop"
+        }
+        "catch_clause" | "except_clause" => "catch",
+        k if k.contains("switch") || k.starts_with("match") || k.starts_with("select") => "switch",
+        "ternary_expression" | "conditional_expression" => "conditional expression",
+        _ => "nesting structure",
     }
 }
 
@@ -521,7 +575,9 @@ pub fn functions(lang: Lang, src: &[u8]) -> Vec<Function> {
             let mut pass = Pass {
                 spec,
                 src,
+                line: &line,
                 cognitive: 0,
+                increments: Vec::new(),
                 operators: HashMap::new(),
                 operands: HashMap::new(),
             };
@@ -535,6 +591,11 @@ pub fn functions(lang: Lang, src: &[u8]) -> Vec<Function> {
                 sloc: u32::try_from(sloc).unwrap_or(u32::MAX),
                 cognitive: pass.cognitive,
                 halstead_volume: pass.volume(),
+                increments: {
+                    let mut inc = pass.increments;
+                    inc.sort_by_key(|i| i.line);
+                    inc
+                },
             }
         })
         .collect()
