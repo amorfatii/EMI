@@ -22,6 +22,7 @@
 //! Environments nest: a callback sees its enclosing functions' names.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use tree_sitter::Node;
 
@@ -30,7 +31,56 @@ use crate::resolve::Target;
 use crate::rules::{children, named_children, text};
 use Binding::{Dispatch, External, Local, Unknown};
 
-pub type Env = HashMap<String, Binding>;
+/// A lexical environment: this scope's bindings over the enclosing one.
+/// Lookups fall through to the parent, so a scope behaves like a copy of
+/// its parent plus its own names without storing that copy (a bundled file
+/// has thousands of nested functions under one large module scope).
+#[derive(Clone, Debug, Default)]
+pub struct Env {
+    local: HashMap<String, Binding>,
+    parent: Option<Arc<Env>>,
+}
+
+impl Env {
+    pub fn from_map(local: HashMap<String, Binding>) -> Env {
+        Env {
+            local,
+            parent: None,
+        }
+    }
+
+    fn child(parent: &Arc<Env>) -> Env {
+        Env {
+            local: HashMap::new(),
+            parent: Some(Arc::clone(parent)),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Binding> {
+        let mut env = self;
+        loop {
+            if let Some(b) = env.local.get(name) {
+                return Some(b);
+            }
+            env = env.parent.as_deref()?;
+        }
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    fn insert(&mut self, name: String, value: Binding) {
+        self.local.insert(name, value);
+    }
+
+    /// Every visible binding, inner scopes shadowing outer ones.
+    pub fn flatten(&self) -> HashMap<String, Binding> {
+        let mut out = self.parent.as_deref().map(Env::flatten).unwrap_or_default();
+        out.extend(self.local.iter().map(|(k, v)| (k.clone(), v.clone())));
+        out
+    }
+}
 
 /// Least upper bound of two origins.
 pub fn join(a: &Binding, b: &Binding) -> Binding {
@@ -259,9 +309,9 @@ fn bind(env: &mut Env, declared: &mut HashSet<String>, name: String, value: Bind
 }
 
 /// The environment inside `owner`, given the enclosing one.
-fn scope_env(ctx: &FileCtx, owner: Node, outer: &Env, is_root: bool) -> Env {
+fn scope_env(ctx: &FileCtx, owner: Node, outer: &Arc<Env>, is_root: bool) -> Env {
     let w = scope_walk(owner);
-    let mut env = outer.clone();
+    let mut env = Env::child(outer);
     let mut declared = HashSet::new();
     let name_of = |n: Node| text(n, ctx.src).into_owned();
     for p in &w.params {
@@ -328,9 +378,14 @@ fn derived_pick(pattern: Node, value: &Binding) -> Binding {
 
 /// Environment of every function-like node (and the root), top-down so
 /// inner scopes see outer names. `module` holds the import bindings.
-pub fn environments(ctx: &FileCtx, root: Node, module: &Env) -> HashMap<usize, Env> {
+pub fn environments(
+    ctx: &FileCtx,
+    root: Node,
+    module: &HashMap<String, Binding>,
+) -> HashMap<usize, Arc<Env>> {
     let mut envs = HashMap::new();
-    let root_env = scope_env(ctx, root, module, true);
+    let module = Arc::new(Env::from_map(module.clone()));
+    let root_env = Arc::new(scope_env(ctx, root, &module, true));
     let mut stack = vec![(root, root_env)];
     while let Some((node, env)) = stack.pop() {
         let mut inner = Vec::new();
@@ -344,9 +399,32 @@ pub fn environments(ctx: &FileCtx, root: Node, module: &Env) -> HashMap<usize, E
         }
         for f in inner {
             let fenv = scope_env(ctx, f, &env, false);
-            stack.push((f, fenv));
+            stack.push((f, Arc::new(fenv)));
         }
         envs.insert(node.id(), env);
     }
     envs
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    #[test]
+    fn a_scope_reads_like_a_copy_of_its_parent_plus_its_own_names() {
+        let module = Arc::new(Env::from_map(HashMap::from([
+            ("a".to_owned(), Binding::Module("m".into())),
+            ("b".to_owned(), External),
+        ])));
+        let mut inner = Env::child(&module);
+        inner.insert("b".to_owned(), Local); // shadows
+        inner.insert("c".to_owned(), Dispatch);
+        assert_eq!(inner.get("a"), Some(&Binding::Module("m".into())));
+        assert_eq!(inner.get("b"), Some(&Local));
+        assert_eq!(module.get("b"), Some(&External), "the parent is untouched");
+        assert!(inner.contains_key("c") && !module.contains_key("c"));
+        let flat = inner.flatten();
+        assert_eq!(flat.len(), 3);
+        assert_eq!(flat["b"], Local);
+    }
 }

@@ -698,7 +698,7 @@ pub struct FileFacts<'t> {
     pub imports: FileImports,
     /// Precise profile: the lexical environment of each function-like node
     /// and of the root, by node id.
-    pub envs: HashMap<usize, precise::Env>,
+    pub envs: HashMap<usize, std::sync::Arc<precise::Env>>,
     pub symbols: HashSet<String>,
     pub classes: HashMap<String, Node<'t>>,
     /// Import-graph edges of this module.

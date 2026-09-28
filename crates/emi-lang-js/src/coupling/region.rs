@@ -471,9 +471,7 @@ pub fn region_coupling(
     ambiguous: &mut HashSet<String>,
 ) -> RegionCoupling {
     let precise = facts.envs.get(&node.id());
-    let mut bindings = precise
-        .cloned()
-        .unwrap_or_else(|| facts.imports.aliases.clone());
+    let mut bindings = precise.map_or_else(|| facts.imports.aliases.clone(), |env| env.flatten());
     for name in &facts.symbols {
         bindings.entry(name.clone()).or_insert(Local);
     }
