@@ -33,6 +33,20 @@ Common arguments: `repo` (default `.`), `source` (scope directory, default
 `src`), `probe` (`python`/`js`) and `profile` (`graded` by default for
 agents, `parity` for the v0.5.1 contract).
 
+## Refactoring
+
+When asked to simplify code:
+1. Call `emi_explain` on the file. Its `refactoring` list ranks functions by graded erosion and gives line-anchored steps, each with the cognitive complexity it removes.
+2. Make the largest step first:
+   - guard clauses, or extracting the innermost block;
+   - then un-nesting;
+   - then naming conditions;
+   - then table dispatch.
+3. Run the tests after each step.
+4. If the task is supervised, finish with `emi_task_verify`. Its `refactor` gate checks that the targets got simpler, counting code moved into other files. Restored tests and the inventory check that behaviour did not change.
+
+Splitting a function without removing nesting or branches does not count as progress (docs/refactoring.md).
+
 ## The loop
 
 1. Edit.

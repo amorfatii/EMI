@@ -345,6 +345,7 @@ dependencies = [
  "emi-guard",
  "emi-ir",
  "emi-ledger",
+ "emi-panel",
  "emi-scan",
  "serde_json",
 ]
@@ -485,6 +486,7 @@ dependencies = [
  "emi-guard",
  "emi-history",
  "emi-ledger",
+ "emi-panel",
  "emi-scan",
  "serde_json",
 ]
@@ -493,6 +495,7 @@ dependencies = [
 name = "emi-panel"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tree-sitter",
  "tree-sitter-go",
  "tree-sitter-javascript",

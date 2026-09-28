@@ -303,6 +303,7 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
         return Err("warning_policy.treatment must be one of advisory, blocking, review".into());
     }
     let verification = verification(spec.get("verification"))?;
+    let refactor = crate::refactor::spec(spec.get("refactor"))?;
     let mut core = json!({
         "schema_version": SCHEMA,
         "task_id": task_id,
@@ -328,6 +329,9 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
     // only when configured, so contracts without it keep their ids
     if let Some(v) = verification {
         core["verification"] = v;
+    }
+    if let Some(r) = refactor {
+        core["refactor"] = r;
     }
     Ok(Frozen {
         contract: finalize(core),

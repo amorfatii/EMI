@@ -34,6 +34,103 @@ pub enum TaskCommand {
     HookCheck(VerifyArgs),
     /// Install a pre-push hook that runs hook-check.
     InstallHook(HookArgs),
+    /// Print a refactoring task spec: the target must get simpler
+    /// (cognitive complexity) while every existing test keeps passing.
+    RefactorSpec(RefactorSpecArgs),
+}
+
+#[derive(Args)]
+pub struct RefactorSpecArgs {
+    /// Repository (default: current directory).
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+    /// Files to simplify (repository-relative; repeatable).
+    #[arg(long, required = true)]
+    target: Vec<String>,
+    /// Required fall in the targets' cognitive complexity (0-1].
+    #[arg(long, default_value_t = 0.2)]
+    min_reduction: f64,
+    /// Trusted test globs, restored at verify (default: common test layouts).
+    #[arg(long)]
+    tests: Vec<String>,
+    #[arg(long)]
+    task_id: Option<String>,
+    /// The test command, after `--` (argv, no shell).
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
+}
+
+const TEST_GLOBS: &[&str] = &[
+    "tests/*",
+    "test/*",
+    "*/tests/*",
+    "*/test/*",
+    "*/__tests__/*",
+    "*test_*.py",
+    "*_test.py",
+    "*_test.go",
+    "*.test.*",
+    "*.spec.*",
+    "conftest.py",
+    "*/conftest.py",
+];
+
+/// `emi task refactor-spec`: a spec for `emi task create`.
+fn refactor_spec(a: &RefactorSpecArgs) -> anyhow::Result<u8> {
+    let stem = a.target[0]
+        .rsplit('/')
+        .next()
+        .unwrap_or("target")
+        .split('.')
+        .next()
+        .unwrap_or("target")
+        .to_owned();
+    let trusted: Vec<String> = if a.tests.is_empty() {
+        TEST_GLOBS.iter().map(|g| (*g).to_owned()).collect()
+    } else {
+        a.tests.clone()
+    };
+    // the targets, new or changed helpers beside them, and new tests
+    let mut permitted: Vec<String> = a.target.clone();
+    for t in &a.target {
+        if let Some((dir, _)) = t.rsplit_once('/') {
+            permitted.push(format!("{dir}/*"));
+        } else {
+            permitted.push("*".to_owned());
+        }
+    }
+    permitted.extend(trusted.iter().cloned());
+    permitted.sort();
+    permitted.dedup();
+    let mut verification = json!({"trusted": trusted});
+    if a.command.iter().any(|c| c.contains("pytest")) {
+        let mut inventory = a.command.clone();
+        inventory.extend(["--collect-only".to_owned(), "-q".to_owned()]);
+        verification["inventory"] = json!({"command": inventory, "format": "pytest"});
+    }
+    let link: Vec<&str> = [".venv", "venv", "node_modules"]
+        .into_iter()
+        .filter(|d| a.repo.join(d).is_dir())
+        .collect();
+    let spec = json!({
+        "task_id": a.task_id.clone().unwrap_or_else(|| format!("refactor-{stem}")),
+        "repo": a.repo.canonicalize().unwrap_or_else(|_| a.repo.clone()),
+        "baseline": "HEAD",
+        "objective": format!(
+            "Simplify {} without changing behaviour: lower its cognitive complexity by at least {:.0}% \
+             (see `emi explain {}`); every existing test must keep passing.",
+            a.target.join(", "), a.min_reduction * 100.0, a.target.join(" ")),
+        "requirements": [{"id": "R1", "acceptance": "the existing test suite passes unchanged", "checks": ["tests"]}],
+        "checks": {"tests": {"command": a.command, "success": {"exit_code": 0}, "timeout_s": 1800}},
+        "envelope": {"permitted_paths": permitted},
+        "verification": verification,
+        "refactor": {"targets": a.target, "min_cognitive_reduction": a.min_reduction},
+        "execution": {"isolation": "best", "network": false, "link": link},
+        "warning_policy": {"treatment": "review"},
+        "budgets": {"max_retries": 10, "max_time_s": 7200},
+    });
+    println!("{}", serde_json::to_string_pretty(&spec)?);
+    Ok(0)
 }
 
 #[derive(Args)]
@@ -385,7 +482,7 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
             Ok(0)
         }
         TaskCommand::InstallHook(a) => install_hook(a),
-        TaskCommand::Init(_) | TaskCommand::Gate(_) => Ok(0),
+        TaskCommand::Init(_) | TaskCommand::Gate(_) | TaskCommand::RefactorSpec(_) => Ok(0),
     }
 }
 
@@ -426,6 +523,7 @@ pub fn run(cmd: &TaskCommand) -> anyhow::Result<u8> {
     match cmd {
         TaskCommand::Init(a) => init(a),
         TaskCommand::Gate(a) => gate(a),
+        TaskCommand::RefactorSpec(a) => refactor_spec(a),
         other => supervised(other),
     }
 }

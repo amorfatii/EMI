@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::Args;
 use emi_panel::Lang;
-use emi_panel::explain::{Explained, explain};
-use serde_json::{Value, json};
+use emi_panel::explain::{explain, record};
+use serde_json::Value;
 
 #[derive(Args)]
 pub struct ExplainArgs {
@@ -62,23 +62,6 @@ fn files(path: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
         files(&p, out)?;
     }
     Ok(())
-}
-
-fn record(file: &str, e: &Explained) -> Value {
-    let f = &e.function;
-    json!({
-        "file": file, "function": f.name, "start": f.start, "end": f.end, "sloc": f.sloc,
-        "cognitive": f.cognitive, "halstead_volume": f.halstead_volume,
-        "graded": {"total": e.mass.total, "complexity": e.mass.cognitive_part, "size": e.mass.volume_part},
-        "drivers": {"structures": e.drivers.structures, "nesting": e.drivers.nesting,
-                    "boolean_sequences": e.drivers.boolean_sequences,
-                    "else_branches": e.drivers.else_branches, "jumps": e.drivers.jumps},
-        "steps": e.steps.iter().map(|s| json!({"kind": s.kind, "lines": s.lines, "advice": s.advice,
-                                                 "saves_cognitive": s.saves})).collect::<Vec<_>>(),
-        "graded_after_steps": e.mass_after_steps,
-        "cognitive_after_steps": e.cognitive_after_steps,
-        "saturated": e.saturated,
-    })
 }
 
 fn text(r: &Value) -> String {

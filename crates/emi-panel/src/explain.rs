@@ -10,6 +10,8 @@
 //! its density and so its mass, which is why splitting alone does not
 //! lower graded erosion (unlike threshold warnings, which it silences).
 
+use serde_json::{Value, json};
+
 use crate::{Function, Increment, Lang, functions};
 
 /// Cognitive- and volume-density scales, frozen by study G1 (as
@@ -197,6 +199,24 @@ pub fn explain(lang: Lang, src: &[u8]) -> Vec<Explained> {
         .collect();
     out.sort_by(|a, b| b.mass.total.total_cmp(&a.mass.total));
     out
+}
+
+/// One explained function as JSON (`emi explain --format json`, MCP).
+pub fn record(file: &str, e: &Explained) -> Value {
+    let f = &e.function;
+    json!({
+        "file": file, "function": f.name, "start": f.start, "end": f.end, "sloc": f.sloc,
+        "cognitive": f.cognitive, "halstead_volume": f.halstead_volume,
+        "graded": {"total": e.mass.total, "complexity": e.mass.cognitive_part, "size": e.mass.volume_part},
+        "drivers": {"structures": e.drivers.structures, "nesting": e.drivers.nesting,
+                    "boolean_sequences": e.drivers.boolean_sequences,
+                    "else_branches": e.drivers.else_branches, "jumps": e.drivers.jumps},
+        "steps": e.steps.iter().map(|s| json!({"kind": s.kind, "lines": s.lines, "advice": s.advice,
+                                                 "saves_cognitive": s.saves})).collect::<Vec<_>>(),
+        "graded_after_steps": e.mass_after_steps,
+        "cognitive_after_steps": e.cognitive_after_steps,
+        "saturated": e.saturated,
+    })
 }
 
 #[cfg(test)]

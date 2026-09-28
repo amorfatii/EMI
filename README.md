@@ -55,6 +55,8 @@ burden × change frequency, with change coupling, authorship and AI-attributed
 share (`docs/history.md`); `emi diff --history` adds the churn-weighted
 exposure view to reviews.
 
+Refactoring: `emi explain PATH` shows what drives each function's graded erosion and the steps that lower it. `emi task refactor-spec` turns a refactor into a supervised task that must get simpler (cognitive complexity) while every existing test keeps passing (`docs/refactoring.md`).
+
 Profiles: `--profile parity` (default) reproduces the v0.5.1 oracle;
 `--profile precise` measures static coupling with value origins and cuts
 unknown coupling by 97% on the corpus; `--profile graded` adds erosion weighted

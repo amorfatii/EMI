@@ -107,6 +107,12 @@ restored at scoring stopped that without hurting legitimate performance
 product code gets past restored tests, and held-out tests are the answer
 to that.
 
+## Refactoring tasks
+
+The optional `refactor` section, `{"targets": [globs], "min_cognitive_reduction": 0.2}`, requires the targets to get simpler: their cognitive complexity must fall by that share. The measurement includes every non-test file the candidate adds or modifies. Graded erosion must not rise.
+
+Restored trusted tests and the inventory keep the behaviour. `emi task refactor-spec` writes such a spec, and docs/refactoring.md describes the workflow.
+
 ## Decisions
 
 | Decision | When |

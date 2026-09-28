@@ -478,6 +478,7 @@ struct Gates<'a> {
     structural: &'a Value,
     guardrails: &'a Value,
     verification: &'a Value,
+    refactor: &'a Value,
 }
 
 /// Ids of the requirements in `state`.
@@ -497,6 +498,13 @@ fn rejections(ledger: &[Value], g: &Gates) -> Vec<String> {
         reasons.push(format!(
             "requirements failed their checks: {}",
             failed.join(", ")
+        ));
+    }
+    if g.refactor["state"] == "fail" {
+        reasons.push(format!(
+            "the refactor target's cognitive complexity fell {:.0}%, below the required {:.0}%",
+            g.refactor["cognitive_reduction"].as_f64().unwrap_or(0.0) * 100.0,
+            g.refactor["required"].as_f64().unwrap_or(0.0) * 100.0
         ));
     }
     if g.envelope["state"] == "fail" {
@@ -549,12 +557,18 @@ fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
     if g.verification["state"] == "unverified" {
         reasons.push("the test inventory could not be taken".into());
     }
+    if g.refactor["state"] == "unverified" {
+        reasons.push("the refactor targets could not be measured".into());
+    }
     reasons
 }
 
 /// What a person should look at before accepting (empty: nothing).
 fn reviews(g: &Gates) -> Vec<String> {
     let mut reasons = Vec::new();
+    if g.refactor["state"] == "needs_review" {
+        reasons.push("the refactor lowered cognitive complexity but raised graded erosion".into());
+    }
     if g.structural["state"] == "needs_review" {
         reasons.push("structural gate warned; the task's warning policy asks for review".into());
     }
@@ -687,6 +701,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         candidate_ids,
         &scratch,
     );
+    let refactor = crate::refactor::gate(&contract, &repo, &baseline, &workspace, &changed);
     let ledger = ledger(&contract, &statuses);
     let require_all = contract["completion_policy"]["require_all_requirements_verified"]
         .as_bool()
@@ -696,6 +711,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         structural: &structural,
         guardrails: &guardrails,
         verification: &verification,
+        refactor: &refactor,
     };
     let (decision, reasons) = reduce(&ledger, &gates, require_all);
     let elapsed = started.elapsed().as_secs_f64();
@@ -707,7 +723,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     let mut d = head(decision, reasons);
     d["requirements"] = Value::Array(ledger);
     d["gates"] = json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
-                        "verification": verification});
+                        "verification": verification, "refactor": refactor});
     d["checks"] = Value::Array(runs.iter().map(check_summary).collect());
     d["budget"] =
         json!({"retries_used": state["cumulative"]["retries"], "budgets": contract["budgets"]});

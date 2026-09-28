@@ -34,7 +34,7 @@ pub fn list() -> Vec<Value> {
                    "allow_headroom": {"type": "number", "description": "Possible growth behind missing evidence tolerated before a warn."},
                    "max_evidence": {"type": "integer", "description": "Cap on evidence entries (default 5)."}}))}),
         json!({"name": "emi_explain",
-               "description": "Explain one file's measured burden: every region (function) with SLOC, complexity, erosion, redundancy lines, coupling dependencies and unresolved calls, plus clone groups and findings touching the file. Pass `line` to get only the region containing it.",
+               "description": "Explain one file's measured burden: every region (function) with SLOC, complexity, erosion, redundancy lines, coupling dependencies and unresolved calls, plus clone groups and findings touching the file. `refactoring` lists each function's graded erosion, what drives its cognitive complexity (nesting, boolean chains, else branches), and line-anchored steps that lower it, with the cognitive complexity after them. Pass `line` to get only the region containing it.",
                "inputSchema": common_schema(json!({
                    "file": {"type": "string", "description": "Scope-relative file path."},
                    "line": {"type": "integer", "description": "Optional 1-based line."}}))}),
@@ -301,10 +301,31 @@ fn explain(args: &Value) -> Out {
             "{file} is not a measured file of the scope (check source and probe)"
         ));
     }
+    let refactoring = refactoring(args, file, line);
     Ok(
         json!({"file": file, "component": component, "regions": regions.len(), "functions": functions,
-              "clone_groups": clones, "findings": findings}),
+              "clone_groups": clones, "findings": findings, "refactoring": refactoring}),
     )
+}
+
+/// Refactoring guidance for `file` in the working tree (functions around
+/// `line` only, when given), highest graded erosion first.
+fn refactoring(args: &Value, file: &str, line: Option<u64>) -> Vec<Value> {
+    let path = PathBuf::from(text(args, "repo", "."))
+        .join(text(args, "source", "src"))
+        .join(file);
+    let (Some(lang), Ok(src)) = (emi_panel::Lang::of_path(file), std::fs::read(&path)) else {
+        return Vec::new();
+    };
+    emi_panel::explain::explain(lang, &src)
+        .iter()
+        .filter(|e| {
+            line.is_none_or(|l| {
+                (u64::from(e.function.start)..=u64::from(e.function.end)).contains(&l)
+            })
+        })
+        .map(|e| emi_panel::explain::record(file, e))
+        .collect()
 }
 
 /// The region owning `line`: by its eligible lines when recorded (JS),

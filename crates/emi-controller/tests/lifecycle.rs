@@ -413,3 +413,109 @@ fn verification_policy_is_validated_at_freeze() {
     bad["verification"] = json!({"trusted": ["tests/*"], "restore": true});
     assert!(create(&authority.0, &bad).is_err_and(|e| e.contains("unknown key")));
 }
+
+const NESTED: &str = "def classify(n, strict):\n    if n is not None:\n        if n > 0:\n            if strict and n > 100:\n                return 'big'\n            else:\n                return 'pos'\n        else:\n            if n == 0:\n                return 'zero'\n            return 'neg'\n    return 'none'\n";
+const FLAT: &str = "def classify(n, strict):\n    if n is None:\n        return 'none'\n    if n > 0:\n        return 'big' if strict and n > 100 else 'pos'\n    if n == 0:\n        return 'zero'\n    return 'neg'\n";
+
+/// A refactoring task: behaviour kept by the trusted tests, simplification
+/// measured by the refactor gate.
+fn refactor_task(name: &str) -> (Dir, Dir, Store) {
+    let repo = scratch(&format!("{name}-repo"));
+    let authority = scratch(&format!("{name}-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), NESTED).unwrap_or_default();
+    std::fs::write(repo.0.join("util.py"), "X = 1\n").unwrap_or_default();
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("tests/test_app.py"),
+        "from app import classify\nassert classify(None, True) == 'none'\nassert classify(500, True) == 'big'\nassert classify(500, False) == 'pos'\nassert classify(0, True) == 'zero'\nassert classify(-3, True) == 'neg'\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "nested"]);
+    let spec = json!({
+        "task_id": name, "repo": repo.0, "baseline": "HEAD", "objective": "simplify classify()",
+        "requirements": [{"id": "R1", "acceptance": "same behaviour", "checks": ["tests"]}],
+        "checks": {"tests": {"command": ["python3", "-c", "import sys; sys.path.insert(0, '.'); import runpy; runpy.run_path('tests/test_app.py')"],
+                             "success": {"exit_code": 0}, "timeout_s": 30}},
+        "envelope": {"permitted_paths": ["app.py", "helpers.py", "util.py", "tests/*"]},
+        "verification": {"trusted": ["tests/*"]},
+        "refactor": {"targets": ["app.py"], "min_cognitive_reduction": 0.2},
+    });
+    create(&authority.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, name, &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    (repo, authority, store)
+}
+
+#[test]
+fn refactors_must_simplify_and_keep_behaviour() {
+    let (repo, _a, store) = refactor_task("rf");
+    // a real flattening that keeps behaviour
+    std::fs::write(repo.0.join("app.py"), FLAT).unwrap_or_default();
+    let flat = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&flat), "accepted", "{flat}");
+    let r = &flat["gates"]["refactor"];
+    assert!(
+        r["cognitive_reduction"].as_f64().unwrap_or(0.0) >= 0.2,
+        "{r}"
+    );
+
+    // the same shape with a behaviour change: the trusted tests catch it
+    std::fs::write(repo.0.join("app.py"), FLAT.replace("n == 0", "n == 1")).unwrap_or_default();
+    assert_eq!(decision(&check(&store, Candidate::Worktree)), "rejected");
+
+    // cosmetic change only: behaviour kept, nothing simpler
+    std::fs::write(
+        repo.0.join("app.py"),
+        NESTED.replace("strict", "strict_mode"),
+    )
+    .unwrap_or_default();
+    let cosmetic = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&cosmetic), "rejected", "{cosmetic}");
+    assert!(
+        cosmetic["reasons"]
+            .to_string()
+            .contains("cognitive complexity fell")
+    );
+
+    // moving the function to a new module is not a simplification
+    std::fs::write(repo.0.join("helpers.py"), NESTED).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("app.py"),
+        "from helpers import classify  # noqa: F401\n",
+    )
+    .unwrap_or_default();
+    let moved = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&moved), "rejected", "{moved}");
+    std::fs::remove_file(repo.0.join("helpers.py")).unwrap_or_default();
+
+    // ... nor is moving it into a file that already exists
+    std::fs::write(repo.0.join("util.py"), format!("X = 1\n\n\n{NESTED}")).unwrap_or_default();
+    git(&repo.0, &["checkout", "-q", "app.py"]);
+    std::fs::write(
+        repo.0.join("app.py"),
+        "from util import classify  # noqa: F401\n",
+    )
+    .unwrap_or_default();
+    let moved = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&moved), "rejected", "{moved}");
+}
+
+#[test]
+fn refactor_policy_is_validated_at_freeze() {
+    let repo = scratch("rf-bad-repo");
+    let authority = scratch("rf-bad-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("a.py"), "x = 1\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "c"]);
+    for bad in [
+        json!({"targets": []}),
+        json!({"targets": ["a.py"], "min_cognitive_reduction": 0}),
+        json!({"targets": ["a.py"], "typo": 1}),
+    ] {
+        let mut s = spec(&repo.0, "rf-bad");
+        s["refactor"] = bad.clone();
+        assert!(create(&authority.0, &s).is_err(), "{bad} accepted");
+    }
+}

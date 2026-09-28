@@ -130,11 +130,11 @@ impl Store {
             ) {
                 return Err(format!("{k} cannot be revised"));
             }
-            core[k] = if k == "verification" {
+            core[k] = match k.as_str() {
                 // validated (and held-out files frozen) like at creation
-                contract::verification(Some(v))?.unwrap_or(Value::Null)
-            } else {
-                v.clone()
+                "verification" => contract::verification(Some(v))?.unwrap_or(Value::Null),
+                "refactor" => crate::refactor::spec(Some(v))?.unwrap_or(Value::Null),
+                _ => v.clone(),
             };
         }
         core["revision"] = json!(old["revision"].as_u64().unwrap_or(1) + 1);
