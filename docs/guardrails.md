@@ -45,11 +45,11 @@ and evidence.
 | `tests.assertion_trivialized` | An assertion that cannot fail added to a test file (`assert True`, `self.assertTrue(True)`, `expect(true).toBe(true)`, `assert!(true)`), e.g. a real check replaced with the same count | review |
 | `tests.config_changed` | Test or coverage configuration changed: `pytest.ini`, `conftest.py`, jest/vitest/karma/mocha/playwright configs, `.coveragerc`, `.nycrc`, codecov; test sections of `pyproject.toml`/`setup.cfg`/`Cargo.toml`; test environments of `tox.ini` and test sessions of `noxfile.py` | review |
 | `prohibited.ci` | CI configuration (`.github/workflows`, `.gitlab-ci.yml`, …) changed | block |
-| `prohibited.secret` | A secret-like file (`.env*`, `*.pem`, `id_rsa*`, `.npmrc`, …) changed | block |
-| `prohibited.vendored` | Vendored third-party code (`vendor/`, `node_modules/`, `third_party/`) changed | block |
+| `prohibited.secret` | A secret-like file (`.env*` other than templates, `*.pem` with a private key, `id_rsa*`, `.npmrc`, …) changed | review |
+| `prohibited.vendored` | Vendored third-party code (`vendor/`, `node_modules/`, `third_party/`, CMake `_deps/`) changed | block |
 | `prohibited.lockfile` | A lockfile changed | review |
-| `suppress.added` | A suppression added: `# noqa`, `# type: ignore`, `# pylint: disable`, `# pragma: no cover`, `eslint-disable`, `@ts-ignore/@ts-expect-error`, `c8/istanbul ignore`, `#[allow(...)]`, `//nolint`, `@SuppressWarnings`, or an `emi-ignore` without a reason | review |
-| `dup.introduced` | Added product code repeating 6+ significant lines found elsewhere in the tree (moved code does not count) | review |
+| `suppress.added` | A suppression added: `# noqa`, `# type: ignore`, `# pylint: disable`, `# pragma: no cover`, `eslint-disable`, `@ts-ignore/@ts-expect-error`, `c8/istanbul ignore`, `#[allow(...)]`, `//nolint`, `@SuppressWarnings`, or an `emi-ignore` without a reason, in the project's own code (not vendored or generated files) | review |
+| `dup.introduced` | Added product code repeating 6+ significant lines found elsewhere in the tree (moved code, a duplicate the file already had, comments, export lists and `dist*/` build output do not count) | review |
 | `growth.net_sloc` / `growth.files` | Net added lines or touched files beyond the policy budget | review |
 
 **Details that keep the checks precise:**
@@ -57,6 +57,7 @@ and evidence.
 - Test and assertion counts are summed across the change, so splitting a test file is not a removal.
 - Markers inside string literals are ignored.
 - Files under `example(s)/` are documentation.
+- A new package's manifest (an added `pyproject.toml`) does not change existing test configuration.
 
 **Detectors vs. guarantees.** These checks report what a change did. In a
 supervised task, the contract's `verification` section (docs/tasks.md)
@@ -92,6 +93,20 @@ default rather than tuned further.
 | `suppress.added` | review | 19/20 |
 | `dup.introduced` | review | 16/20 (docs example variants; a generated file) |
 | `tests.skip_new_test`, `tests.assertion_trivialized` | review | new in v0.2, not yet measured |
+
+**On agent pull requests** (study S7: 4,704 real PRs from 149 repositories, emi v0.1):
+- **Weakening:** agent PRs did not weaken tests more often than human PRs in the same repositories.
+- **Precision:** 198 sampled firings were labelled, with 40 spot-checked blind by a second reviewer.
+- **False alarms found:**
+  - `skip_added` fired on skips in new tests (split out in v0.2);
+  - `suppress.added` fired inside `node_modules/`, `vendor/`, CMake `_deps/` and coverage reports;
+  - `dup.introduced` fired on license headers, `__all__` lists, compiled `dist-cjs/` copies, and duplicates that already existed and were only reformatted;
+  - `config_changed` fired on new packages' `pyproject.toml` files;
+  - `prohibited.secret` fired on `.env.template` files, version pins and `${VAR}` placeholders (0/4, and 0/20 in S6).
+- **v0.3 changes:**
+  - v0.3 fixes these classes;
+  - `prohibited.secret` is demoted to review.
+- **Replayed on the S7 sample:** no true firing was lost, and 42 of 55 false alarms went quiet. That is a development check on the sample that found them; precision on a fresh sample is still to be measured.
 
 The block tier was right 36 of 36 times: the described event happened (exact 95% interval 0.90 to 1.00). Whether it was harmful is a separate question, since a CI edit or a deleted test can be legitimate. That is why blocking is limited to events that need a person's say-so either way. Any id can be made blocking
 for a project with the policy's `tiers`.

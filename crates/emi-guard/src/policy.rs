@@ -49,10 +49,13 @@ pub fn default_tier(id: &str) -> Tier {
     //   tell apart;
     // - test configuration edits were real only 17/20 times in round 5.
     // Round 5 is final: an id below 0.95 precision is demoted, not tuned.
+    // From S6 and S7 (agent patches and PRs): a secret-like file almost
+    // never held a secret (0/24: templates, placeholders, settings).
     // v0.2 ids start at review until their precision is measured.
     if matches!(
         id,
         "prohibited.lockfile"
+            | "prohibited.secret"
             | "tests.fewer_assertions"
             | "tests.fewer"
             | "tests.config_changed"

@@ -44,7 +44,11 @@ const VENDORED_DIRS: &[&str] = &[
     "third-party",
     ".venv",
     "site-packages",
+    // CMake FetchContent sources (`build/_deps/<name>-src/`)
+    "_deps",
 ];
+/// Directories of generated reports (coverage HTML).
+const GENERATED_DIRS: &[&str] = &["lcov-report", "htmlcov"];
 const LOCKFILES: &[&str] = &[
     "Cargo.lock",
     "package-lock.json",
@@ -130,7 +134,10 @@ fn dirs(path: &str) -> impl Iterator<Item = &str> {
 
 fn is_secret(name: &str) -> bool {
     name == ".env"
-        || (name.starts_with(".env.") && !name.ends_with(".example") && !name.ends_with(".sample"))
+        || (name.starts_with(".env.")
+            && ![".example", ".sample", ".template", ".dist", ".defaults"]
+                .iter()
+                .any(|s| name.ends_with(s)))
         || name.starts_with("id_rsa")
         || name.starts_with("id_ed25519")
         || SECRET_NAMES.contains(&name)
@@ -200,6 +207,8 @@ pub fn classify(path: &str) -> PathClass {
     let fixture = test_dir.is_some_and(|t| vendored_dir.is_none_or(|v| t < v));
     if vendored_dir.is_some() && !fixture {
         PathClass::Vendored
+    } else if dirs(path).any(|d| GENERATED_DIRS.contains(&d)) {
+        PathClass::Generated
     } else if fixture && !is_test_config(name) {
         PathClass::Test
     } else if !fixture && dirs(path).any(|d| EXAMPLE_DIRS.contains(&d)) {
@@ -238,6 +247,10 @@ mod tests {
         let cases = [
             ("vendor/github.com/x/y.go", Vendored),
             ("web/node_modules/lodash/index.js", Vendored),
+            ("build/_deps/pybind11-src/tests/test_x.py", Vendored),
+            ("pkg/lcov-report/src/util.ts.html", Generated),
+            ("htmlcov/index.html", Generated),
+            (".env.template", Other),
             (".env", SecretLike),
             (".env.production", SecretLike),
             (".env.example", Other),

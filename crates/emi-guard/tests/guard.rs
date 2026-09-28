@@ -509,3 +509,107 @@ fn review_probes_trivialized_assertion_and_skip_on_new_vs_existing_test() {
     assert_eq!(blocked, vec![Some(6), Some(13)], "{:?}", report.violations);
     assert_eq!(report.decision(), "block");
 }
+
+const S7_BODY: &str = "function close(code, reason) {\n  let j = 0\n  frame.setUint16(j, code); j += 2\n  j += frame.setShortString(j, reason)\n  frame.setUint16(j, 0); j += 2\n  frame.setUint8(j, 206); j += 1\n  frame.setUint32(3, j - 8)\n  return this.send(frame, j)\n}\n";
+
+/// The S7 false-alarm classes as one change.
+fn write_quiet_changes(r: &Repo, body: &str) {
+    // 1. a pre-existing duplicate reformatted (semicolons added) is not introduced
+    let semis: String = body.lines().map(|l| format!("{l};\n")).collect();
+    write(r, "src/client.js", &semis);
+    // 2. a license header shared with another file is not duplicated code
+    let license = "/*\nCopyright 2025 The Example Authors.\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n    http://www.apache.org/licenses/LICENSE-2.0\nUnless required by applicable law or agreed to in writing, software\n*/\n";
+    write(r, "src/one.js", &format!("{license}export const one = 1\n"));
+    write(r, "src/two.js", &format!("{license}export const two = 2\n"));
+    // 3. an export list of strings is not logic
+    let names = "__all__ = [\n    'ValidationIssue',\n    'Schema',\n    'validate_syntax',\n    'validate_schema',\n    'validate_query',\n    'extract_schema',\n    'format_issue',\n]\n";
+    write(r, "src/pkg_a/__init__.py", names);
+    write(r, "src/pkg_b/__init__.py", names);
+    // 4. suppressions inside vendored code, CMake _deps and coverage reports
+    write(
+        r,
+        "vendor/lib/x.go",
+        "package x\n\nfunc f() { _ = 1 //nolint:errcheck\n}\n",
+    );
+    write(
+        r,
+        "build/_deps/pybind11-src/t.py",
+        "import os  # noqa: F401\n",
+    );
+    write(
+        r,
+        "web/lcov-report/util.ts.html",
+        "// eslint-disable-next-line no-restricted-syntax\n",
+    );
+    // 5. a new package's manifest with its own pytest section
+    write(
+        r,
+        "plugins/b/pyproject.toml",
+        "[project]\nname = \"b\"\n\n[tool.pytest.ini_options]\naddopts = \"-q\"\n",
+    );
+    // 6. an environment template is not a secret
+    write(r, "server/.env.template", "DB_USER=polar\nDB_PWD=polar\n");
+}
+
+/// False-alarm classes from the S7 precision labels (agent PRs): each
+/// case is a change that must not raise the id, next to one that must.
+#[test]
+fn s7_false_alarm_classes_are_quiet() {
+    let r = repo("s7");
+    let body = S7_BODY;
+    write(&r, "src/channel.js", body);
+    write(&r, "src/client.js", body);
+    write(&r, "vendor/lib/x.go", "package x\n");
+    write(&r, "plugins/a/pyproject.toml", "[project]\nname = \"a\"\n");
+    let base = commit(&r);
+    write_quiet_changes(&r, S7_BODY);
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let quiet = [
+        "dup.introduced",
+        "suppress.added",
+        "tests.config_changed",
+        "prohibited.secret",
+    ];
+    for v in &report.violations {
+        assert!(
+            !quiet.contains(&v.id),
+            "unexpected {} at {}: {}",
+            v.id,
+            v.path,
+            v.evidence
+        );
+    }
+    // the same kinds of change where they are real still fire: here a
+    // second copy of the block inside a file that already had one
+    write(
+        &r,
+        "src/channel.js",
+        &format!("{body}\n{}", body.replace("close(", "close2(")),
+    );
+    write(&r, "src/app.py", "def f():\n    return 1  # noqa: E501\n");
+    write(
+        &r,
+        "pyproject.toml",
+        "[project]\nname = \"x\"\n\n[tool.pytest.ini_options]\naddopts = \"-q -k 'not slow'\"\n",
+    );
+    write(&r, ".env", "API_KEY=abc123\n");
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let got = ids(&report);
+    for id in [
+        "dup.introduced",
+        "suppress.added",
+        "tests.config_changed",
+        "prohibited.secret",
+    ] {
+        assert!(got.contains(&id), "{id} missing: {:?}", report.violations);
+    }
+    // a secret-like file now needs review, not a block (S6 + S7: 0/24 real)
+    assert_eq!(
+        emi_guard::policy::default_tier("prohibited.secret"),
+        Tier::Review
+    );
+}

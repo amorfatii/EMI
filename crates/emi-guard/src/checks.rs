@@ -198,9 +198,14 @@ fn public_certificates(fc: &FileChange) -> bool {
 pub fn suppress(repo: &Path, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
     let mut moved = Moved::of(files, &SUPPRESS);
     let mut out = Vec::new();
-    // a snapshot records output (a formatter's test data), not code
-    let snapshot = |p: &str| p.ends_with(".snap") || p.contains("__snapshots__/");
-    for fc in files.iter().filter(|f| !f.binary && !snapshot(&f.path)) {
+    // a snapshot records output (a formatter's test data), not code; vendored
+    // and generated files are not the project's code
+    let skip = |p: &str| {
+        p.ends_with(".snap")
+            || p.contains("__snapshots__/")
+            || matches!(classify(p), PathClass::Vendored | PathClass::Generated)
+    };
+    for fc in files.iter().filter(|f| !f.binary && !skip(&f.path)) {
         for (line, kind, text) in added_markers(repo, head, fc, &SUPPRESS, &mut moved, false) {
             out.push(finding(
                 "suppress.added",
@@ -299,10 +304,13 @@ fn config_section_changed(
     fc: &FileChange,
 ) -> Option<(u32, String)> {
     let name = fc.path.rsplit('/').next().unwrap_or(&fc.path);
-    if !matches!(
-        name,
-        "pyproject.toml" | "setup.cfg" | "tox.ini" | "Cargo.toml" | "noxfile.py"
-    ) {
+    // a new manifest (a new package) configures only the tests it brings
+    if fc.status == Status::Added
+        || !matches!(
+            name,
+            "pyproject.toml" | "setup.cfg" | "tox.ini" | "Cargo.toml" | "noxfile.py"
+        )
+    {
         return None;
     }
     let new = text_at(repo, head, &fc.path).unwrap_or_default();
@@ -403,6 +411,9 @@ fn configures(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) -> b
 
 /// `tests.config_changed` for one file change.
 fn config_changed(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) -> Option<Finding> {
+    if classify(&fc.path) == PathClass::Vendored {
+        return None; // a dependency's own test setup
+    }
     if classify(&fc.path) == PathClass::TestConfig
         && fc.status != Status::Added
         && !multipurpose(&fc.path)
