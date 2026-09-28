@@ -76,7 +76,25 @@ fn exit_codes_and_formats() {
         "tests/test_app.py",
         "import pytest\n\n@pytest.mark.skip\ndef test_a():\n    assert True\n",
     );
+    // v0.4: a skip on an existing test needs review by default ...
     let (code, out) = emi(&r, &["--base", "HEAD", "--format", "json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
+    assert_eq!(v["decision"], "review");
+    // ... and a project can make it blocking again
+    let policy = r.0.join("policy.json");
+    std::fs::write(&policy, r#"{"tiers": {"tests.skip_added": "block"}}"#).unwrap_or_default();
+    let (code, out) = emi(
+        &r,
+        &[
+            "--base",
+            "HEAD",
+            "--format",
+            "json",
+            "--policy",
+            &policy.to_string_lossy(),
+        ],
+    );
     assert_eq!(code, 2);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
     assert_eq!(v["decision"], "block");

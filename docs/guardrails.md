@@ -37,16 +37,16 @@ and evidence.
 | Id | Detects | Default tier |
 |---|---|---|
 | `scope.outside` / `.excluded` / `.protected` / `.kind` | Edits outside the permitted paths, to excluded or protected paths, or of a forbidden kind (policy scope; tasks use their envelope) | block |
-| `tests.deleted` | A test file deleted, or moved out of the test layout | block |
+| `tests.deleted` | A test file deleted, or moved out of the test layout | review (block until v0.3) |
 | `tests.fewer` | Fewer test definitions across the change's test files (Python `def test_*`, JS/TS `it`/`test`, Go `func Test*`, Rust `#[test]`, JUnit `@Test`); merging tests into a parametrized one also lowers the count | review |
 | `tests.fewer_assertions` | Fewer assertions across the change's test files (a table-driven refactor can check the same cases with fewer asserts) | review |
-| `tests.skip_added` | Skip, ignore or xfail added to a test the baseline already had: `@pytest.mark.skip/skipif/xfail`, `pytest.skip()`, `unittest.skip*`, `it.skip`/`xit`/`describe.skip`, `this.skip()`, `t.Skip`, `#[ignore]`, `@Disabled` | block |
+| `tests.skip_added` | Skip, ignore or xfail added to a test the baseline already had: `@pytest.mark.skip/skipif/xfail`, `pytest.skip()`, `unittest.skip*`, `it.skip`/`xit`/`describe.skip`, `this.skip()`, `t.Skip`, `#[ignore]`, `@Disabled` | review (block until v0.3) |
 | `tests.skip_new_test` | The same markers on a test the change adds (a platform-only or slow test, say): a judgment call | review |
 | `tests.assertion_trivialized` | An assertion that cannot fail added to a test file (`assert True`, `self.assertTrue(True)`, `expect(true).toBe(true)`, `assert!(true)`), e.g. a real check replaced with the same count | review |
 | `tests.config_changed` | Test or coverage configuration changed: `pytest.ini`, `conftest.py`, jest/vitest/karma/mocha/playwright configs, `.coveragerc`, `.nycrc`, codecov; test sections of `pyproject.toml`/`setup.cfg`/`Cargo.toml`; test environments of `tox.ini` and test sessions of `noxfile.py` | review |
-| `prohibited.ci` | CI configuration (`.github/workflows`, `.gitlab-ci.yml`, …) changed | block |
+| `prohibited.ci` | CI configuration (`.github/workflows`, `.gitlab-ci.yml`, …) changed | review (block until v0.3) |
 | `prohibited.secret` | A secret-like file (`.env*` other than templates, `*.pem` with a private key, `id_rsa*`, `.npmrc`, …) changed | review |
-| `prohibited.vendored` | Vendored third-party code (`vendor/`, `node_modules/`, `third_party/`, CMake `_deps/`) changed | block |
+| `prohibited.vendored` | Vendored third-party code (`vendor/`, `node_modules/`, `third_party/`, CMake `_deps/`) changed | review (block until v0.3) |
 | `prohibited.lockfile` | A lockfile changed | review |
 | `suppress.added` | A suppression added: `# noqa`, `# type: ignore`, `# pylint: disable`, `# pragma: no cover`, `eslint-disable`, `@ts-ignore/@ts-expect-error`, `c8/istanbul ignore`, `#[allow(...)]`, `//nolint`, `@SuppressWarnings`, or an `emi-ignore` without a reason, in the project's own code (not vendored or generated files) | review |
 | `dup.introduced` | Added product code repeating 6+ significant lines found elsewhere in the tree (moved code, a duplicate the file already had, comments, export lists and `dist*/` build output do not count) | review |
@@ -67,6 +67,29 @@ makes the main cheats unable to pass instead:
 - the test runner's inventory is compared with the baseline's.
 
 There, the guardrails explain what the agent tried.
+
+## v0.4: what blocks by default
+
+**Study GV2** (emi-lab `results/GV2/REPORT.md`) was pre-registered. It measured v0.3 on 1,079 pull requests from 60 repositories no earlier study used. Each firing was asked two questions: did the event happen, and was stopping the change warranted?
+
+| Id | Event happened | Blocking warranted |
+|---|---|---|
+| `prohibited.ci` | 30/30 | 1/30 |
+| `tests.deleted` | 8/8 | 2/8 |
+| `tests.skip_added` | 6/7 | 5/7 |
+| `prohibited.vendored` | 1/4 | 0/4 |
+
+- **What this means:** the events are real, but in ordinary work they are mostly the change's purpose: a new workflow, tests of a removed feature, a known-flaky test parked with a FIXME.
+- **What it cost:** blocking them cost **8.5 false blocks per 100 PRs** (95% interval 6.4 to 10.7).
+- **Under the registered rule:** all four now need **review** by default.
+- **What still blocks:** only envelope violations (`scope.*`), meaning edits outside what a task or policy permits.
+
+In a supervised task, stopping a bad change is the job of the verifier's guarantees (docs/tasks.md):
+- trusted tests are restored and read-only;
+- held-out tests run;
+- the test inventory is compared.
+
+Pattern rules are not used for that. A project that wants a rule to block sets it in `tiers`, for example `{"tests.skip_added": "block"}`.
 
 ## Measured precision
 
@@ -108,7 +131,7 @@ default rather than tuned further.
   - `prohibited.secret` is demoted to review.
 - **Replayed on the S7 sample:** no true firing was lost, and 42 of 55 false alarms went quiet. That is a development check on the sample that found them; precision on a fresh sample is still to be measured.
 
-The block tier was right 36 of 36 times: the described event happened (exact 95% interval 0.90 to 1.00). Whether it was harmful is a separate question, since a CI edit or a deleted test can be legitimate. That is why blocking is limited to events that need a person's say-so either way. Any id can be made blocking
+The block tier was right 36 of 36 times: the described event happened (exact 95% interval 0.90 to 1.00). Whether blocking it was *useful* is a separate question, which GV2 measured (below). Any id can be made blocking
 for a project with the policy's `tiers`.
 
 Lockfiles changed in 11.7% of human commits, too often to block without

@@ -219,13 +219,15 @@ const FIXED: &str = "def add(a, b):\n    return a + b\n";
 const SKIPPED: &str = "import pytest\nfrom app import add\n\n\n@pytest.mark.skip\ndef test_add():\n    assert add(1, 2) == 3\n";
 
 #[test]
-fn guardrails_reject_weakened_tests_and_review_suppressions() {
+fn guardrails_flag_weakened_tests_and_suppressions_for_review() {
+    // v0.4 (emi-lab GV2): a skip on an existing test needs review by
+    // default; restored trusted tests are what reject a hidden bug
     let (repo, _a, store) = guarded_task("g1", json!({}));
     std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
     std::fs::write(repo.0.join("tests/test_app.py"), SKIPPED).unwrap_or_default();
     let skipped = check(&store, Candidate::Worktree);
-    assert_eq!(decision(&skipped), "rejected", "{skipped}");
-    assert_eq!(skipped["gates"]["guardrails"]["state"], "fail");
+    assert_eq!(decision(&skipped), "needs_review", "{skipped}");
+    assert_eq!(skipped["gates"]["guardrails"]["state"], "needs_review");
     assert_eq!(
         skipped["gates"]["guardrails"]["violations"][0]["id"],
         "tests.skip_added"

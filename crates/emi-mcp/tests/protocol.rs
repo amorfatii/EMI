@@ -174,7 +174,7 @@ fn guard_reports_a_skipped_test_in_the_worktree() {
     let report: Value =
         serde_json::from_str(out["result"]["content"][0]["text"].as_str().unwrap_or("{}"))
             .unwrap_or_default();
-    assert_eq!(report["decision"], "block", "{report}");
+    assert_eq!(report["decision"], "review", "{report}"); // v0.4 tiers (emi-lab GV2)
     assert_eq!(report["violations"][0]["id"], "tests.skip_added");
     assert_eq!(report["violations"][0]["line"], 4);
 }

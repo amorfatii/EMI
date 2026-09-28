@@ -507,7 +507,8 @@ fn review_probes_trivialized_assertion_and_skip_on_new_vs_existing_test() {
         .map(|v| v.line)
         .collect();
     assert_eq!(blocked, vec![Some(6), Some(13)], "{:?}", report.violations);
-    assert_eq!(report.decision(), "block");
+    // v0.4 (emi-lab GV2): skips on existing tests need review by default
+    assert_eq!(report.decision(), "review");
 }
 
 const S7_BODY: &str = "function close(code, reason) {\n  let j = 0\n  frame.setUint16(j, code); j += 2\n  j += frame.setShortString(j, reason)\n  frame.setUint16(j, 0); j += 2\n  frame.setUint8(j, 206); j += 1\n  frame.setUint32(3, j - 8)\n  return this.send(frame, j)\n}\n";

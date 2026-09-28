@@ -51,11 +51,20 @@ pub fn default_tier(id: &str) -> Tier {
     // Round 5 is final: an id below 0.95 precision is demoted, not tuned.
     // From S6 and S7 (agent patches and PRs): a secret-like file almost
     // never held a secret (0/24: templates, placeholders, settings).
+    // From GV2 (1,079 fresh PRs, emi-lab results/GV2): the events are
+    // detected accurately, but blocking them is rarely warranted (CI edits
+    // 1/30, deleted test files 2/8, skips on existing tests 5/7, vendored
+    // 0/4): 8.5 false blocks per 100 PRs. Blocking comes from the task
+    // envelope and the verifier's guarantees instead (docs/tasks.md).
     // v0.2 ids start at review until their precision is measured.
     if matches!(
         id,
         "prohibited.lockfile"
             | "prohibited.secret"
+            | "prohibited.ci"
+            | "prohibited.vendored"
+            | "tests.deleted"
+            | "tests.skip_added"
             | "tests.fewer_assertions"
             | "tests.fewer"
             | "tests.config_changed"

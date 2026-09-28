@@ -19,7 +19,7 @@ emi task install-hook --authority ~/.emi-authority --task fix-add --repo .    # 
 ```
 
 Every verify also runs the **guardrails** (docs/guardrails.md):
-- **Blocking violations reject the candidate:** existing tests skipped or deleted, CI or vendored-code edits.
+- **Blocking violations reject the candidate:** by default only edits outside the envelope. Since v0.4, emi-lab GV2 puts deleted or skipped existing tests and CI or vendored-code edits at review tier: the events are real, but blocking them was rarely warranted. Restored trusted tests reject a hidden bug regardless.
 - **Review-tier violations make it `needs_review`:**
   - secret-like files (`.env`, `*.pem`, …);
   - fewer tests or assertions, test configuration changes, skips on new tests, assertions that cannot fail;
