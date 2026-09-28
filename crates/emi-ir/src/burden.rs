@@ -15,6 +15,24 @@ pub fn erosion_mass(sloc: u32, cc: u32) -> f64 {
     loc * severity(cc, 10.0, 20.0).max(severity(loc, 50.0, 100.0))
 }
 
+/// Cognitive-complexity scale of the `graded` erosion, frozen by study G1
+/// (emi-lab `results/G1/results.json`, k_g) and confirmed by G2.
+pub const GRADED_K_COGNITIVE: f64 = 0.071_428_571_428_571_42; // 1/14
+/// Halstead-volume scale of the `graded` erosion (G1 k_v).
+pub const GRADED_K_VOLUME: f64 = 15.422_146_593_334_798;
+
+/// Graded erosion of one function (profile `graded`): lines weighted by
+/// saturating cognitive-complexity density and Halstead-volume density,
+/// averaged. `s · [(1 − e^(−(g/s)/k_g)) + (1 − e^(−(v/s)/k_v))] / 2`, with
+/// the lab panel's SLOC, cognitive complexity and volume (emi-panel).
+/// Operation order follows the lab (`tools/g1_select.py::graded`).
+pub fn graded_mass(sloc: u32, cognitive: u32, volume: f64) -> f64 {
+    let s = f64::from(sloc).max(1.0);
+    let g_cog = s * (1.0 - (-(f64::from(cognitive) / s) / GRADED_K_COGNITIVE).exp());
+    let g_vol = s * (1.0 - (-(volume / s) / GRADED_K_VOLUME).exp());
+    (g_cog + g_vol) / 2.0
+}
+
 /// Coupling mass of one region: cycle-covered lines count fully, the rest
 /// are weighted by direct first-party fan-out above 3.
 pub fn coupling_mass(sloc: u32, fanout: u32, cycle_sloc: u32) -> f64 {
@@ -33,6 +51,13 @@ mod tests {
         assert_eq!(erosion_mass(10, 5), 0.0);
         assert_eq!(erosion_mass(20, 30), 20.0 * (20.0 / 40.0));
         assert_eq!(erosion_mass(120, 3), 120.0 * (70.0 / 170.0));
+    }
+
+    #[test]
+    fn graded_matches_lab_values() {
+        // tools/g1_select.graded(sloc, cog, vol, k_g, k_v)["G_mix"]
+        assert!((graded_mass(20, 5, 800.0) - 18.950_575_943_686_147).abs() < 1e-12);
+        assert_eq!(graded_mass(0, 0, 0.0), 0.0);
     }
 
     #[test]

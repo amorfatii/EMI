@@ -14,7 +14,7 @@ fn common_schema(extra: Value) -> Value {
         "repo": {"type": "string", "description": "Path to the git repository (default: current directory)."},
         "source": {"type": "string", "description": "Product scope subdirectory, repository-relative (default: \"src\"; \".\" for the root)."},
         "probe": {"type": "string", "enum": ["python", "js", "rust"], "description": "Language adapter (default: python)."},
-        "profile": {"type": "string", "enum": ["precise", "parity"], "description": "Measurement contract (default: precise)."}
+        "profile": {"type": "string", "enum": ["precise", "parity", "graded"], "description": "Measurement contract (default: graded, which weighs function erosion by cognitive complexity and Halstead volume)."}
     });
     if let (Some(p), Value::Object(e)) = (props.as_object_mut(), extra) {
         p.extend(e);
@@ -127,10 +127,9 @@ fn request(args: &Value, before: &str) -> Result<Request, String> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     req.tolerate_syntax_errors = true;
-    req.profile = match text(args, "profile", "precise") {
-        "parity" => Profile::Parity,
-        _ => Profile::Precise,
-    };
+    let profile = text(args, "profile", "graded");
+    req.profile = Profile::from_name(profile)
+        .ok_or_else(|| format!("profile must be parity, precise or graded, got {profile}"))?;
     Ok(req)
 }
 

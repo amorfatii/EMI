@@ -30,7 +30,7 @@ Other MCP clients take the same command in their server configuration:
 | `emi_scan` | *What does the scope look like?* Totals per dimension, unknown-coupling share, cycles, the most burdened files. |
 
 Common arguments: `repo` (default `.`), `source` (scope directory, default
-`src`), `probe` (`python`/`js`) and `profile` (`precise` by default for
+`src`), `probe` (`python`/`js`) and `profile` (`graded` by default for
 agents, `parity` for the v0.5.1 contract).
 
 ## The loop

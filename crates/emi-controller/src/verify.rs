@@ -412,11 +412,12 @@ fn structural_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &st
     );
     req.worktree = candidate == WORKTREE;
     req.tolerate_syntax_errors = true;
-    req.profile = if s["profile"] == "parity" {
-        emi_scan::Profile::Parity
-    } else {
-        emi_scan::Profile::Precise
+    let profile = s["profile"].as_str().unwrap_or("precise");
+    let Some(profile) = emi_scan::Profile::from_name(profile) else {
+        return json!({"state": "unverified",
+                      "detail": format!("structural.profile must be parity, precise or graded, got {profile}")});
     };
+    req.profile = profile;
     let allowance = s["allowance"].as_f64().unwrap_or(10.0);
     let headroom = s["headroom"].as_f64();
     let verdict = emi_diff::build_change(&req)

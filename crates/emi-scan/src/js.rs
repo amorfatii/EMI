@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use emi_ir::clones::Grouper;
 use emi_ir::graph::strongly_connected;
-use emi_ir::{Burden, Component, FileError, Measurement, UnresolvedCall, pytext};
+use emi_ir::{Burden, Component, Evidence, FileError, Measurement, UnresolvedCall, pytext};
 use emi_lang_js::FileMeasure;
 use emi_lang_js::resolve::{self, Scope};
 
@@ -52,7 +52,7 @@ enum Outcome {
     Unparsed,
 }
 
-fn measure_file(f: &ScopeFile) -> Outcome {
+fn measure_file(f: &ScopeFile, graded: bool) -> Outcome {
     if is_symlink(&f.path) {
         return Outcome::Symlink;
     }
@@ -70,11 +70,28 @@ fn measure_file(f: &ScopeFile) -> Outcome {
     let source = pytext::universal_newlines(&text);
     let sha = pytext::sha256_hex(source.as_bytes());
     match emi_lang_js::measure(&f.rel, &source) {
-        Some(measure) => Outcome::Parsed {
-            sha,
-            measure,
-            source,
-        },
+        Some(mut measure) => {
+            if graded {
+                let known = crate::graded::apply(
+                    &f.rel,
+                    &source,
+                    &mut measure.functions,
+                    &mut measure.regions,
+                );
+                measure.erosion = match measure.erosion {
+                    Evidence::Exact(_) => Evidence::Exact(known),
+                    Evidence::Partial { unknown_sloc, .. } => Evidence::Partial {
+                        known_mass: known,
+                        unknown_sloc,
+                    },
+                };
+            }
+            Outcome::Parsed {
+                sha,
+                measure,
+                source,
+            }
+        }
         None => Outcome::Unparsed,
     }
 }
@@ -177,11 +194,10 @@ fn config_errors(resolver: &resolve::Resolver) -> impl Iterator<Item = FileError
         })
 }
 
-fn profile(options: &Options) -> &'static str {
-    match options.profile {
-        crate::Profile::Parity => emi_lang_js::PROFILE,
-        crate::Profile::Precise => emi_lang_js::PRECISE_PROFILE,
-    }
+fn profile(options: &Options) -> String {
+    options
+        .profile
+        .adapter(emi_lang_js::PROFILE, emi_lang_js::PRECISE_PROFILE)
 }
 
 /// Pinned by the oracle's resolver contract (`js_probe.RESOLVER_MODE`).
@@ -293,10 +309,14 @@ fn assemble(out: &mut Measurement, parsed: Vec<Parsed>, scope: &Scope) -> Result
 /// raise mode). Returns the parsed files and the grammar fallbacks.
 fn read_all(
     selected: &[ScopeFile],
+    graded: bool,
     raise: bool,
     out: &mut Measurement,
 ) -> Result<(Vec<Parsed>, Vec<String>), ScanError> {
-    let outcomes: Vec<Outcome> = selected.par_iter().map(measure_file).collect();
+    let outcomes: Vec<Outcome> = selected
+        .par_iter()
+        .map(|f| measure_file(f, graded))
+        .collect();
     let (mut fallbacks, mut parsed) = (Vec::new(), Vec::new());
     for (f, outcome) in selected.iter().zip(outcomes) {
         let rel = f.rel.clone();
@@ -342,7 +362,7 @@ fn read_all(
 
 pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     let mut out = Measurement {
-        measurement_profile: profile(options).to_owned(),
+        measurement_profile: profile(options),
         ..Measurement::default()
     };
     let excludes = options
@@ -360,7 +380,12 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         return Err(ScanError::empty("no JavaScript/TypeScript source files"));
     }
     let raise = options.on_syntax_error == OnSyntaxError::Raise;
-    let (parsed, mut fallbacks) = read_all(&selected, raise, &mut out)?;
+    let (parsed, mut fallbacks) = read_all(
+        &selected,
+        options.profile == crate::Profile::Graded,
+        raise,
+        &mut out,
+    )?;
     let all_failed = parsed.is_empty();
     if all_failed && (raise || out.errors.is_empty()) {
         return Err(ScanError::unmeasurable(
@@ -368,12 +393,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         ));
     }
     if !all_failed {
-        let scope = scope_of(
-            &parsed,
-            resolver,
-            mains,
-            options.profile == crate::Profile::Precise,
-        );
+        let scope = scope_of(&parsed, resolver, mains, options.profile.precise_coupling());
         assemble(&mut out, parsed, &scope)?;
         if out.components.is_empty() {
             return Err(ScanError::unmeasurable(

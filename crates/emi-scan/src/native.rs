@@ -76,7 +76,7 @@ enum Outcome {
     Failed(FileError),
 }
 
-fn read<A: Adapter>(a: &A, f: &ScopeFile, root: &Path, limit: &Path) -> Outcome {
+fn read<A: Adapter>(a: &A, f: &ScopeFile, root: &Path, limit: &Path, graded: bool) -> Outcome {
     let raw = match std::fs::read(&f.path) {
         Ok(r) => r,
         Err(e) => {
@@ -106,13 +106,23 @@ fn read<A: Adapter>(a: &A, f: &ScopeFile, root: &Path, limit: &Path) -> Outcome 
         Role::Product { module, context } => (module, context),
     };
     match a.measure(&f.rel, &source) {
-        Some(measure) => Outcome::Product(Unit {
-            rel: f.rel.clone(),
-            module,
-            context,
-            source,
-            measure,
-        }),
+        Some(mut measure) => {
+            if graded {
+                measure.erosion = crate::graded::apply(
+                    &f.rel,
+                    &source,
+                    &mut measure.functions,
+                    &mut measure.regions,
+                );
+            }
+            Outcome::Product(Unit {
+                rel: f.rel.clone(),
+                module,
+                context,
+                source,
+                measure,
+            })
+        }
         None => Outcome::Failed(error(
             &f.rel,
             "parse",
@@ -127,7 +137,7 @@ fn options_map<A: Adapter>(
     excludes: &[String],
 ) -> serde_json::Map<String, serde_json::Value> {
     match serde_json::json!({
-        "adapter": A::PROFILE, "engine": crate::ENGINE,
+        "adapter": options.profile.adapter(A::PROFILE, A::PROFILE), "engine": crate::ENGINE,
         "on_syntax_error": crate::syntax_policy(options),
         "exclude_dirs": crate::sorted(excludes),
         "exclude_globs": crate::sorted(&options.exclude_globs),
@@ -183,7 +193,15 @@ fn read_all<A: Adapter>(
     let limit = root.parent().unwrap_or(root).to_path_buf();
     let outcomes: Vec<Outcome> = selected
         .par_iter()
-        .map(|f| read(a, f, root, &limit))
+        .map(|f| {
+            read(
+                a,
+                f,
+                root,
+                &limit,
+                options.profile == crate::Profile::Graded,
+            )
+        })
         .collect();
     let raise = options.on_syntax_error == OnSyntaxError::Raise;
     let mut units = Vec::new();
@@ -211,7 +229,7 @@ fn read_all<A: Adapter>(
 
 pub fn scan<A: Adapter>(a: &A, root: &Path, options: &Options) -> Result<Measurement, ScanError> {
     let mut out = Measurement {
-        measurement_profile: A::PROFILE.to_owned(),
+        measurement_profile: options.profile.adapter(A::PROFILE, A::PROFILE),
         ..Measurement::default()
     };
     let mut inventory = Vec::new();

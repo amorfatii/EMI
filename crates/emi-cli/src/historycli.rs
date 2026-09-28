@@ -21,7 +21,7 @@ pub struct HotspotsArgs {
     source: String,
     #[arg(long, value_enum, default_value_t = Language::Python)]
     probe: Language,
-    #[arg(long, value_enum, default_value_t = ProfileArg::Precise)]
+    #[arg(long, value_enum, default_value_t = ProfileArg::Graded)]
     profile: ProfileArg,
     /// Revision to measure and read history back from.
     #[arg(long, default_value = "HEAD")]

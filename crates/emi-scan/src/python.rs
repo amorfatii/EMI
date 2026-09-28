@@ -71,7 +71,7 @@ enum Outcome {
     },
 }
 
-fn measure_file(f: &ScopeFile, detect_tests: bool) -> Outcome {
+fn measure_file(f: &ScopeFile, detect_tests: bool, graded: bool) -> Outcome {
     if is_symlink(&f.path) {
         return Outcome::Symlink;
     }
@@ -110,11 +110,21 @@ fn measure_file(f: &ScopeFile, detect_tests: bool) -> Outcome {
         };
     }
     match emi_lang_python::measure(&f.rel, &source) {
-        Ok(measure) => Outcome::Measured {
-            sha,
-            measure,
-            source,
-        },
+        Ok(mut measure) => {
+            if graded {
+                measure.erosion = crate::graded::apply(
+                    &f.rel,
+                    &source,
+                    &mut measure.functions,
+                    &mut measure.regions,
+                );
+            }
+            Outcome::Measured {
+                sha,
+                measure,
+                source,
+            }
+        }
         Err(e) => parse_failed(sha, e),
     }
 }
@@ -389,18 +399,17 @@ fn select(root: &Path, options: &Options, excludes: &[String], scan: &mut Scan) 
     selected
 }
 
-fn profile(options: &Options) -> &'static str {
-    match options.profile {
-        crate::Profile::Parity => emi_lang_python::PROFILE,
-        crate::Profile::Precise => emi_lang_python::PRECISE_PROFILE,
-    }
+fn profile(options: &Options) -> String {
+    options
+        .profile
+        .adapter(emi_lang_python::PROFILE, emi_lang_python::PRECISE_PROFILE)
 }
 
 /// An empty measurement carrying the extraction contract and its id.
 fn new_measurement(options: &Options, excludes: &[String]) -> Measurement {
     let options_map = measurement_options(options, excludes);
     Measurement {
-        measurement_profile: profile(options).to_owned(),
+        measurement_profile: profile(options),
         measurement_contract_id: Some(emi_ledger::pyfmt::digest(
             "measurement-contract",
             &serde_json::Value::Object(options_map.clone()),
@@ -441,9 +450,10 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         rule_lines: BTreeMap::new(),
     };
     let selected = select(root, options, &excludes, &mut scan);
+    let graded = options.profile == crate::Profile::Graded;
     let outcomes: Vec<Outcome> = selected
         .par_iter()
-        .map(|f| measure_file(f, options.detect_tests))
+        .map(|f| measure_file(f, options.detect_tests, graded))
         .collect();
     let raise = options.on_syntax_error == OnSyntaxError::Raise;
     let mut parsed = Vec::new();
@@ -470,13 +480,13 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         return Err(test_only(&scan.inventory));
     }
     let measured = products.iter().any(|p| p.measure.sloc > 0);
-    if options.profile == crate::Profile::Precise {
+    if options.profile.precise_coupling() {
         let prefix = crate::python_coupling::package_prefix(root);
         for p in &mut products {
             p.prefix.clone_from(&prefix);
         }
     }
-    let coupled = couple_all(&mut products, options.profile == crate::Profile::Precise)?;
+    let coupled = couple_all(&mut products, options.profile.precise_coupling())?;
     for (p, fc) in products.into_iter().zip(&coupled.files) {
         if p.measure.sloc == 0 {
             continue;

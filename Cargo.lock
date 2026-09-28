@@ -330,6 +330,7 @@ dependencies = [
  "emi-ledger",
  "emi-lsp",
  "emi-mcp",
+ "emi-panel",
  "emi-rules",
  "emi-scan",
  "serde_json",
@@ -489,6 +490,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "emi-panel"
+version = "0.1.0"
+dependencies = [
+ "tree-sitter",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+]
+
+[[package]]
 name = "emi-rules"
 version = "0.1.0"
 dependencies = [
@@ -516,6 +529,7 @@ dependencies = [
  "emi-lang-python",
  "emi-lang-rust",
  "emi-ledger",
+ "emi-panel",
  "rayon",
  "serde_json",
  "thiserror",

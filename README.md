@@ -57,7 +57,10 @@ exposure view to reviews.
 
 Profiles: `--profile parity` (default) reproduces the v0.5.1 oracle;
 `--profile precise` measures static coupling with value origins and cuts
-unknown coupling by 97% on the corpus (`docs/profiles.md`).
+unknown coupling by 97% on the corpus; `--profile graded` adds erosion weighted
+by cognitive complexity and Halstead volume, which ranks buggy functions better
+than parity erosion (AUC 0.821 vs 0.745 on 1,014 fresh bugs; about as well as
+SLOC) (`docs/profiles.md`).
 
 Gate policy: `--allow-growth UNITS` (proven growth tolerated, default 10),
 `--allow-headroom UNITS` (possible growth behind missing evidence),

@@ -38,6 +38,9 @@ enum ProfileArg {
     Parity,
     /// Static coupling with value origins (fewer unknowns; new contract).
     Precise,
+    /// Precise coupling; function erosion graded by cognitive complexity and
+    /// Halstead volume (ranks buggy functions better than parity erosion).
+    Graded,
 }
 
 impl From<ProfileArg> for emi_scan::Profile {
@@ -45,6 +48,7 @@ impl From<ProfileArg> for emi_scan::Profile {
         match p {
             ProfileArg::Parity => emi_scan::Profile::Parity,
             ProfileArg::Precise => emi_scan::Profile::Precise,
+            ProfileArg::Graded => emi_scan::Profile::Graded,
         }
     }
 }
@@ -144,6 +148,12 @@ enum Command {
     /// Verifiable guardrails on a change: scope, weakened tests, prohibited
     /// files, new suppressions, growth (exit 2 on a blocking violation).
     Guard(guardcli::GuardArgs),
+    /// Print the classic per-function metrics `graded` is built from (SLOC,
+    /// cognitive complexity, Halstead volume), as the lab panel defines them.
+    Panel {
+        /// Source files; the extension picks the grammar.
+        files: Vec<PathBuf>,
+    },
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
     /// Language server (stdio): rule diagnostics, erosion hints, burden-delta code lenses.
@@ -212,6 +222,28 @@ fn scan_at(
     Ok(m)
 }
 
+/// `{file: [{name, start, end, sloc, cognitive, halstead_volume}]}`.
+fn panel(files: &[PathBuf]) -> anyhow::Result<u8> {
+    let mut out = serde_json::Map::new();
+    for path in files {
+        let name = path.to_string_lossy();
+        let Some(lang) = emi_panel::Lang::of_path(&name) else {
+            continue;
+        };
+        let src = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let fns: Vec<serde_json::Value> = emi_panel::functions(lang, &src)
+            .into_iter()
+            .map(|f| {
+                serde_json::json!({"name": f.name, "start": f.start, "end": f.end, "sloc": f.sloc,
+                                   "cognitive": f.cognitive, "halstead_volume": f.halstead_volume})
+            })
+            .collect();
+        out.insert(name.into_owned(), serde_json::Value::Array(fns));
+    }
+    println!("{}", serde_json::Value::Object(out));
+    Ok(0)
+}
+
 fn run(cli: Cli) -> anyhow::Result<u8> {
     match cli.command {
         Command::Scan {
@@ -274,6 +306,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Task(cmd) => taskcli::run(&cmd),
         Command::Report(args) => report::run(&args),
         Command::Guard(args) => guardcli::run(&args),
+        Command::Panel { files } => panel(&files),
         Command::Lsp => {
             emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)

@@ -31,7 +31,7 @@ emi hotspots --repo . --source src --probe js [--days 365] [--format json]
   counted separately. Per-file `ai_share` is the AI-attributed share of
   revisions.
 
-The default profile for `hotspots` is `precise` (docs/profiles.md): coupling
+The default profile for `hotspots` is `graded` (docs/profiles.md: `precise` coupling plus graded erosion): coupling
 burden is then mostly known mass instead of unknown width.
 
 ## Exposure in reviews: `emi diff --history`

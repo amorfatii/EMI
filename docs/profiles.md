@@ -8,10 +8,49 @@ selects one; `parity` is the default.
 |---|---|---|---|
 | `parity` | `emi-python-0.1:parity-python-probe-0.12:…` | `emi-js-0.1:parity-js-probe-0.10:…` | Reproduces the v0.5.1 oracle exactly (`docs/parity.md`) |
 | `precise` | `emi-python-0.1:precise-0.1:…` | `emi-js-0.1:precise-0.1:…` | Static coupling with value origins (below) |
+| `graded` | `…precise-0.1:…+graded-g2` | `…precise-0.1:…+graded-g2` | `precise` coupling; function erosion graded by cognitive complexity and Halstead volume (below). Rust and Go: the native profile `+graded-g2` |
 
-The profiles differ only in the coupling dimension (C, region `C`,
-`in_cycle`, `resolved_dependencies`, `unresolved_calls`, cycles). Erosion,
-redundancy, SLOC and regions are identical.
+`parity` and `precise` differ only in the coupling dimension (C, region `C`,
+`in_cycle`, `resolved_dependencies`, `unresolved_calls`, cycles). Their
+erosion, redundancy, SLOC and regions are identical. `graded` is `precise`
+with a different erosion for function regions.
+
+## `graded-g2`: erosion that ranks buggy functions
+
+**Formula.** A function region's erosion is
+
+`E = s · [(1 − e^(−(g/s)/k_g)) + (1 − e^(−(v/s)/k_v))] / 2`
+
+- `s`: the function's SLOC;
+- `g`: its SonarSource cognitive complexity;
+- `v`: its Halstead volume;
+- `k_g = 1/14` and `k_v = 15.42`, both frozen by study G1.
+
+**Where the metrics come from.** `s`, `g` and `v` come from `emi-panel`, a port of the lab's metric panel (panel-0.1) on the same pinned grammars. Each is measured without nested functions, as in the lab.
+
+**Which regions it applies to.** A region is graded when a panel function starts on its definition line; when several start there, the outermost is used. Two kinds of region keep the adapter's erosion:
+- module and class leftovers, and declarations;
+- regions on unparseable lines.
+
+**Evidence (emi-lab `results/G2/REPORT.md`, pre-registered).**
+- **Data:** 20 repositories not used in any earlier study (5 each in Python, JS/TS, Go and Rust), 1,014 issue-linked bug fixes.
+- **Measure:** the mean within-bug AUC for ranking the functions each fix touched above the other functions of that version.
+
+| Measure | Within-bug AUC |
+|---|---|
+| graded | 0.821 |
+| parity erosion | 0.745 |
+| cognitive complexity | 0.772 |
+
+- **Where graded wins:** in all 20 repositories and all 4 languages.
+- **What it doesn't do:** it ranks about as well as plain SLOC (0.816) or Halstead volume (0.820). The score is size-weighted, and it doesn't carry a complexity signal that size lacks.
+- **What it fixes:** parity erosion ranks buggy functions *worse* than line count.
+
+**Parity checks.**
+- `emi panel FILE…` prints the panel metrics. emi-lab `tools/panel_parity.py` compared them with the lab panel on 3,896 files (45,505 functions) and found them identical.
+- `emi scan --profile graded` reproduces the G2 values for 3,608 of 3,610 sampled functions. The other two are one-line functions nested on the line of an outer one; the region is the outer function's.
+
+**Where it is the default.** `graded` is the default on the agent surfaces: MCP tools and `emi hotspots`. `emi scan|diff` keep `parity` as the default, and task contracts keep `precise`.
 
 ## `precise-0.1`: static coupling with value origins
 

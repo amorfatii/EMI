@@ -5,6 +5,7 @@
 pub mod classify;
 mod coupling;
 mod go;
+mod graded;
 mod js;
 mod native;
 mod python;
@@ -55,6 +56,43 @@ pub enum Profile {
     /// Static coupling with value origins: dispatch through parameters and
     /// fields is attributed to the code that obtained the value.
     Precise,
+    /// `precise` coupling, with function erosion graded by cognitive
+    /// complexity and Halstead volume (study G2, emi-lab `results/G2`).
+    Graded,
+}
+
+impl Profile {
+    /// `parity`, `precise` or `graded`; anything else is rejected.
+    pub fn from_name(name: &str) -> Option<Profile> {
+        match name {
+            "parity" => Some(Profile::Parity),
+            "precise" => Some(Profile::Precise),
+            "graded" => Some(Profile::Graded),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::Parity => "parity",
+            Profile::Precise => "precise",
+            Profile::Graded => "graded",
+        }
+    }
+
+    /// Coupling with value origins (`precise` and `graded`).
+    pub fn precise_coupling(self) -> bool {
+        matches!(self, Profile::Precise | Profile::Graded)
+    }
+
+    /// The adapter's measurement profile string under this profile.
+    fn adapter(self, parity: &str, precise: &str) -> String {
+        match self {
+            Profile::Parity => parity.to_owned(),
+            Profile::Precise => precise.to_owned(),
+            Profile::Graded => format!("{precise}{}", graded::SUFFIX),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

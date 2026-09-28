@@ -23,6 +23,7 @@ emi-guard = { path = "crates/emi-guard" }
 emi-exec = { path = "crates/emi-exec" }
 emi-controller = { path = "crates/emi-controller" }
 emi-lsp = { path = "crates/emi-lsp" }
+emi-panel = { path = "crates/emi-panel" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

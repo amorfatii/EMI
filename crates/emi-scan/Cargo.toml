@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 emi-ir.workspace = true
+emi-panel.workspace = true
 emi-lang-python.workspace = true
 emi-lang-js.workspace = true
 emi-lang-rust.workspace = true
