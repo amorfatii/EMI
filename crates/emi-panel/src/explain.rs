@@ -14,10 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{Function, Increment, Lang, functions};
 
-/// Cognitive- and volume-density scales, frozen by study G1 (as
-/// `emi_ir::burden`, repeated so this crate stays grammar-only).
-const K_COGNITIVE: f64 = 0.071_428_571_428_571_42;
-const K_VOLUME: f64 = 15.422_146_593_334_798;
+use emi_ir::burden::{GRADED_K_COGNITIVE as K_COGNITIVE, GRADED_K_VOLUME as K_VOLUME, graded_mass};
 
 /// Graded erosion split into its two halves.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,11 +27,12 @@ pub struct Mass {
 }
 
 pub fn mass(sloc: u32, cognitive: u32, volume: f64) -> Mass {
+    // the halves of emi_ir::burden::graded_mass (one definition, profile `graded`)
     let s = f64::from(sloc).max(1.0);
     let g = s * (1.0 - (-(f64::from(cognitive) / s) / K_COGNITIVE).exp());
     let v = s * (1.0 - (-(volume / s) / K_VOLUME).exp());
     Mass {
-        total: (g + v) / 2.0,
+        total: graded_mass(sloc, cognitive, volume),
         cognitive_part: g / 2.0,
         volume_part: v / 2.0,
     }

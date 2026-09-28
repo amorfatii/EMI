@@ -106,3 +106,74 @@ fn bwrap_isolation_is_recorded_honestly() {
         assert!(!o.receipt.pid_namespace);
     }
 }
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let d = std::env::current_dir()
+        .unwrap_or_default()
+        .join("target")
+        .join(format!("exec-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap_or_default();
+    d
+}
+
+#[test]
+fn read_only_paths_cannot_be_changed_in_the_sandbox() {
+    if !emi_exec::bwrap_available() {
+        return;
+    }
+    let ws = scratch("ro");
+    std::fs::write(ws.join("trusted.txt"), "original").unwrap_or_default();
+    let mut s = Spec::new(
+        &[
+            "/bin/sh",
+            "-c",
+            "echo gutted > trusted.txt; echo new > added.txt",
+        ],
+        &ws,
+    );
+    s.isolation = Isolation::Bwrap { network: false };
+    s.read_only = vec![ws.join("trusted.txt")];
+    let o = run(&s);
+    assert!(o.receipt.read_only_enforced);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("trusted.txt")).unwrap_or_default(),
+        "original"
+    );
+    assert!(
+        ws.join("added.txt").exists(),
+        "the rest of the workspace stays writable"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn a_sandbox_that_never_starts_the_command_is_not_the_commands_failure() {
+    if !emi_exec::bwrap_available() {
+        return;
+    }
+    let ws = scratch("nostart");
+    // the command does not exist inside the sandbox
+    let mut s = Spec::new(&["/no/such/tool", "--flag"], &ws);
+    s.isolation = Isolation::Bwrap { network: false };
+    let o = run(&s);
+    assert_eq!(
+        o.status,
+        Status::NotLaunched,
+        "{:?} {}",
+        o.exit_code,
+        o.stderr
+    );
+    // bubblewrap itself fails (its working directory is gone)
+    let gone = ws.join("gone");
+    let mut s = Spec::new(&["/bin/true"], &gone);
+    s.isolation = Isolation::Bwrap { network: false };
+    let o = run(&s);
+    assert_eq!(o.status, Status::NotLaunched);
+    // a command that starts and fails is the command's result
+    let mut s = Spec::new(&["/bin/sh", "-c", "exit 3"], &ws);
+    s.isolation = Isolation::Bwrap { network: false };
+    let o = run(&s);
+    assert_eq!((o.status, o.exit_code), (Status::Exited, Some(3)));
+    let _ = std::fs::remove_dir_all(&ws);
+}

@@ -41,6 +41,9 @@ pub struct Spec {
     /// Bytes kept per stream; the rest is counted and dropped.
     pub output_limit: usize,
     pub isolation: Isolation,
+    /// Paths inside the workspace mounted read-only over it (bubblewrap
+    /// only): trusted tests the command must not change.
+    pub read_only: Vec<PathBuf>,
 }
 
 impl Spec {
@@ -53,6 +56,7 @@ impl Spec {
             timeout: Duration::from_secs(120),
             output_limit: 1 << 20,
             isolation: Isolation::None,
+            read_only: Vec::new(),
         }
     }
 }
@@ -72,6 +76,8 @@ pub struct Receipt {
     pub orphans_killed: Vec<i32>,
     /// Every check passed: the command left nothing running.
     pub verified_clean: bool,
+    /// `read_only` paths were mounted read-only (bubblewrap only).
+    pub read_only_enforced: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -126,7 +132,12 @@ fn resolve_isolation(isolation: &Isolation) -> Option<bool> {
     }
 }
 
-fn command(spec: &Spec, bwrap: Option<bool>) -> Command {
+/// The sandbox's launcher: it proves the sandbox came up by creating the
+/// marker file (argument 0), then replaces itself with the command. The
+/// command's argv is passed through as arguments, never interpreted.
+const LAUNCHER: &str = r#"command -v "$1" >/dev/null 2>&1 || exit 127; : > "$0"; exec "$@""#;
+
+fn command(spec: &Spec, bwrap: Option<bool>, marker: Option<&std::path::Path>) -> Command {
     let mut cmd = match bwrap {
         None => {
             let mut c = Command::new(&spec.argv[0]);
@@ -147,11 +158,28 @@ fn command(spec: &Spec, bwrap: Option<bool>) -> Command {
                 "--proc",
                 "/proc",
             ]);
-            c.args(["--tmpfs", "/tmp", "--bind", &cwd, &cwd, "--chdir", &cwd]);
+            c.args(["--tmpfs", "/tmp", "--bind", &cwd, &cwd]);
+            for ro in &spec.read_only {
+                if ro.exists() {
+                    c.arg("--ro-bind").arg(ro).arg(ro);
+                }
+            }
+            if let Some(m) = marker.and_then(std::path::Path::parent) {
+                c.arg("--bind").arg(m).arg(m);
+            }
+            c.args(["--chdir", &cwd]);
             if !network {
                 c.arg("--unshare-net");
             }
-            c.arg("--").args(&spec.argv);
+            c.arg("--");
+            match marker {
+                Some(m) => {
+                    c.args(["/bin/sh", "-c", LAUNCHER]).arg(m).args(&spec.argv);
+                }
+                None => {
+                    c.args(&spec.argv);
+                }
+            }
             c
         }
     };
@@ -228,6 +256,16 @@ fn wait(
     }
 }
 
+/// A fresh directory for the launcher's readiness marker.
+fn ready_dir() -> std::io::Result<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let d = std::env::temp_dir().join(format!("emi-ready-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
+}
+
 /// Run the command; never returns before its group is gone.
 pub fn run(spec: &Spec) -> Outcome {
     let start = Instant::now();
@@ -247,9 +285,21 @@ pub fn run(spec: &Spec) -> Outcome {
     if spec.argv.is_empty() {
         return not_launched("empty argv".into(), receipt);
     }
-    let mut child = match command(spec, bwrap).spawn() {
+    receipt.read_only_enforced = bwrap.is_some() && !spec.read_only.is_empty();
+    // readiness: the launcher creates this file once the sandbox is up
+    let ready_dir = match bwrap.map(|_| ready_dir()).transpose() {
+        Ok(d) => d,
+        Err(e) => return not_launched(format!("readiness directory: {e}"), receipt),
+    };
+    let marker = ready_dir.as_ref().map(|d| d.join("ready"));
+    let mut child = match command(spec, bwrap, marker.as_deref()).spawn() {
         Ok(c) => c,
-        Err(e) => return not_launched(format!("{}: {e}", spec.argv[0]), receipt),
+        Err(e) => {
+            if let Some(d) = &ready_dir {
+                let _ = std::fs::remove_dir_all(d);
+            }
+            return not_launched(format!("{}: {e}", spec.argv[0]), receipt);
+        }
     };
     let pgid = i32::try_from(child.id()).ok();
     let started = pgid.and_then(platform::start_time);
@@ -271,6 +321,20 @@ pub fn run(spec: &Spec) -> Outcome {
     let (stdout, stdout_bytes) = out.and_then(|h| h.join().ok()).unwrap_or_default();
     let (stderr, stderr_bytes) = err.and_then(|h| h.join().ok()).unwrap_or_default();
     let (exit_code, signal) = status.map_or((None, None), platform::exit_parts);
+    let launched = marker.as_ref().is_none_or(|m| m.exists());
+    if let Some(d) = &ready_dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
+    if !launched && !timed_out {
+        // the sandbox never came up, or the command does not exist: an
+        // environment fault, not the candidate's result
+        let why = String::from_utf8_lossy(&stderr)
+            .trim()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        return not_launched(format!("sandbox did not start the command: {why}"), receipt);
+    }
     Outcome {
         status: if timed_out {
             Status::TimedOut

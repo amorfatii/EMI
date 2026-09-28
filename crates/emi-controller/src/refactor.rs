@@ -5,17 +5,23 @@
 //! Progress is cognitive complexity summed over the target files. Graded
 //! erosion picks what to refactor (it ranks bug-prone functions, emi-lab
 //! G2), but its complexity term saturates in very complex code, so it is
-//! only required not to rise. Every non-test file the candidate adds or
+//! only required not to rise. Every source file the candidate adds or
 //! modifies is measured with the targets, on both sides, so moving code
-//! out of the target (into a new module or an existing one) is not a
-//! reduction; splitting a function evenly leaves both measures unchanged.
+//! out of the target (into a new or existing module, or a helper under a
+//! test directory) is not a reduction; only files that define tests are
+//! left out. Extracting nested code into helpers does lower cognitive
+//! complexity (nesting penalties reset), so a pass is evidence of
+//! flatter code, not proof of a better design.
+//!
+//! The after side is the submitted tree, read from a snapshot no check
+//! ran in. A file that cannot be read or parsed makes the gate
+//! `unverified`: unmeasured code never counts as simpler.
 
 use std::path::Path;
 
 use emi_diff::hunks::text_at;
 use emi_panel::Lang;
 use emi_panel::explain::mass;
-use emi_scan::classify::{PathClass, classify};
 use emi_scan::walk::fnmatch;
 use serde_json::{Map, Value, json};
 
@@ -44,10 +50,11 @@ pub fn spec(v: Option<&Value>) -> Result<Option<Value>> {
     if targets.is_empty() || !targets.iter().all(Value::is_string) {
         return Err("refactor.targets must be a non-empty list of path globs".into());
     }
+    // no universal threshold is justified: the contract states its own
     let min = obj
         .get("min_cognitive_reduction")
-        .map_or(Some(0.1), Value::as_f64)
-        .ok_or("refactor.min_cognitive_reduction must be a number")?;
+        .and_then(Value::as_f64)
+        .ok_or("refactor.min_cognitive_reduction is required (a number in (0, 1])")?;
     if !(min > 0.0 && min <= 1.0) {
         return Err("refactor.min_cognitive_reduction must be in (0, 1]".into());
     }
@@ -62,6 +69,15 @@ struct Totals {
     cognitive: u64,
     graded: f64,
     files: Map<String, Value>,
+    /// Files that could not be measured, with why.
+    unmeasured: Vec<String>,
+}
+
+/// A file with test definitions (by the guard's patterns): its complexity
+/// is test code, not the refactored product.
+fn defines_tests(path: &str, text: &str) -> bool {
+    emi_guard::patterns::lang_of(path)
+        .is_some_and(|l| emi_guard::patterns::count_tests(l, text) > 0)
 }
 
 impl Totals {
@@ -69,6 +85,10 @@ impl Totals {
         let Some(lang) = Lang::of_path(path) else {
             return;
         };
+        if !emi_panel::parses(lang, text.as_bytes()) {
+            self.unmeasured.push(format!("{path}: syntax errors"));
+            return;
+        }
         let fns = emi_panel::functions(lang, text.as_bytes());
         let cognitive: u64 = fns.iter().map(|f| u64::from(f.cognitive)).sum();
         let graded: f64 = fns
@@ -84,7 +104,8 @@ impl Totals {
     }
 
     fn json(&self) -> Value {
-        json!({"cognitive": self.cognitive, "graded": self.graded, "files": self.files})
+        json!({"cognitive": self.cognitive, "graded": self.graded, "files": self.files,
+               "unmeasured": self.unmeasured})
     }
 }
 
@@ -128,27 +149,52 @@ pub fn gate(
         .flatten()
         .filter_map(|v| v.as_str().map(str::to_owned))
         .collect();
-    let min = r["min_cognitive_reduction"].as_f64().unwrap_or(0.1);
-    // the targets plus every non-test source file the candidate touches
+    let Some(min) = r["min_cognitive_reduction"].as_f64() else {
+        return json!({"state": "unverified", "detail": "refactor.min_cognitive_reduction missing"});
+    };
+    // the targets plus every source file the candidate touches
     let mut paths = target_files(repo, baseline, &targets);
     paths.extend(
         changed
             .iter()
-            .filter(|(p, kind)| {
-                *kind != "delete" && Lang::of_path(p).is_some() && classify(p) != PathClass::Test
-            })
+            .filter(|(p, kind)| *kind != "delete" && Lang::of_path(p).is_some())
             .map(|(p, _)| p.clone()),
     );
     paths.sort();
     paths.dedup();
     let (mut before, mut after) = (Totals::default(), Totals::default());
     for path in &paths {
-        if let Some(text) = text_at(repo, Some(baseline), path) {
-            before.add(path, &text);
+        let old = text_at(repo, Some(baseline), path);
+        let new = match std::fs::read(workspace.join(path)) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(t) => Some(t),
+                Err(_) => {
+                    after.unmeasured.push(format!("{path}: not UTF-8"));
+                    None
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                after.unmeasured.push(format!("{path}: {e}"));
+                None
+            }
+        };
+        // test code is not the product being refactored
+        let is_test = |t: &Option<String>| t.as_deref().is_some_and(|t| defines_tests(path, t));
+        if !targets.iter().any(|g| fnmatch(path, g)) && (is_test(&old) || is_test(&new)) {
+            continue;
         }
-        if let Ok(text) = std::fs::read_to_string(workspace.join(path)) {
-            after.add(path, &text);
+        if let Some(t) = &old {
+            before.add(path, t);
         }
+        if let Some(t) = &new {
+            after.add(path, t);
+        }
+    }
+    if !after.unmeasured.is_empty() || !before.unmeasured.is_empty() {
+        return json!({"state": "unverified",
+                      "detail": "some changed files could not be measured; unmeasured code never counts as simpler",
+                      "before": before.json(), "after": after.json()});
     }
     if before.cognitive == 0 {
         return json!({"state": "unverified",

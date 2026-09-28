@@ -513,9 +513,112 @@ fn refactor_policy_is_validated_at_freeze() {
         json!({"targets": []}),
         json!({"targets": ["a.py"], "min_cognitive_reduction": 0}),
         json!({"targets": ["a.py"], "typo": 1}),
+        json!({"targets": ["a.py"]}),
     ] {
         let mut s = spec(&repo.0, "rf-bad");
         s["refactor"] = bad.clone();
         assert!(create(&authority.0, &s).is_err(), "{bad} accepted");
     }
+}
+
+/// From the independent review (2026-09-28): what the checks do at run
+/// time cannot change what is measured or what the trusted tests say.
+#[test]
+fn run_time_rewrites_cannot_fake_a_refactor_or_a_passing_test() {
+    if !emi_exec::bwrap_available() {
+        return;
+    }
+    let base = "def f(a, b, c):\n    if a:\n        if b:\n            if c:\n                return 1\n    return 0\n";
+    let repo = scratch("rt-repo");
+    let authority = scratch("rt-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), base).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("test_check.py"),
+        "import app\nfrom itertools import product\nfor a, b, c in product((False, True), repeat=3):\n    assert app.f(a, b, c) == int(a and b and c)\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "base"]);
+    let run = json!({"command": ["python3", "test_check.py"], "success": {"exit_code": 0}, "timeout_s": 30});
+    let spec = json!({
+        "task_id": "rt", "repo": repo.0, "baseline": "HEAD", "objective": "simplify f",
+        "requirements": [{"id": "R1", "acceptance": "same outputs", "checks": ["first", "second"]}],
+        "checks": {"first": run, "second": run},
+        "envelope": {"permitted_paths": ["app.py", "test_check.py"]},
+        "verification": {"trusted": ["test_check.py"]},
+        "refactor": {"targets": ["app.py"], "min_cognitive_reduction": 0.2},
+    });
+    create(&authority.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, "rt", &repo.0).unwrap_or_else(|e| panic!("{e}"));
+
+    // 1. the reviewer's exploit: the nested code stays in the commit, and
+    //    rewrites itself to a trivial version when imported
+    std::fs::write(
+        repo.0.join("app.py"),
+        format!("{base}\nfrom pathlib import Path\nPath(__file__).write_text('def f(a, b, c):\\n    return 0\\n')\n"),
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["commit", "-qam", "self-rewriting candidate"]);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_ne!(decision(&d), "accepted", "{d}");
+    assert_eq!(
+        d["gates"]["refactor"]["state"], "fail",
+        "{}",
+        d["gates"]["refactor"]
+    );
+
+    // 2. candidate code that overwrites the trusted test at run time: the
+    //    test is read-only, so the write fails instead of the test passing
+    std::fs::write(
+        repo.0.join("app.py"),
+        "from pathlib import Path\nPath('test_check.py').write_text('pass\\n')\n\ndef f(a, b, c):\n    return 0\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["commit", "-qam", "tampers with its test"]);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "rejected", "{d}");
+
+    // 3. a trusted test replaced by a link out of the workspace: restoring
+    //    it replaces the link and never writes through it
+    let outside = authority.0.join("outside.txt");
+    std::fs::write(&outside, "untouched").unwrap_or_default();
+    git(&repo.0, &["checkout", "-q", "HEAD~2", "--", "app.py"]);
+    std::fs::remove_file(repo.0.join("test_check.py")).unwrap_or_default();
+    std::os::unix::fs::symlink(&outside, repo.0.join("test_check.py")).unwrap_or_default();
+    let _ = check(&store, Candidate::Worktree);
+    assert_eq!(
+        std::fs::read_to_string(&outside).unwrap_or_default(),
+        "untouched"
+    );
+}
+
+#[test]
+fn code_moved_under_tests_or_left_unparseable_is_not_a_simplification() {
+    let (repo, _a, store) = refactor_task("rf-hide");
+    // logic moved into a test-directory helper that defines no tests
+    std::fs::write(repo.0.join("tests/helpers.py"), NESTED).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("app.py"),
+        "import sys\nsys.path.insert(0, 'tests')\nfrom helpers import classify  # noqa: F401,E402\n",
+    )
+    .unwrap_or_default();
+    let d = check(&store, Candidate::Worktree);
+    assert_ne!(decision(&d), "accepted", "{d}");
+    assert_eq!(
+        d["gates"]["refactor"]["state"], "fail",
+        "{}",
+        d["gates"]["refactor"]
+    );
+    std::fs::remove_file(repo.0.join("tests/helpers.py")).unwrap_or_default();
+
+    // a changed file that does not parse is unmeasured, never simpler
+    std::fs::write(repo.0.join("app.py"), format!("{FLAT}\ndef broken(:\n")).unwrap_or_default();
+    let d = check(&store, Candidate::Worktree);
+    assert_eq!(
+        d["gates"]["refactor"]["state"], "unverified",
+        "{}",
+        d["gates"]["refactor"]
+    );
+    assert_ne!(decision(&d), "accepted");
 }

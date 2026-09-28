@@ -5,12 +5,16 @@ EMI measures three burden dimensions per region of code (E: erosion from size
 and branching, V: redundancy, C: coupling), keeps missing evidence as explicit
 intervals, and gates a change only on burden growth it can prove.
 
-**Status: Phase 2 of the rebuild.** The engine reproduces the v0.5.1 Python
-tool for Python and JavaScript/TypeScript end to end: measurements (erosion,
-redundancy, coupling, regions, scope metadata), the burden ledger and review
-report (byte-identical), the block/warn/pass gate, `emi diff` between git
-refs and `emi backtest` over history (`docs/parity.md`). It can replace the
-Python tool for scanning and gating.
+**Status.** EMI checks changes to code, particularly changes made by AI agents.
+
+- **Parity:** the `parity` profile reproduces the v0.5.1 Python tool byte for byte (`docs/parity.md`).
+- **Supervised tasks (`emi task`):** EMI runs frozen checks on the exact submitted tree:
+  - checks run sandboxed, each in a fresh copy;
+  - trusted tests are restored and mounted read-only;
+  - held-out tests are added;
+  - the test inventory is compared with the baseline.
+- **Guardrails** report what a change did (`docs/guardrails.md`).
+- **Evidence:** what these measures do and do not predict is studied in `emi-lab`. No static score, EMI's included, has predicted defects better than code size there. The value is in the verification.
 
 ## Use
 
@@ -88,11 +92,9 @@ Exit code 2 on any error.
 | `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
 | `emi-rules` | Declarative query rules, first-party catalog, suppressions, baselines |
 | `emi-exec` | Check execution: process groups, subreaping, PID namespaces, verified cleanup receipts |
-| `emi-controller` | Editor: `emi lsp` shows rule diagnostics, erosion hints and per-function
-burden-delta code lenses (`docs/editor.md`). Reports: `emi report` writes a
-self-contained HTML report; `emi diff --format markdown` a PR comment.
-
-Supervised tasks: frozen contracts, envelope/structural gates, requirement ledger, completion |
+| `emi-controller` | Supervised tasks: frozen contracts, isolated check runs, envelope/structural/verification/refactor gates, requirement ledger, completion |
+| `emi-panel` | Classic function metrics (SLOC, cognitive complexity, Halstead volume) for the `graded` profile and `emi explain` |
+| `emi-guard` | Guardrails on a change: deleted or weakened tests, prohibited paths, suppressions, duplication |
 | `emi-lsp` | Language server: rule diagnostics, erosion hints, burden-delta code lenses |
 | `emi-mcp` | Model Context Protocol server exposing EMI's tools to agents |
 | `emi-history` | History mining with rename tracking, churn/authorship/AI attribution, change coupling, hotspots |

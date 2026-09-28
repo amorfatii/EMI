@@ -36,11 +36,12 @@ src/app.py:1 classify  graded 9.8 (complexity 6.0, size 3.8)  cognitive 12 = 4 s
 **Why graded chooses and cognitive complexity measures:**
 - **Graded ranks bug-prone functions better than EMI's old erosion.** It was right in all 20 repositories of study G2 (emi-lab `results/G2`). It ranks about as well as function length, which is why it has a size half.
 - **Its complexity half saturates** at about one increment per five lines. A very complex function stays near the ceiling until most of its complexity is gone, so `explain` flags saturated functions and progress is tracked in cognitive complexity.
-- **Neither measure rewards splitting a function evenly,** because both are sums over density. Threshold warnings do reward it: splitting a long method in two silences "Large Method" without making anything simpler.
+- **Splitting a function evenly lowers neither measure,** because both are sums over density. Threshold warnings are different: splitting a long method in two silences "Large Method".
+- **Extracting a nested block into a helper *does* lower cognitive complexity,** because nesting penalties reset. That can be a real improvement or needless indirection, and the number cannot tell which. A passing refactor gate is evidence of flatter code, not proof of a better design; review still decides that.
 
 ## 2. Verify: a refactoring task
 
-`emi task refactor-spec --target FILE [--min-reduction 0.2] -- TEST COMMAND` prints a spec for `emi task create`. It sets these parts:
+`emi task refactor-spec --target FILE [--min-reduction 0.2] -- TEST COMMAND` prints a spec for `emi task create`. The contract must state `min_cognitive_reduction`, because no universal threshold is justified. Pick one that fits the task, for example a target known to be deeply nested. It sets these parts:
 
 | Part | What it does |
 |---|---|
@@ -50,7 +51,9 @@ src/app.py:1 classify  graded 9.8 (complexity 6.0, size 3.8)  cognitive 12 = 4 s
 | `envelope` | The targets, files next to them (new helpers), and tests |
 | `checks` | The test command, run by EMI itself in a snapshot of the candidate |
 
-The `refactor` gate measures the targets plus **every non-test source file the candidate adds or modifies**, before and after. Moving code into a new or existing module is therefore not a reduction.
+The `refactor` gate measures the targets plus **every source file the candidate adds or modifies**, before and after; only files that define tests are left out. So moving code into a new or existing module, or into a helper under `tests/`, is not a reduction.
+
+It reads the submitted tree from a copy no check ran in, so code that rewrites itself at run time is measured as committed. A changed file that cannot be read or parsed makes the gate `unverified`: unmeasured code never counts as simpler.
 
 **How the gate decides:**
 
@@ -71,19 +74,19 @@ Checked end to end (`crates/emi-controller/tests/lifecycle.rs`):
 | rename only | rejected (0% simpler) |
 | function moved to a new module, or into an existing one | rejected (the moved code is counted) |
 
-## Compared with a score-driven loop
+## Compared with other tools
 
-**CodeScene's loop.** Its MCP server has no tool that refactors. Its refactoring guidance asks the agent to:
-1. record the Code Health score;
-2. make a few small changes;
-3. re-review until the score improves.
+**CodeScene** offers automated refactoring (ACE, a PR refactoring agent) and has published work on validating refactorings with tests.
+- **What was examined:** only its offline MCP server (1.5.5). Its refactoring guidance there has the agent iterate on the Code Health score and does not itself run tests.
+- **What that does not show:** anything about CodeScene's other products.
+- **What emi-lab found (S2a, S5a, S5r):** Code Health, like EMI's own scores, did not predict bugs or agent success beyond size.
 
-Nothing in that loop runs the tests. And in emi-lab studies, Code Health did not predict bugs or agent success beyond size (S2a, S5a, S5r).
+**What EMI's workflow contributes:**
+- **Independently run checks:** frozen tests, run sandboxed on the exact submitted tree, restored read-only and compared by inventory.
+- **A simplification measure that moves with the change:** it is recomputed on the submitted tree and counts moved code.
+- **An evidence log:** every verification is recorded in the task's evidence log.
 
-**EMI's loop.**
-- It ties success to behaviour through restored tests and the test inventory.
-- It measures simplification with a quantity that splitting cannot fake.
-- It records every verification in the task's evidence log.
+Whether this outperforms another product on real work has not been measured.
 
 ## Limits
 

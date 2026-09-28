@@ -546,6 +546,16 @@ fn name_of(function: Node, src: &[u8]) -> String {
     "<anonymous>".to_owned()
 }
 
+/// Whether `src` parses without syntax errors (tree-sitter error or
+/// missing nodes). Metrics of an unparseable file are incomplete.
+pub fn parses(lang: Lang, src: &[u8]) -> bool {
+    let mut parser = Parser::new();
+    parser.set_language(&lang.grammar()).is_ok()
+        && parser
+            .parse(src, None)
+            .is_some_and(|t| !t.root_node().has_error())
+}
+
 /// Panel metrics of every function in `src`, ordered by position. Files the
 /// grammar cannot load yield no functions.
 pub fn functions(lang: Lang, src: &[u8]) -> Vec<Function> {

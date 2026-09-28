@@ -19,8 +19,9 @@ emi task install-hook --authority ~/.emi-authority --task fix-add --repo .    # 
 ```
 
 Every verify also runs the **guardrails** (docs/guardrails.md):
-- **Blocking violations reject the candidate:** existing tests skipped or deleted, CI, secret or vendored-code edits.
+- **Blocking violations reject the candidate:** existing tests skipped or deleted, CI or vendored-code edits.
 - **Review-tier violations make it `needs_review`:**
+  - secret-like files (`.env`, `*.pem`, …);
   - fewer tests or assertions, test configuration changes, skips on new tests, assertions that cannot fail;
   - new suppressions, pasted duplicates, lockfiles, growth.
 - **Configuration:** the spec's `"guardrails"` holds a policy object (tiers, allowed classes, budgets); `false` opts out.
@@ -67,6 +68,24 @@ and `hook-check` return 0 or 3. Agents get the same through MCP as
     `review` gives needs-review, `advisory` passes.
   - *Verification* (below): trusted tests restored, held-out tests run,
     test inventory compared.
+
+## What a verification runs on
+
+**The measured tree.** The submitted tree (a commit's blobs, or the working tree as a commit would hold it) is materialized once. Every measurement reads that copy, and no check ever runs in it. The refactor gate, the envelope and the structural gate all see exactly what was submitted, whatever a check did at run time.
+
+**The check runs.** Each check, and the test inventory, runs in its own fresh copy:
+- trusted files are restored and mounted **read-only**, along with the held-out files;
+- restoring and injecting never follow links the candidate planted.
+
+**Isolation fails closed.** Checks run under bubblewrap:
+- **bubblewrap unavailable:** the runs cannot count, and the decision is `incomplete`;
+- **the sandbox fails to start the command:** an environment fault (`incomplete`), not the candidate's failure;
+- **`"execution": {"isolation": "none"}`:** runs without a sandbox, and the decision's `assurance` says `unsandboxed`.
+
+**What an acceptance means.** The candidate passed the frozen checks under the recorded environment:
+- the tests test what they test, and no more;
+- held-out tests run in the same interpreter as the candidate's code, so they catch special-casing but are not hidden from code determined to inspect them;
+- a local pre-push hook is a convenience; enforce completion in CI or repository policy.
 
 ## Verification that tampering cannot pass
 

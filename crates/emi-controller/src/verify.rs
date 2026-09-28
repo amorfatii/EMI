@@ -212,6 +212,46 @@ fn materialize(repo: &Path, candidate: &str, dest: &Path, contract: &Value) -> R
     Ok(())
 }
 
+/// Write `bytes` to `workspace/rel` without following links the candidate
+/// may have planted: every directory on the way must be a real directory,
+/// and whatever is at the destination is replaced, not written through.
+fn write_beneath(workspace: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
+    let target = workspace.join(rel);
+    let mut dir = workspace.to_path_buf();
+    let parts: Vec<_> = Path::new(rel).components().collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
+                return Err(format!("{rel}: {} is not a plain directory", dir.display()));
+            }
+            Ok(_) => {}
+            Err(_) => std::fs::create_dir(&dir).map_err(|e| format!("{rel}: {e}"))?,
+        }
+    }
+    if std::fs::symlink_metadata(&target).is_ok() {
+        std::fs::remove_file(&target).map_err(|e| format!("{rel}: {e}"))?;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, bytes))
+        .map_err(|e| format!("{rel}: {e}"))
+}
+
+/// Trusted paths the candidate modified or deleted (restored before runs).
+fn trusted_changes(trusted: &[String], changed: &[(String, &'static str)]) -> Vec<String> {
+    changed
+        .iter()
+        .filter(|(p, kind)| {
+            matches!(*kind, "modify" | "delete")
+                && trusted.iter().any(|g| emi_scan::walk::fnmatch(p, g))
+        })
+        .map(|(p, _)| p.clone())
+        .collect()
+}
+
 /// Restore the baseline version of every trusted file the candidate
 /// modified or deleted; files it added stay. Returns the restored paths.
 fn restore_trusted(
@@ -228,11 +268,7 @@ fn restore_trusted(
             continue;
         }
         let bytes = git(repo, &["show", &format!("{baseline}:{path}")])?;
-        let dest = workspace.join(path);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("restore {path}: {e}"))?;
-        }
-        std::fs::write(&dest, bytes).map_err(|e| format!("restore {path}: {e}"))?;
+        write_beneath(workspace, path, &bytes).map_err(|e| format!("restore {e}"))?;
         restored.push(path.clone());
     }
     Ok(restored)
@@ -243,15 +279,71 @@ fn restore_trusted(
 fn inject_held_out(workspace: &Path, held_out: &Value) -> Result<Vec<String>> {
     let mut written = Vec::new();
     for (dest, file) in held_out.as_object().into_iter().flatten() {
-        let path = workspace.join(dest);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("held-out {dest}: {e}"))?;
-        }
-        std::fs::write(&path, file["content"].as_str().unwrap_or(""))
-            .map_err(|e| format!("held-out {dest}: {e}"))?;
+        write_beneath(
+            workspace,
+            dest,
+            file["content"].as_str().unwrap_or("").as_bytes(),
+        )
+        .map_err(|e| format!("held-out {e}"))?;
         written.push(dest.clone());
     }
     Ok(written)
+}
+
+/// Everything needed to build a run workspace.
+struct RunSetup<'a> {
+    repo: &'a Path,
+    candidate: &'a str,
+    baseline: &'a str,
+    contract: &'a Value,
+    changed: &'a [(String, &'static str)],
+    /// The baseline's files matching the trusted globs.
+    trusted_files: Vec<String>,
+}
+
+impl RunSetup<'_> {
+    /// A fresh workspace at `dest`: the candidate, trusted files restored,
+    /// held-out files injected. Returns the paths to mount read-only.
+    fn prepare(&self, dest: &Path) -> Result<Vec<PathBuf>> {
+        materialize(self.repo, self.candidate, dest, self.contract)?;
+        let v = &self.contract["verification"];
+        restore_trusted(
+            self.repo,
+            self.baseline,
+            dest,
+            &globs(&v["trusted"]),
+            self.changed,
+        )?;
+        let held_out = inject_held_out(dest, &v["held_out"])?;
+        Ok(self
+            .trusted_files
+            .iter()
+            .chain(&held_out)
+            .map(|p| dest.join(p))
+            .filter(|p| p.exists())
+            .collect())
+    }
+}
+
+/// Files of `rev` matching `globs`.
+fn files_matching(repo: &Path, rev: &str, globs: &[String]) -> Vec<String> {
+    if globs.is_empty() {
+        return Vec::new();
+    }
+    git(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
+        .map(|raw| {
+            raw.split(|b| *b == 0)
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .filter(|p| globs.iter().any(|g| emi_scan::walk::fnmatch(p, g)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether the contract accepts only sandboxed runs (anything but an
+/// explicit `"isolation": "none"`).
+fn sandbox_required(execution: &Value) -> bool {
+    execution["isolation"].as_str() != Some("none")
 }
 
 /// Test ids the inventory command lists in `workspace`, or why it could not.
@@ -259,6 +351,7 @@ fn inventory_ids(
     inv: &Value,
     workspace: &Path,
     execution: &Value,
+    read_only: Vec<PathBuf>,
 ) -> std::result::Result<std::collections::BTreeSet<String>, String> {
     let argv: Vec<&str> = inv["command"]
         .as_array()
@@ -269,6 +362,7 @@ fn inventory_ids(
     let mut spec = Spec::new(&argv, workspace);
     spec.timeout = Duration::from_secs_f64(inv["timeout_s"].as_f64().unwrap_or(300.0));
     spec.isolation = isolation(execution);
+    spec.read_only = read_only;
     if let Some(env) = execution["env"].as_object() {
         spec.env.extend(
             env.iter()
@@ -276,6 +370,9 @@ fn inventory_ids(
         );
     }
     let o = emi_exec::run(&spec);
+    if sandbox_required(execution) && o.receipt.isolation != "bwrap" {
+        return Err("the inventory could not run sandboxed (bubblewrap unavailable)".into());
+    }
     if o.status != Status::Exited || o.exit_code != Some(0) {
         return Err(format!(
             "inventory command did not succeed ({:?}, exit {:?}): {}",
@@ -317,8 +414,14 @@ fn verification_gate(
     };
     if let Some(candidate_ids) = candidate_ids {
         let base_ws = scratch.0.join("baseline");
-        let base_ids = materialize(repo, baseline, &base_ws, contract)
-            .and_then(|()| inventory_ids(&spec["inventory"], &base_ws, &contract["execution"]));
+        let base_ids = materialize(repo, baseline, &base_ws, contract).and_then(|()| {
+            inventory_ids(
+                &spec["inventory"],
+                &base_ws,
+                &contract["execution"],
+                Vec::new(),
+            )
+        });
         match (base_ids, candidate_ids) {
             (Ok(base), Ok(cand)) => {
                 let missing: Vec<&String> = base.difference(&cand).collect();
@@ -360,6 +463,7 @@ fn run_check(
     def: &Value,
     workspace: &Path,
     execution: &Value,
+    read_only: Vec<PathBuf>,
 ) -> (String, String, Value) {
     let argv: Vec<&str> = def["command"]
         .as_array()
@@ -370,6 +474,7 @@ fn run_check(
     let mut spec = Spec::new(&argv, workspace);
     spec.timeout = Duration::from_secs_f64(def["timeout_s"].as_f64().unwrap_or(120.0));
     spec.isolation = isolation(execution);
+    spec.read_only = read_only;
     if let Some(env) = execution["env"].as_object() {
         spec.env.extend(
             env.iter()
@@ -378,7 +483,11 @@ fn run_check(
     }
     let expected = def["success"]["exit_code"].as_i64().unwrap_or(0);
     let o = emi_exec::run(&spec);
+    let unsandboxed = sandbox_required(execution) && o.receipt.isolation != "bwrap";
     let (status, attribution) = match o.status {
+        // an acceptance needs the declared isolation: without it the run
+        // proves nothing about the candidate
+        _ if unsandboxed => ("error", "environment"),
         Status::NotLaunched => ("error", "environment"),
         Status::TimedOut => ("timeout", "unresolved"),
         Status::Exited if !o.receipt.verified_clean => ("error", "environment"),
@@ -624,14 +733,25 @@ fn budget_exhausted(contract: &Value, state: &Value) -> Option<String> {
 /// Run every frozen check in `workspace`, recording each run.
 fn run_checks(
     store: &Store,
-    contract: &Value,
-    workspace: &Path,
+    setup: &RunSetup,
+    scratch: &Path,
     candidate_id: &str,
 ) -> Result<(BTreeMap<String, String>, Vec<Value>)> {
+    let contract = setup.contract;
     let mut statuses = BTreeMap::new();
     let mut runs = Vec::new();
-    for (id, def) in contract["checks"].as_object().into_iter().flatten() {
-        let (status, _, mut record) = run_check(id, def, workspace, &contract["execution"]);
+    for (n, (id, def)) in contract["checks"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        // every check starts from the submitted tree, not from what an
+        // earlier check left behind
+        let dir = scratch.join(format!("run-{n}"));
+        let read_only = setup.prepare(&dir)?;
+        let (status, _, mut record) = run_check(id, def, &dir, &contract["execution"], read_only);
+        let _ = std::fs::remove_dir_all(&dir);
         record["candidate_id"] = json!(candidate_id);
         record["contract_id"] = contract["contract_id"].clone();
         store.append("check_run", &record)?;
@@ -645,6 +765,70 @@ fn check_summary(r: &Value) -> Value {
     json!({"check_id": r["check_id"], "status": r["status"], "attribution": r["attribution"],
            "exit_code": r["exit_code"], "duration_ms": r["duration_ms"],
            "verified_clean": r["receipt"]["verified_clean"], "isolation": r["receipt"]["isolation"]})
+}
+
+/// The checks' outcomes and the verification gate.
+struct Verified {
+    statuses: BTreeMap<String, String>,
+    runs: Vec<Value>,
+    gate: Value,
+}
+
+/// Run the inventory and every check, each in a fresh workspace with
+/// trusted files restored read-only and held-out files injected.
+fn run_verified(
+    store: &Store,
+    contract: &Value,
+    repo: &Path,
+    baseline: &str,
+    candidate_id: &str,
+    changed: &[(String, &'static str)],
+    scratch: &Scratch,
+) -> Result<Verified> {
+    // verification policy: the checks see trusted files as they were at the
+    // baseline (read-only), plus the held-out files the candidate never saw
+    let vspec = &contract["verification"];
+    let trusted = globs(&vspec["trusted"]);
+    let setup = RunSetup {
+        repo,
+        candidate: candidate_id,
+        baseline,
+        contract,
+        changed,
+        trusted_files: files_matching(repo, baseline, &trusted),
+    };
+    let restored = trusted_changes(&trusted, changed);
+    let held_out: Vec<String> = vspec["held_out"]
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    let candidate_ids = if vspec["inventory"].is_null() {
+        None
+    } else {
+        let dir = scratch.0.join("inventory");
+        let read_only = setup.prepare(&dir)?;
+        Some(inventory_ids(
+            &vspec["inventory"],
+            &dir,
+            &contract["execution"],
+            read_only,
+        ))
+    };
+    let (statuses, runs) = run_checks(store, &setup, &scratch.0, candidate_id)?;
+    let gate = verification_gate(
+        contract,
+        repo,
+        baseline,
+        restored,
+        held_out,
+        candidate_ids,
+        scratch,
+    );
+    Ok(Verified {
+        statuses,
+        runs,
+        gate,
+    })
 }
 
 /// Verify a candidate: run every frozen check, compute the gates, reduce,
@@ -674,33 +858,23 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     let changed = changes(&repo, &baseline, &candidate_id)?;
     let envelope = envelope_gate(&contract, &changed);
     let scratch = Scratch::new()?;
+    // the submitted tree, measured and never executed in (checks run in
+    // their own copies and cannot rewrite what is measured)
     let workspace = scratch.0.join("candidate");
     materialize(&repo, &candidate_id, &workspace, &contract)?;
-    // verification policy: the checks see trusted files as they were at the
-    // baseline, plus the held-out files the candidate never saw
-    let vspec = &contract["verification"];
-    let restored = restore_trusted(
-        &repo,
-        &baseline,
-        &workspace,
-        &globs(&vspec["trusted"]),
-        &changed,
-    )?;
-    let held_out = inject_held_out(&workspace, &vspec["held_out"])?;
-    let candidate_ids = (!vspec["inventory"].is_null())
-        .then(|| inventory_ids(&vspec["inventory"], &workspace, &contract["execution"]));
-    let (statuses, runs) = run_checks(store, &contract, &workspace, &candidate_id)?;
-    let structural = structural_gate(&contract, &repo, &baseline, &candidate_id);
-    let guardrails = guardrails_gate(&contract, &repo, &baseline, &candidate_id);
-    let verification = verification_gate(
+    let verification = run_verified(
+        store,
         &contract,
         &repo,
         &baseline,
-        restored,
-        held_out,
-        candidate_ids,
+        &candidate_id,
+        &changed,
         &scratch,
-    );
+    )?;
+    let (statuses, runs) = (verification.statuses, verification.runs);
+    let verification = verification.gate;
+    let structural = structural_gate(&contract, &repo, &baseline, &candidate_id);
+    let guardrails = guardrails_gate(&contract, &repo, &baseline, &candidate_id);
     let refactor = crate::refactor::gate(&contract, &repo, &baseline, &workspace, &changed);
     let ledger = ledger(&contract, &statuses);
     let require_all = contract["completion_policy"]["require_all_requirements_verified"]
@@ -725,6 +899,13 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     d["gates"] = json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
                         "verification": verification, "refactor": refactor});
     d["checks"] = Value::Array(runs.iter().map(check_summary).collect());
+    // what the checks' results are worth: sandboxed runs, or an explicit
+    // opt-out of isolation (weaker: the candidate could reach the host)
+    d["assurance"] = json!(if sandbox_required(&contract["execution"]) {
+        "sandboxed"
+    } else {
+        "unsandboxed (execution.isolation = none)"
+    });
     d["budget"] =
         json!({"retries_used": state["cumulative"]["retries"], "budgets": contract["budgets"]});
     store.append("decision", &d)?;
