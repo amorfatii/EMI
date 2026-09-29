@@ -691,3 +691,48 @@ fn checks_cannot_read_the_authority_or_the_source_repository() {
     let d = check(&store, Candidate::Ref("HEAD".into()));
     assert_eq!(decision(&d), "accepted", "{d}");
 }
+
+#[test]
+fn edits_to_linked_dependencies_void_the_checks_until_re_pinned() {
+    let repo = scratch("deps-repo");
+    let authority = scratch("deps-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    std::fs::write(repo.0.join(".gitignore"), ".deps/\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "buggy"]);
+    // an ignored, linked "test runner" the agent could edit outside git
+    let runner = repo.0.join(".deps/runner.py");
+    std::fs::create_dir_all(repo.0.join(".deps")).unwrap_or_default();
+    std::fs::write(
+        &runner,
+        "import app, sys\nsys.exit(0 if app.add(1, 2) == 3 else 1)\n",
+    )
+    .unwrap_or_default();
+    let mut s = spec(&repo.0, "deps");
+    s["checks"]["unit"]["command"] =
+        json!(["python3", "-c", "exec(open('.deps/runner.py').read())"]);
+    s["execution"] = json!({"link": [".deps"]});
+    let contract = create(&authority.0, &s).unwrap_or_else(|e| panic!("{e}"));
+    assert!(contract["dependencies"][".deps"].is_string(), "{contract}");
+    let store = Store::open(&authority.0, "deps", &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(decision(&check(&store, Candidate::Worktree)), "rejected");
+
+    std::fs::write(&runner, "import sys\nsys.exit(0)\n").unwrap_or_default();
+    let gamed = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&gamed), "incomplete", "{gamed}");
+    assert_eq!(gamed["gates"]["dependencies"]["state"], "unverified");
+
+    store
+        .revise(
+            &json!({"execution": {"link": [".deps"]}}),
+            "lead",
+            "new runner",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let repinned = check(&store, Candidate::Worktree);
+    assert_eq!(
+        repinned["gates"]["dependencies"]["state"], "pass",
+        "{repinned}"
+    );
+}

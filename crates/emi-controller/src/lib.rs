@@ -7,6 +7,7 @@
 //! `incomplete`. Only an accepted commit can complete the task.
 
 pub mod contract;
+pub mod deps;
 pub mod refactor;
 pub mod store;
 pub mod verify;

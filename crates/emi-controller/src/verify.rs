@@ -602,6 +602,7 @@ struct Gates<'a> {
     guardrails: &'a Value,
     verification: &'a Value,
     refactor: &'a Value,
+    dependencies: &'a Value,
 }
 
 /// Ids of the requirements in `state`.
@@ -682,6 +683,12 @@ fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
     }
     if g.refactor["state"] == "unverified" {
         reasons.push("the refactor targets could not be measured".into());
+    }
+    if g.dependencies["state"] == "unverified" {
+        reasons.push(format!(
+            "linked dependency directories differ from the frozen contract (revise the execution policy to re-pin them): {}",
+            globs(&g.dependencies["changed"]).join("; ")
+        ));
     }
     reasons
 }
@@ -867,14 +874,18 @@ fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evalua
     // their own copies and cannot rewrite what is measured)
     let workspace = scratch.0.join("candidate");
     materialize(repo, rev, &workspace, contract)?;
+    // checked before and after the runs: the checks execute these tools
+    let drifted = crate::deps::drift(repo, contract);
     let verified = run_verified(store, contract, subject, &changed, &scratch)?;
+    let dependencies = crate::deps::gate(repo, contract, drifted);
     let structural = structural_gate(contract, repo, baseline, rev);
     let guardrails = guardrails_gate(contract, repo, baseline, rev);
     let refactor = crate::refactor::gate(contract, repo, baseline, &workspace, &changed);
     Ok(Evaluation {
         ledger: ledger(contract, &verified.statuses),
         gates: json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
-                      "verification": verified.gate, "refactor": refactor}),
+                      "verification": verified.gate, "refactor": refactor,
+                      "dependencies": dependencies}),
         runs: verified.runs,
     })
 }
@@ -933,6 +944,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         guardrails: &g["guardrails"],
         verification: &g["verification"],
         refactor: &g["refactor"],
+        dependencies: &g["dependencies"],
     };
     let (decision, reasons) = reduce(&eval.ledger, &gates, require_all);
     let elapsed = started.elapsed().as_secs_f64();

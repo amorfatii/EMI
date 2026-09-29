@@ -333,6 +333,9 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
     if let Some(r) = refactor {
         core["refactor"] = r;
     }
+    if let Some(d) = crate::deps::pin(std::path::Path::new(repo_path), &core["execution"])? {
+        core["dependencies"] = d;
+    }
     Ok(Frozen {
         contract: finalize(core),
     })

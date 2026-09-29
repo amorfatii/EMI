@@ -58,6 +58,15 @@ and `hook-check` return 0 or 3. Agents get the same through MCP as
   verified cleanup. `link` symlinks ignored dependency directories (a
   virtualenv, `node_modules`) into the snapshot. A check passes when it
   exits with `success.exit_code`.
+- **Pinned dependencies.** Linked directories are outside the candidate's
+  tree, yet the checks run the tools inside them, so an agent could edit
+  its test runner there without touching a tracked file. At freeze the
+  contract records a digest of each linked directory (`dependencies`:
+  every path, file content, executable bit and link target). Each
+  verification recomputes them before and after the checks run; any
+  difference makes the decision `incomplete`. To accept a changed
+  environment (a new package the fix needs), revise the `execution`
+  section, which re-pins the directories as they are then.
 - **Gates:**
   - *Envelope:* every changed path (from the baseline, renames split into
     delete and add) must match `permitted_paths`, avoid
@@ -145,7 +154,7 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 | Decision | When |
 |---|---|
 | `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, the structural gate blocked, or the budget is exhausted |
-| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run |
+| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
 | `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, or a trusted file was changed |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 

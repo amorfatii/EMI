@@ -127,6 +127,7 @@ impl Store {
                     | "predecessor"
                     | "repo"
                     | "baseline"
+                    | "dependencies"
             ) {
                 return Err(format!("{k} cannot be revised"));
             }
@@ -136,6 +137,19 @@ impl Store {
                 "refactor" => crate::refactor::spec(Some(v))?.unwrap_or(Value::Null),
                 _ => v.clone(),
             };
+        }
+        if obj.contains_key("execution") {
+            // revising the execution policy re-pins the linked directories
+            // as they are now: the controller's way to accept a new runner
+            let repo = Path::new(old["repo"]["path"].as_str().unwrap_or("."));
+            match crate::deps::pin(repo, &core["execution"])? {
+                Some(d) => core["dependencies"] = d,
+                None => {
+                    if let Some(m) = core.as_object_mut() {
+                        m.remove("dependencies");
+                    }
+                }
+            }
         }
         core["revision"] = json!(old["revision"].as_u64().unwrap_or(1) + 1);
         core["predecessor"] = old["contract_id"].clone();
