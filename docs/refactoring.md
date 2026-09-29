@@ -46,9 +46,9 @@ src/app.py:1 classify  graded 9.8 (complexity 6.0, size 3.8)  cognitive 12 = 4 s
 | Part | What it does |
 |---|---|
 | `refactor` | The targets' cognitive complexity must fall by at least `min_cognitive_reduction` (default 20%). Graded erosion must not rise; if it does, the result needs review |
-| `verification.trusted` | Every existing test, restored before the checks run. A refactor that breaks behaviour fails even if the agent edits the test to hide it |
+| `verification.trusted` | Every existing test, restored before the checks run. A refactor that breaks behaviour fails even if the agent edits the test to hide it. Test-runner configuration (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`, `package.json`, `jest`/`vitest`/`vite` configs, …) is restored too, so a plugin or deselection added there cannot change the run |
 | `verification.inventory` | For pytest: the collected test ids must all still be there |
-| `envelope` | The targets, files next to them (new helpers), and tests |
+| `envelope` | The targets, files next to them (new helpers), and tests. Test-runner configuration is protected: changing it rejects the candidate |
 | `checks` | The test command, run by EMI itself in a snapshot of the candidate |
 
 The `refactor` gate measures the targets plus **every source file the candidate adds or modifies**, before and after; only files that define tests are left out. So moving code into a new or existing module, or into a helper under `tests/`, is not a reduction.

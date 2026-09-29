@@ -75,6 +75,23 @@ const TEST_GLOBS: &[&str] = &[
     "*/conftest.py",
 ];
 
+/// Test-runner configuration: restored like the tests, so a candidate
+/// cannot load a plugin or deselect tests through it. Outside the
+/// envelope too: a refactor has no reason to change how tests run.
+const RUNNER_CONFIG_GLOBS: &[&str] = &[
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "noxfile.py",
+    "package.json",
+    "jest.config.*",
+    "vitest.config.*",
+    "vite.config.*",
+    ".mocharc*",
+    "karma.conf.*",
+];
+
 /// `emi task refactor-spec`: a spec for `emi task create`.
 fn refactor_spec(a: &RefactorSpecArgs) -> anyhow::Result<u8> {
     let stem = a.target[0]
@@ -102,6 +119,8 @@ fn refactor_spec(a: &RefactorSpecArgs) -> anyhow::Result<u8> {
     permitted.extend(trusted.iter().cloned());
     permitted.sort();
     permitted.dedup();
+    let mut trusted = trusted;
+    trusted.extend(RUNNER_CONFIG_GLOBS.iter().map(|g| (*g).to_owned()));
     let mut verification = json!({"trusted": trusted});
     if a.command.iter().any(|c| c.contains("pytest")) {
         let mut inventory = a.command.clone();
@@ -122,7 +141,7 @@ fn refactor_spec(a: &RefactorSpecArgs) -> anyhow::Result<u8> {
             a.target.join(", "), a.min_reduction * 100.0, a.target.join(" ")),
         "requirements": [{"id": "R1", "acceptance": "the existing test suite passes unchanged", "checks": ["tests"]}],
         "checks": {"tests": {"command": a.command, "success": {"exit_code": 0}, "timeout_s": 1800}},
-        "envelope": {"permitted_paths": permitted},
+        "envelope": {"permitted_paths": permitted, "protected_paths": RUNNER_CONFIG_GLOBS},
         "verification": verification,
         "refactor": {"targets": a.target, "min_cognitive_reduction": a.min_reduction},
         "execution": {"isolation": "best", "network": false, "link": link},
