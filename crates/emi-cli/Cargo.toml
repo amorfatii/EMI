@@ -23,6 +23,7 @@ emi-guard.workspace = true
 emi-controller.workspace = true
 emi-lsp.workspace = true
 emi-panel.workspace = true
+emi-profile.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

@@ -24,10 +24,12 @@ emi-exec = { path = "crates/emi-exec" }
 emi-controller = { path = "crates/emi-controller" }
 emi-lsp = { path = "crates/emi-lsp" }
 emi-panel = { path = "crates/emi-panel" }
+emi-profile = { path = "crates/emi-profile" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
+roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.10"

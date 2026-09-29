@@ -331,6 +331,7 @@ dependencies = [
  "emi-lsp",
  "emi-mcp",
  "emi-panel",
+ "emi-profile",
  "emi-rules",
  "emi-scan",
  "serde_json",
@@ -487,6 +488,7 @@ dependencies = [
  "emi-history",
  "emi-ledger",
  "emi-panel",
+ "emi-profile",
  "emi-scan",
  "serde_json",
 ]
@@ -503,6 +505,19 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "emi-profile"
+version = "0.1.0"
+dependencies = [
+ "emi-diff",
+ "emi-exec",
+ "emi-history",
+ "emi-panel",
+ "emi-scan",
+ "roxmltree",
+ "serde_json",
 ]
 
 [[package]]
@@ -946,6 +961,15 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "ruff_python_ast"

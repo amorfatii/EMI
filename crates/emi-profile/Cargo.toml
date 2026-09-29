@@ -1,0 +1,20 @@
+[package]
+name = "emi-profile"
+description = "Code profile: structure, change history, test coverage and sampled mutation results per function, with how far a change there could be verified"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emi-diff = { path = "../emi-diff" }
+emi-exec.workspace = true
+emi-history.workspace = true
+emi-panel.workspace = true
+emi-scan.workspace = true
+roxmltree.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

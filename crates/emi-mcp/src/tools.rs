@@ -66,6 +66,12 @@ pub fn list() -> Vec<Value> {
                    "base": {"type": "string", "description": "Baseline ref (default: HEAD)."},
                    "head": {"type": "string", "description": "Candidate ref; omit to check the working tree."},
                    "policy": {"type": "object", "description": "Optional guardrail policy: permitted_paths, excluded_paths, protected_paths, allow_classes, tiers, max_net_sloc, max_files."}}}}),
+        json!({"name": "emi_profile",
+               "description": "Profile the scope at HEAD per function: structure (cognitive complexity, graded erosion, refactoring steps), change history (revisions, authors, change coupling), what the tests run (from a coverage report you pass: lcov, Cobertura XML, coverage.py JSON or a Go cover profile, produced at HEAD) and a readiness label: strong/weak (sampled mutants caught or not; mutants are sampled by the `emi profile` command, not here), unexecuted (no test runs it: any change passes the suite), executed, unknown. Each function separates facts, inferences and unknowns. Use it to decide where a change can be trusted on a green test run and where held-out tests or review are needed first. Advisory; gates nothing.",
+               "inputSchema": common_schema(json!({
+                   "coverage": {"type": "string", "description": "Path to a coverage report produced at HEAD."},
+                   "days": {"type": "integer", "description": "History window in days (default 365; 0 = all)."},
+                   "top": {"type": "integer", "description": "Functions to return, most exposed first (default 20)."}}))}),
         json!({"name": "emi_scan",
                "description": "Summarize the scope at a ref or the working tree: files, SLOC, burden totals per dimension, unknown-coupling share, cycles, and the most burdened files.",
                "inputSchema": common_schema(json!({
@@ -81,6 +87,7 @@ pub fn call(name: &str, args: &Value) -> Option<Out> {
         "emi_hotspots" => hotspots(args),
         "emi_accept_rewrite" => accept(args),
         "emi_scan" => summary(args),
+        "emi_profile" => profile(args),
         "emi_task_verify" => task_verify(args),
         "emi_task_status" => task_status(args),
         "emi_guard" => guard(args),
@@ -349,25 +356,41 @@ fn region_at<'a>(functions: &[&'a Value], line: u64) -> Vec<&'a Value> {
 
 fn hotspots(args: &Value) -> Out {
     let req = request(args, "HEAD")?;
-    let (sha, m) = emi_diff::change::measure_ref(&req, "HEAD")?;
-    let m = m.ok_or("no measurable source files at HEAD")?;
     let days = args.get("days").and_then(Value::as_u64).unwrap_or(365);
-    let query = emi_history::Query {
-        repo: req.repo.clone(),
-        source: emi_diff::snapshot::normalize_source(&req.source)?,
-        head: sha.clone(),
+    let window = emi_profile::history::Window {
         days: u32::try_from(days).ok().filter(|d| *d > 0),
-        ai_pattern: emi_history::DEFAULT_AI_PATTERN.into(),
+        ..emi_profile::history::Window::default()
     };
-    let commits = emi_history::mine(&query)?;
-    let histories = emi_history::file_histories(&commits);
-    let now = commits.first().map_or(0, |c| c.time);
+    let h = emi_profile::history::history(&req, "HEAD", &window)?;
     let top = usize::try_from(args.get("top").and_then(Value::as_u64).unwrap_or(10)).unwrap_or(10);
-    let ranked = emi_history::hotspots::rank(&m, &histories, now);
-    let coupling = emi_history::change_coupling(&commits, 5, 30.0, 30);
-    Ok(json!({"head": sha, "commits": commits.len(),
-              "hotspots": ranked.into_iter().take(top).collect::<Vec<_>>(),
-              "change_coupling": coupling.into_iter().take(top).collect::<Vec<_>>()}))
+    Ok(json!({"head": h.sha, "commits": h.commits.len(),
+              "hotspots": h.hotspots.into_iter().take(top).collect::<Vec<_>>(),
+              "change_coupling": h.coupling.into_iter().take(top).collect::<Vec<_>>()}))
+}
+
+fn profile(args: &Value) -> Out {
+    let probe = Probe::from_name(text(args, "probe", "python"))
+        .ok_or_else(|| format!("unknown probe {}", text(args, "probe", "python")))?;
+    let days = args.get("days").and_then(Value::as_u64).unwrap_or(365);
+    let top = args.get("top").and_then(Value::as_u64).unwrap_or(20);
+    let options = emi_profile::Options {
+        repo: PathBuf::from(text(args, "repo", ".")),
+        source: text(args, "source", "src").to_owned(),
+        probe,
+        head: "HEAD".into(),
+        window: emi_profile::history::Window {
+            days: u32::try_from(days).ok().filter(|d| *d > 0),
+            ..emi_profile::history::Window::default()
+        },
+        coverage: args
+            .get("coverage")
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
+        mutation: None,
+        top: usize::try_from(top).unwrap_or(20),
+        tolerate_syntax_errors: true,
+    };
+    emi_profile::build(&options)
 }
 
 fn task_store(args: &Value) -> Result<(emi_controller::Store, Value), String> {

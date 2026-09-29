@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use tree_sitter::{Language, Node, Parser};
 
 pub mod explain;
+pub mod mutate;
 
 /// Parentheses a logical sequence and a condition may be wrapped in.
 const PARENS: [&str; 2] = ["parenthesized_expression", "condition_clause"];

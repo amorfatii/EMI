@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use clap::Args;
 use emi_diff::Request;
-use emi_history::{DEFAULT_AI_PATTERN, Query};
+use emi_history::DEFAULT_AI_PATTERN;
+use emi_profile::history::Window;
 use serde_json::{Value, json};
 
 use crate::{Language, ProfileArg};
@@ -58,43 +59,24 @@ fn report(args: &HotspotsArgs) -> Result<Value, String> {
     let mut req = Request::new(&args.repo, &args.source, &args.head, &args.head, probe);
     req.profile = args.profile.into();
     req.tolerate_syntax_errors = args.tolerate_syntax_errors;
-    let (sha, measurement) = emi_diff::change::measure_ref(&req, &args.head)?;
-    let measurement = measurement.ok_or("no measurable source files at HEAD")?;
-    let query = Query {
-        repo: args.repo.clone(),
-        source: emi_diff::snapshot::normalize_source(&args.source)?,
-        head: sha.clone(),
+    let window = Window {
         days: (args.days > 0).then_some(args.days),
         ai_pattern: args.ai_pattern.clone(),
+        min_shared: args.min_shared,
+        min_degree: args.min_degree,
+        max_changeset: args.max_changeset,
     };
-    let commits = emi_history::mine(&query)?;
-    let histories = emi_history::file_histories(&commits);
-    let now = commits.first().map_or(0, |c| c.time);
-    let hotspots = emi_history::hotspots::rank(&measurement, &histories, now);
-    // Only files present at HEAD: history of deleted files is context, not a target.
-    let present: std::collections::HashSet<&str> = measurement["source_sha256"]
-        .as_object()
-        .map(|m| m.keys().map(String::as_str).collect())
-        .unwrap_or_default();
-    let coupling: Vec<_> = emi_history::change_coupling(
-        &commits,
-        args.min_shared,
-        args.min_degree,
-        args.max_changeset,
-    )
-    .into_iter()
-    .filter(|c| present.contains(c.a.as_str()) && present.contains(c.b.as_str()))
-    .collect();
-    let count = |o: emi_history::Origin| commits.iter().filter(|c| c.origin == o).count();
+    let h = emi_profile::history::history(&req, &args.head, &window)?;
+    let count = |o: emi_history::Origin| h.commits.iter().filter(|c| c.origin == o).count();
     Ok(json!({
-        "head": sha,
+        "head": h.sha,
         "window_days": if args.days > 0 { json!(args.days) } else { Value::Null },
-        "measurement_profile": measurement["measurement_profile"],
-        "commits": commits.len(),
+        "measurement_profile": h.measurement["measurement_profile"],
+        "commits": h.commits.len(),
         "origins": {"human": count(emi_history::Origin::Human), "ai": count(emi_history::Origin::Ai),
                     "bot": count(emi_history::Origin::Bot)},
-        "hotspots": hotspots,
-        "change_coupling": coupling,
+        "hotspots": h.hotspots,
+        "change_coupling": h.coupling,
     }))
 }
 

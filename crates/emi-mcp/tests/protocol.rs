@@ -42,6 +42,7 @@ fn handshake_lists_tools_and_rejects_unknowns() {
             "emi_task_verify",
             "emi_task_status",
             "emi_guard",
+            "emi_profile",
             "emi_scan"
         ]
     );
@@ -177,4 +178,44 @@ fn guard_reports_a_skipped_test_in_the_worktree() {
     assert_eq!(report["decision"], "review", "{report}"); // v0.4 tiers (emi-lab GV2)
     assert_eq!(report["violations"][0]["id"], "tests.skip_added");
     assert_eq!(report["violations"][0]["line"], 4);
+}
+
+#[test]
+fn profile_marks_functions_no_test_runs() {
+    let r = Repo(std::env::temp_dir().join(format!("emi-mcp-profile-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&r.0);
+    std::fs::create_dir_all(r.0.join("src")).unwrap_or_default();
+    git(&r.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        r.0.join("src/app.py"),
+        "def used(x):\n    return x + 1\n\n\ndef unused(x):\n    return x - 1\n",
+    )
+    .unwrap_or_default();
+    git(&r.0, &["add", "-A"]);
+    git(&r.0, &["commit", "-q", "-m", "base"]);
+    let lcov = r.0.join("cov.lcov");
+    std::fs::write(
+        &lcov,
+        "SF:src/app.py\nDA:1,1\nDA:2,1\nDA:5,0\nDA:6,0\nend_of_record\n",
+    )
+    .unwrap_or_default();
+    let args = json!({"repo": r.0, "source": "src", "coverage": lcov});
+    let out = call(
+        1,
+        "tools/call",
+        json!({"name": "emi_profile", "arguments": args}),
+    );
+    let p: Value =
+        serde_json::from_str(out["result"]["content"][0]["text"].as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    let level = |name: &str| {
+        p["functions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|f| f["function"] == name)
+            .map(|f| f["readiness"].clone())
+    };
+    assert_eq!(level("unused"), Some(json!("unexecuted")), "{p}");
+    assert_eq!(level("used"), Some(json!("executed")), "{p}");
 }
