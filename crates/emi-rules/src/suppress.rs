@@ -62,6 +62,34 @@ pub fn parse(source: &str) -> Vec<Suppression> {
     out
 }
 
+/// A calendar date written `YYYY-MM-DD`. Dates are compared as text, which
+/// orders only this exact form: `until=9999` or `until=2026-9-01` would
+/// compare as later than any real date and never expire.
+pub fn valid_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    if b.len() != 10
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !digits(0..4)
+        || !digits(5..7)
+        || !digits(8..10)
+    {
+        return false;
+    }
+    let num = |r: std::ops::Range<usize>| s[r].parse::<u32>().unwrap_or(0);
+    let (year, month, day) = (num(0..4), num(5..7), num(8..10));
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    (1..=days).contains(&day)
+}
+
 /// What happened to a hit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -83,6 +111,14 @@ pub fn problems(suppressions: &[Suppression], today: &str) -> Vec<(u32, String)>
                 s.line,
                 format!(
                     "emi-ignore[{}] has no reason; suppressions must say why",
+                    s.rules.join(", ")
+                ),
+            ));
+        } else if let Some(u) = s.until.as_deref().filter(|u| !valid_date(u)) {
+            out.push((
+                s.line,
+                format!(
+                    "emi-ignore[{}] has an invalid until date {u:?}; write it as YYYY-MM-DD",
                     s.rules.join(", ")
                 ),
             ));
@@ -109,7 +145,9 @@ pub fn verdict(suppressions: &[Suppression], rule: &str, line: u32, today: &str)
             && (!above || s.own_line)
             && s.rules.iter().any(|r| r == rule)
             && !s.reason.is_empty()
-            && s.until.as_deref().is_none_or(|u| u >= today)
+            && s.until
+                .as_deref()
+                .is_none_or(|u| valid_date(u) && u >= today)
         {
             return Verdict::Suppressed(s.reason.clone());
         }
@@ -120,6 +158,31 @@ pub fn verdict(suppressions: &[Suppression], rule: &str, line: u32, today: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_real_dates_suppress_and_bad_ones_are_reported() {
+        for good in ["2026-01-31", "2028-02-29", "2000-02-29"] {
+            assert!(valid_date(good), "{good}");
+        }
+        for bad in [
+            "9999",
+            "2026-9-01",
+            "2026-13-01",
+            "2027-02-29",
+            "1900-02-29",
+            "2026-04-31",
+            "",
+        ] {
+            assert!(!valid_date(bad), "{bad}");
+        }
+        let src = "x = 1  # emi-ignore[a] until=9999: forever\ny = 2  # emi-ignore[a] until=2026-9-01: unpadded\n";
+        let s = parse(src);
+        assert_eq!(verdict(&s, "a", 1, "2026-10-15"), Verdict::Active);
+        assert_eq!(verdict(&s, "a", 2, "2026-10-15"), Verdict::Active);
+        let problems = problems(&s, "2026-10-15");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].1.contains("invalid until date"));
+    }
 
     #[test]
     fn parses_reasons_and_expiry() {

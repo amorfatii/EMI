@@ -157,6 +157,9 @@ pub fn run(args: &CheckArgs) -> anyhow::Result<u8> {
         .today
         .clone()
         .unwrap_or_else(|| emi_diff::trajectory::utc_now_iso()[..10].to_owned());
+    if !emi_rules::suppress::valid_date(&today) {
+        anyhow::bail!("--today must be a date written YYYY-MM-DD, got {today:?}");
+    }
     let check = Check {
         rules: &rules,
         only: &args.only,

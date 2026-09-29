@@ -59,7 +59,9 @@ debugger; // emi-ignore[js-debugger] until=2027-01-31: demo harness pauses here
 
 - A marker after code covers its own line. A marker on a comment-only line
   covers the next line.
-- A reason is mandatory, and `until=` makes the suppression expire.
+- A reason is mandatory, and `until=` makes the suppression expire. The
+  date must be a real `YYYY-MM-DD` (`until=9999` or `until=2026-9-01`
+  would never expire); an invalid one is reported and does not suppress.
 - A marker without a reason, or past its date, does not suppress. It is
   reported itself (rule `suppression`), so suppressions cannot rot silently.
 
