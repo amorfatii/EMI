@@ -775,3 +775,31 @@ fn an_approval_completes_exactly_one_needs_review_decision() {
     check(&store, Candidate::Ref("HEAD".into()));
     assert!(!complete(&store, "HEAD").is_ok_and(|(done, _)| done));
 }
+
+#[test]
+fn a_committed_entry_cannot_stand_in_for_a_linked_dependency() {
+    let (repo, _authority, store) = {
+        let repo = scratch("shadow-repo");
+        let authority = scratch("shadow-authority");
+        git(&repo.0, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n")
+            .unwrap_or_default();
+        git(&repo.0, &["add", "-A"]);
+        git(&repo.0, &["commit", "-q", "-m", "app"]);
+        let mut s = spec(&repo.0, "shadow");
+        s["execution"] = json!({"link": [".venv"]});
+        s["envelope"]["permitted_paths"] = json!(["app.py", ".venv"]);
+        create(&authority.0, &s).unwrap_or_else(|e| panic!("{e}"));
+        let store = Store::open(&authority.0, "shadow", &repo.0).unwrap_or_else(|e| panic!("{e}"));
+        (repo, authority, store)
+    };
+    // the candidate commits `.venv` as a link to an environment of its choosing
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/usr", repo.0.join(".venv")).unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "venv"]);
+    let err = verify(&store, &Candidate::Ref("HEAD".into()))
+        .err()
+        .unwrap_or_default();
+    assert!(err.contains("linked from the repository"), "{err}");
+}

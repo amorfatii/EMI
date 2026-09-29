@@ -465,6 +465,35 @@ pub fn materialize_scoped(
     })
 }
 
+/// Symlink each of `rels` (ignored dependency directories such as a
+/// virtualenv or `node_modules`) from `repo` into the materialized tree at
+/// `dest`, where it exists in the repository. The tree must not already
+/// hold that path: a committed entry there (a symlink to another
+/// virtualenv) would replace the dependencies the caller pinned. Returns
+/// the linked sources, which a sandbox mounts back read-only.
+pub fn link_dependencies(repo: &Path, dest: &Path, rels: &[String]) -> Result<Vec<PathBuf>> {
+    let mut linked = Vec::new();
+    for rel in rels {
+        if escapes(rel) {
+            return Err(format!("dependency link escapes the tree: {rel}"));
+        }
+        let (src, dst) = (repo.join(rel), dest.join(rel));
+        if dst.symlink_metadata().is_ok() {
+            return Err(format!(
+                "the tree itself contains {rel}, which is linked from the repository; remove it from the tree or from the link list"
+            ));
+        }
+        if src.exists() {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("cannot link {rel}: {e}"))?;
+            }
+            symlink(&src, &dst).map_err(|e| format!("cannot link {rel}: {e}"))?;
+            linked.push(src);
+        }
+    }
+    Ok(linked)
+}
+
 /// Freeze the working tree into a commit object, as `git commit -a` plus
 /// the untracked-but-not-ignored files would record it, without touching
 /// the repository's index, HEAD or refs. Every later read of the candidate

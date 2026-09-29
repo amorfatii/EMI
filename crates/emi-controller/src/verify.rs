@@ -194,20 +194,7 @@ fn materialize(
     contract: &Value,
 ) -> Result<Vec<PathBuf>> {
     snapshot::materialize(repo, candidate, dest)?;
-    let mut linked = Vec::new();
-    for rel in globs(&contract["execution"]["link"]) {
-        let (src, dst) = (repo.join(&rel), dest.join(&rel));
-        if src.exists() && !dst.exists() {
-            if let Some(parent) = dst.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&src, &dst)
-                .map_err(|e| format!("cannot link {rel}: {e}"))?;
-            linked.push(src);
-        }
-    }
-    Ok(linked)
+    snapshot::link_dependencies(repo, dest, &globs(&contract["execution"]["link"]))
 }
 
 /// Write `bytes` to `workspace/rel` without following links the candidate
