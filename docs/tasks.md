@@ -33,6 +33,14 @@ and `hook-check` return 0 or 3. Agents get the same through MCP as
 
 ## The spec
 
+`emi task draft --target FILE --objective TEXT [--held-out DEST=FILE] [--profile profile.json] -- TEST COMMAND`
+writes a spec like the one below: the existing tests and the test-runner
+configuration trusted, the targets, their neighbours and new tests
+permitted, runner configuration protected, checks sandboxed without
+network. With a saved profile it warns where the targets' tests are weak
+or missing (docs/profile.md). `emi task refactor-spec` does the same for a
+simplification.
+
 ```json
 {
   "task_id": "fix-add", "repo": ".", "baseline": "HEAD",

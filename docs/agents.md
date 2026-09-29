@@ -27,6 +27,7 @@ Other MCP clients take the same command in their server configuration:
 | `emi_guard` | *Did I weaken anything to get here?* Verifiable guardrails on the working tree (or `head`) against `base`: deleted, skipped or weakened tests, changed test config, CI/secret/vendored/lockfile edits, new lint or type suppressions, pasted duplicates, growth. Each violation has an id, file, line and tier (docs/guardrails.md). |
 | `emi_task_verify` | *Does my work satisfy the task I was given?* Runs the controller's frozen checks in an isolated snapshot, checks the scope envelope, the guardrails and the structural gate, and returns accepted / rejected / needs_review / incomplete per requirement (docs/tasks.md). |
 | `emi_task_status` | The frozen objective, requirements, envelope and budget, plus the latest decision, without spending budget. |
+| `emi_profile` | *Where would a green test run mean something?* Per function, most exposed first: structure, change history, the lines a coverage report you pass says the tests run, and readiness (`unexecuted` means any change there passes the suite). Mutation sampling is CLI-only (`emi profile`), since it runs the suite once per mutant (docs/profile.md). |
 | `emi_scan` | *What does the scope look like?* Totals per dimension, unknown-coupling share, cycles, the most burdened files. |
 
 Common arguments: `repo` (default `.`), `source` (scope directory, default

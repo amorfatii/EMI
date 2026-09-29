@@ -59,6 +59,14 @@ burden × change frequency, with change coupling, authorship and AI-attributed
 share (`docs/history.md`); `emi diff --history` adds the churn-weighted
 exposure view to reviews.
 
+Profile: `emi profile --coverage REPORT -- TEST COMMAND` says per function
+whether the tests would notice a wrong change there: structure and history,
+the lines an imported coverage report (lcov, Cobertura, coverage.py, Go)
+says the tests run, and sampled mutants caught or missed, reduced to a
+readiness label (`strong`, `weak`, `unexecuted`, …) with facts, inferences
+and unknowns kept apart. Advisory; `emi task draft --profile` turns it into
+a task spec (`docs/profile.md`).
+
 Refactoring: `emi explain PATH` shows what drives each function's graded erosion and the steps that lower it. `emi task refactor-spec` turns a refactor into a supervised task that must get simpler (cognitive complexity) while every existing test keeps passing (`docs/refactoring.md`).
 
 Profiles: `--profile parity` (default) reproduces the v0.5.1 oracle;
@@ -98,6 +106,7 @@ Exit code 2 on any error.
 | `emi-lsp` | Language server: rule diagnostics, erosion hints, burden-delta code lenses |
 | `emi-mcp` | Model Context Protocol server exposing EMI's tools to agents |
 | `emi-history` | History mining with rename tracking, churn/authorship/AI attribution, change coupling, hotspots |
+| `emi-profile` | Code profile: coverage import, sampled mutation runs, per-function readiness |
 | `emi-cli` | The `emi` binary |
 
 `corpus/` holds the golden measurements from the v0.5.1 oracle and their pinned
