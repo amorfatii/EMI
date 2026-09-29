@@ -6,12 +6,14 @@
 //! requirement ledger to `accepted`, `rejected`, `needs_review` or
 //! `incomplete`. Only an accepted commit can complete the task.
 
+pub mod approve;
 pub mod contract;
 pub mod deps;
 pub mod refactor;
 pub mod store;
 pub mod verify;
 
+pub use approve::approve;
 pub use store::Store;
 pub use verify::{Candidate, complete, hook_check, verify};
 

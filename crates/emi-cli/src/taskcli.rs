@@ -30,6 +30,9 @@ pub enum TaskCommand {
     Complete(VerifyArgs),
     /// Record a contract revision (actor and reason required).
     Revise(ReviseArgs),
+    /// Approve the review items of a commit's needs_review decision, so it
+    /// can complete (actor, reason and every item required).
+    Approve(ApproveArgs),
     /// Pre-push check: exit 0 only for a completed commit.
     HookCheck(VerifyArgs),
     /// Install a pre-push hook that runs hook-check.
@@ -188,6 +191,26 @@ pub struct ReviseArgs {
     /// JSON object of contract fields to replace.
     #[arg(long)]
     changes: String,
+    #[arg(long)]
+    actor: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ApproveArgs {
+    #[arg(long)]
+    authority: PathBuf,
+    #[arg(long)]
+    task: String,
+    /// The verified commit (default HEAD).
+    #[arg(long, default_value = "HEAD")]
+    candidate: String,
+    /// A review item of the decision (its `review_items`); repeat for each.
+    #[arg(long = "item", required = true)]
+    items: Vec<String>,
     #[arg(long)]
     actor: String,
     #[arg(long)]
@@ -497,6 +520,19 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
                 &store(&a.authority, &a.task, a.repo.as_ref())?
                     .revise(&changes, &a.actor, &a.reason)
                     .map_err(err)?,
+            );
+            Ok(0)
+        }
+        TaskCommand::Approve(a) => {
+            print(
+                &emi_controller::approve(
+                    &store(&a.authority, &a.task, a.repo.as_ref())?,
+                    &a.candidate,
+                    &a.actor,
+                    &a.reason,
+                    &a.items,
+                )
+                .map_err(err)?,
             );
             Ok(0)
         }

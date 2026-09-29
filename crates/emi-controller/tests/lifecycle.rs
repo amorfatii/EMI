@@ -736,3 +736,42 @@ fn edits_to_linked_dependencies_void_the_checks_until_re_pinned() {
         "{repinned}"
     );
 }
+
+#[test]
+fn an_approval_completes_exactly_one_needs_review_decision() {
+    let (repo, _a, store) = guarded_task("ap", json!({"tiers": {"tests.skip_added": "review"}}));
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    std::fs::write(repo.0.join("tests/test_app.py"), SKIPPED).unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix, skip"]);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    let items: Vec<String> = d["review_items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| i.as_str().map(str::to_owned))
+        .collect();
+    assert!(items.iter().any(|i| i.starts_with("guard:")), "{items:?}");
+    assert!(!complete(&store, "HEAD").is_ok_and(|(done, _)| done));
+
+    let approve = |items: &[String], actor: &str| {
+        emi_controller::approve(&store, "HEAD", actor, "skip is temporary", items)
+    };
+    assert!(approve(&items, "").is_err(), "an actor is required");
+    assert!(approve(&[], "lead").is_err(), "every item must be named");
+    let mut extra = items.clone();
+    extra.push("guard:ci.edited:.github/x.yml".into());
+    assert!(
+        approve(&extra, "lead").is_err(),
+        "no waiver beyond the decision"
+    );
+    approve(&items, "lead").unwrap_or_else(|e| panic!("{e}"));
+
+    let (done, record) = complete(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));
+    assert!(done, "{record}");
+    assert_eq!(record["approval"]["actor"], "lead");
+
+    // a new verification is a new decision: the approval does not carry over
+    check(&store, Candidate::Ref("HEAD".into()));
+    assert!(!complete(&store, "HEAD").is_ok_and(|(done, _)| done));
+}

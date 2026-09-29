@@ -15,6 +15,7 @@ emi task verify   --authority ~/.emi-authority --task fix-add --worktree   # or 
 emi task status   --authority ~/.emi-authority --task fix-add
 emi task complete --authority ~/.emi-authority --task fix-add --candidate HEAD
 emi task revise   --authority ~/.emi-authority --task fix-add --changes '{"objective": "..."}' --actor lead --reason "scope grew"
+emi task approve  --authority ~/.emi-authority --task fix-add --candidate HEAD --item 'guard:ci.edited:.github/workflows/test.yml' --actor lead --reason "pin bump requested in the issue"
 emi task install-hook --authority ~/.emi-authority --task fix-add --repo .    # pre-push: completed commits only
 ```
 
@@ -155,11 +156,33 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 |---|---|
 | `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, the structural gate blocked, or the budget is exhausted |
 | `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
-| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, or a trusted file was changed |
+| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, or a trusted file was changed; completes only with an approval of its `review_items` |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 
 Every verification charges the budget and appends its check runs (with
 cleanup receipts) and its decision to the append-only `evidence.jsonl` in
 the authority. `complete` accepts only a commit whose latest decision
-under the current contract is `accepted`; verifying the working tree
-never completes a task.
+under the current contract is `accepted`, or `needs_review` with an
+approval of exactly that decision; verifying the working tree never
+completes a task.
+
+## Approving a review
+
+Review-tier findings are real events that are usually fine: emi-lab GV2
+found CI edits detected 30 of 30 times but warranting intervention once.
+A `needs_review` decision lists them as `review_items`, one per finding:
+`guard:<id>:<path>`, `trusted:<path>`, `structural:warn`,
+`refactor:erosion_rose`. `emi task approve` records that a named person
+looked at them:
+
+- the actor, a reason, and **every** item by name are required; an item
+  the decision does not contain is refused, so an approval cannot waive
+  anything beyond what was reviewed;
+- it is bound to that one decision about that one commit under the
+  current contract. A new commit, a re-verification or a revision needs a
+  new approval; nothing is turned off for later candidates;
+- it is appended to `evidence.jsonl`, and the completion record carries it.
+
+An approval is only as trustworthy as access to the authority directory:
+the agent must not be able to run `emi task approve` as the controller.
+It is not offered over MCP.

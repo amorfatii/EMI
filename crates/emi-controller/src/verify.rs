@@ -958,6 +958,9 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     d["requirements"] = Value::Array(eval.ledger);
     d["gates"] = eval.gates;
     d["checks"] = Value::Array(eval.runs.iter().map(check_summary).collect());
+    if decision == "needs_review" {
+        d["review_items"] = json!(crate::approve::review_items(&d));
+    }
     // what the checks' results are worth: sandboxed runs, or an explicit
     // opt-out of isolation (weaker: the candidate could reach the host)
     d["assurance"] = json!(if sandbox_required(&contract["execution"]) {
@@ -972,21 +975,32 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
 }
 
 /// Completion: only a commit whose latest decision under the current
-/// contract is `accepted`.
+/// contract is `accepted`, or `needs_review` with an approval of exactly
+/// that decision.
 pub fn complete(store: &Store, reference: &str) -> Result<(bool, Value)> {
     let contract = store.contract()?;
     let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
     let sha = snapshot::resolve_ref(&repo, reference)?;
     let cid = contract["contract_id"].as_str().unwrap_or("");
     let latest = store.latest_decision(&sha, cid);
+    let approval = latest
+        .as_ref()
+        .filter(|d| d["decision"] == "needs_review")
+        .and_then(|d| crate::approve::approval_for(store, d));
     let accepted = latest.as_ref().is_some_and(|d| d["decision"] == "accepted");
-    let reason = match &latest {
-        None => "no verification of this commit under the current contract".to_owned(),
-        Some(d) if !accepted => format!("latest decision is {}", d["decision"]),
-        Some(_) => "accepted under the current contract".to_owned(),
+    let reason = match (&latest, &approval) {
+        (None, _) => "no verification of this commit under the current contract".to_owned(),
+        (Some(_), Some(a)) => format!(
+            "needs_review approved by {}: {}",
+            a["actor"].as_str().unwrap_or(""),
+            a["reason"].as_str().unwrap_or("")
+        ),
+        (Some(d), None) if !accepted => format!("latest decision is {}", d["decision"]),
+        (Some(_), None) => "accepted under the current contract".to_owned(),
     };
+    let accepted = accepted || approval.is_some();
     let record = json!({"task_id": contract["task_id"], "contract_id": cid, "candidate_id": sha,
-                        "completed": accepted, "reason": reason});
+                        "completed": accepted, "reason": reason, "approval": approval});
     store.append("completion", &record)?;
     if accepted {
         crate::store::atomic_write(&store.dir.join("completion.json"), &record)?;
