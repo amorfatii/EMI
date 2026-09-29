@@ -660,3 +660,34 @@ fn code_moved_under_tests_or_left_unparseable_is_not_a_simplification() {
     );
     assert_ne!(decision(&d), "accepted");
 }
+
+#[test]
+fn checks_cannot_read_the_authority_or_the_source_repository() {
+    if !emi_exec::bwrap_available() {
+        return;
+    }
+    // outside /tmp, which the sandbox replaces anyway
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let mk = |n: &str| {
+        let d = base.join(format!("emi-ctl-{n}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap_or_default();
+        Dir(d)
+    };
+    let (repo, authority) = (mk("hide-repo"), mk("hide-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "app"]);
+    let probe = format!(
+        "import os, sys; seen = [p for p in ({:?}, {:?}) if os.listdir(p)]; sys.exit(1 if seen else 0)",
+        authority.0.display().to_string(),
+        repo.0.display().to_string()
+    );
+    let mut s = spec(&repo.0, "hide");
+    s["checks"]["unit"]["command"] = json!(["python3", "-c", probe]);
+    create(&authority.0, &s).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, "hide", &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+}

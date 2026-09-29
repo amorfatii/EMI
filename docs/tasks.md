@@ -75,7 +75,15 @@ and `hook-check` return 0 or 3. Agents get the same through MCP as
 
 **The check runs.** Each check, and the test inventory, runs in its own fresh copy:
 - trusted files are restored and mounted **read-only**, along with the held-out files;
-- restoring and injecting never follow links the candidate planted.
+- restoring and injecting never follow links the candidate planted;
+- the authority directory and the source repository are replaced by empty
+  directories inside the sandbox, so a check cannot read contracts,
+  held-out files of other tasks, evidence, or the agent's live tree.
+  Linked dependency directories are mounted back read-only. A virtualenv
+  with an *editable* install of the repository points at the live tree,
+  not the candidate, so its imports fail here instead of silently testing
+  the wrong code: install non-editable, or set `PYTHONPATH` through
+  `execution.env`.
 
 **Isolation fails closed.** Checks run under bubblewrap:
 - **bubblewrap unavailable:** the runs cannot count, and the decision is `incomplete`;

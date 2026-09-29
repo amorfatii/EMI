@@ -44,6 +44,10 @@ pub struct Spec {
     /// Paths inside the workspace mounted read-only over it (bubblewrap
     /// only): trusted tests the command must not change.
     pub read_only: Vec<PathBuf>,
+    /// Host paths replaced by an empty directory in the sandbox (bubblewrap
+    /// only): the root is mounted read-only, so without this the command
+    /// could still read them. `read_only` paths inside them stay visible.
+    pub hidden: Vec<PathBuf>,
 }
 
 impl Spec {
@@ -57,6 +61,7 @@ impl Spec {
             output_limit: 1 << 20,
             isolation: Isolation::None,
             read_only: Vec::new(),
+            hidden: Vec::new(),
         }
     }
 }
@@ -78,6 +83,8 @@ pub struct Receipt {
     pub verified_clean: bool,
     /// `read_only` paths were mounted read-only (bubblewrap only).
     pub read_only_enforced: bool,
+    /// `hidden` paths were replaced by empty directories (bubblewrap only).
+    pub hidden_enforced: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -158,7 +165,11 @@ fn command(spec: &Spec, bwrap: Option<bool>, marker: Option<&std::path::Path>) -
                 "--proc",
                 "/proc",
             ]);
-            c.args(["--tmpfs", "/tmp", "--bind", &cwd, &cwd]);
+            c.args(["--tmpfs", "/tmp"]);
+            for h in spec.hidden.iter().filter(|h| h.exists()) {
+                c.arg("--tmpfs").arg(h);
+            }
+            c.args(["--bind", &cwd, &cwd]);
             for ro in &spec.read_only {
                 if ro.exists() {
                     c.arg("--ro-bind").arg(ro).arg(ro);
@@ -286,6 +297,7 @@ pub fn run(spec: &Spec) -> Outcome {
         return not_launched("empty argv".into(), receipt);
     }
     receipt.read_only_enforced = bwrap.is_some() && !spec.read_only.is_empty();
+    receipt.hidden_enforced = bwrap.is_some() && !spec.hidden.is_empty();
     // readiness: the launcher creates this file once the sandbox is up
     let ready_dir = match bwrap.map(|_| ready_dir()).transpose() {
         Ok(d) => d,

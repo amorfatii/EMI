@@ -183,9 +183,18 @@ fn guard_ids(gate: &Value, tier: &str) -> String {
     ids.join(", ")
 }
 
-fn materialize(repo: &Path, candidate: &str, dest: &Path, contract: &Value) -> Result<()> {
+/// Materialize `candidate` into `dest` and link the ignored dependency
+/// directories (node_modules, .venv) the checks need. Returns the linked
+/// sources, which a sandbox mounts back read-only inside the hidden
+/// repository.
+fn materialize(
+    repo: &Path,
+    candidate: &str,
+    dest: &Path,
+    contract: &Value,
+) -> Result<Vec<PathBuf>> {
     snapshot::materialize(repo, candidate, dest)?;
-    // Ignored dependency directories (node_modules, .venv) the checks need.
+    let mut linked = Vec::new();
     for rel in globs(&contract["execution"]["link"]) {
         let (src, dst) = (repo.join(&rel), dest.join(&rel));
         if src.exists() && !dst.exists() {
@@ -195,9 +204,10 @@ fn materialize(repo: &Path, candidate: &str, dest: &Path, contract: &Value) -> R
             #[cfg(unix)]
             std::os::unix::fs::symlink(&src, &dst)
                 .map_err(|e| format!("cannot link {rel}: {e}"))?;
+            linked.push(src);
         }
     }
-    Ok(())
+    Ok(linked)
 }
 
 /// Write `bytes` to `workspace/rel` without following links the candidate
@@ -287,13 +297,21 @@ struct RunSetup<'a> {
     changed: &'a [(String, &'static str)],
     /// The baseline's files matching the trusted globs.
     trusted_files: Vec<String>,
+    /// Host paths a run must not read: the authority and the repository.
+    hidden: Vec<PathBuf>,
+}
+
+/// What a run's sandbox mounts besides its workspace.
+struct Mounts {
+    read_only: Vec<PathBuf>,
+    hidden: Vec<PathBuf>,
 }
 
 impl RunSetup<'_> {
     /// A fresh workspace at `dest`: the candidate, trusted files restored,
-    /// held-out files injected. Returns the paths to mount read-only.
-    fn prepare(&self, dest: &Path) -> Result<Vec<PathBuf>> {
-        materialize(self.repo, self.candidate, dest, self.contract)?;
+    /// held-out files injected.
+    fn prepare(&self, dest: &Path) -> Result<Mounts> {
+        let linked = materialize(self.repo, self.candidate, dest, self.contract)?;
         let v = &self.contract["verification"];
         restore_trusted(
             self.repo,
@@ -303,14 +321,57 @@ impl RunSetup<'_> {
             self.changed,
         )?;
         let held_out = inject_held_out(dest, &v["held_out"])?;
-        Ok(self
+        let mut read_only: Vec<PathBuf> = self
             .trusted_files
             .iter()
             .chain(&held_out)
             .map(|p| dest.join(p))
             .filter(|p| p.exists())
-            .collect())
+            .collect();
+        read_only.extend(linked);
+        Ok(Mounts {
+            read_only,
+            hidden: self.hidden.clone(),
+        })
     }
+
+    /// The baseline, for its test inventory (nothing restored or injected).
+    fn prepare_baseline(&self, dest: &Path) -> Result<Mounts> {
+        let linked = materialize(self.repo, self.baseline, dest, self.contract)?;
+        Ok(Mounts {
+            read_only: linked,
+            hidden: self.hidden.clone(),
+        })
+    }
+}
+
+/// The sandboxed run of `argv` in `workspace` under the contract's
+/// execution policy.
+fn exec_spec(
+    argv: &Value,
+    workspace: &Path,
+    execution: &Value,
+    timeout_s: f64,
+    mounts: Mounts,
+) -> Spec {
+    let argv: Vec<&str> = argv
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let mut spec = Spec::new(&argv, workspace);
+    spec.timeout = Duration::from_secs_f64(timeout_s);
+    spec.isolation = isolation(execution);
+    spec.read_only = mounts.read_only;
+    spec.hidden = mounts.hidden;
+    if let Some(env) = execution["env"].as_object() {
+        spec.env.extend(
+            env.iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))),
+        );
+    }
+    spec
 }
 
 /// Files of `rev` matching `globs`.
@@ -339,24 +400,10 @@ fn inventory_ids(
     inv: &Value,
     workspace: &Path,
     execution: &Value,
-    read_only: Vec<PathBuf>,
+    mounts: Mounts,
 ) -> std::result::Result<std::collections::BTreeSet<String>, String> {
-    let argv: Vec<&str> = inv["command"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let mut spec = Spec::new(&argv, workspace);
-    spec.timeout = Duration::from_secs_f64(inv["timeout_s"].as_f64().unwrap_or(300.0));
-    spec.isolation = isolation(execution);
-    spec.read_only = read_only;
-    if let Some(env) = execution["env"].as_object() {
-        spec.env.extend(
-            env.iter()
-                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))),
-        );
-    }
+    let timeout = inv["timeout_s"].as_f64().unwrap_or(300.0);
+    let spec = exec_spec(&inv["command"], workspace, execution, timeout, mounts);
     let o = emi_exec::run(&spec);
     if sandbox_required(execution) && o.receipt.isolation != "bwrap" {
         return Err("the inventory could not run sandboxed (bubblewrap unavailable)".into());
@@ -381,14 +428,13 @@ fn inventory_ids(
 /// The verification gate: trusted files restored, held-out files injected
 /// (both before the checks run), and the test inventory compared.
 fn verification_gate(
-    contract: &Value,
-    repo: &Path,
-    baseline: &str,
+    setup: &RunSetup,
     restored: Vec<String>,
     held_out: Vec<String>,
     candidate_ids: Option<std::result::Result<std::collections::BTreeSet<String>, String>>,
     scratch: &Scratch,
 ) -> Value {
+    let contract = setup.contract;
     let spec = &contract["verification"];
     if spec.is_null() {
         return json!({"state": "not_required"});
@@ -402,13 +448,8 @@ fn verification_gate(
     };
     if let Some(candidate_ids) = candidate_ids {
         let base_ws = scratch.0.join("baseline");
-        let base_ids = materialize(repo, baseline, &base_ws, contract).and_then(|()| {
-            inventory_ids(
-                &spec["inventory"],
-                &base_ws,
-                &contract["execution"],
-                Vec::new(),
-            )
+        let base_ids = setup.prepare_baseline(&base_ws).and_then(|mounts| {
+            inventory_ids(&spec["inventory"], &base_ws, &contract["execution"], mounts)
         });
         match (base_ids, candidate_ids) {
             (Ok(base), Ok(cand)) => {
@@ -451,24 +492,10 @@ fn run_check(
     def: &Value,
     workspace: &Path,
     execution: &Value,
-    read_only: Vec<PathBuf>,
+    mounts: Mounts,
 ) -> (String, String, Value) {
-    let argv: Vec<&str> = def["command"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let mut spec = Spec::new(&argv, workspace);
-    spec.timeout = Duration::from_secs_f64(def["timeout_s"].as_f64().unwrap_or(120.0));
-    spec.isolation = isolation(execution);
-    spec.read_only = read_only;
-    if let Some(env) = execution["env"].as_object() {
-        spec.env.extend(
-            env.iter()
-                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))),
-        );
-    }
+    let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
+    let spec = exec_spec(&def["command"], workspace, execution, timeout, mounts);
     let expected = def["success"]["exit_code"].as_i64().unwrap_or(0);
     let o = emi_exec::run(&spec);
     let unsandboxed = sandbox_required(execution) && o.receipt.isolation != "bwrap";
@@ -736,8 +763,8 @@ fn run_checks(
         // every check starts from the submitted tree, not from what an
         // earlier check left behind
         let dir = scratch.join(format!("run-{n}"));
-        let read_only = setup.prepare(&dir)?;
-        let (status, _, mut record) = run_check(id, def, &dir, &contract["execution"], read_only);
+        let mounts = setup.prepare(&dir)?;
+        let (status, _, mut record) = run_check(id, def, &dir, &contract["execution"], mounts);
         let _ = std::fs::remove_dir_all(&dir);
         record["candidate_id"] = json!(candidate_id);
         record["contract_id"] = contract["contract_id"].clone();
@@ -766,6 +793,8 @@ struct Verified {
 /// one), so every gate and every run sees the same content.
 struct Subject {
     repo: PathBuf,
+    /// The authority root (every task's contracts and held-out files).
+    authority: PathBuf,
     baseline: String,
     /// The commit every gate and check reads.
     rev: String,
@@ -793,6 +822,7 @@ fn run_verified(
         contract,
         changed,
         trusted_files: files_matching(&subject.repo, &subject.baseline, &trusted),
+        hidden: vec![subject.authority.clone(), subject.repo.clone()],
     };
     let restored = trusted_changes(&trusted, changed);
     let held_out: Vec<String> = vspec["held_out"]
@@ -803,24 +833,16 @@ fn run_verified(
         None
     } else {
         let dir = scratch.0.join("inventory");
-        let read_only = setup.prepare(&dir)?;
+        let mounts = setup.prepare(&dir)?;
         Some(inventory_ids(
             &vspec["inventory"],
             &dir,
             &contract["execution"],
-            read_only,
+            mounts,
         ))
     };
     let (statuses, runs) = run_checks(store, &setup, &scratch.0, &subject.candidate_id)?;
-    let gate = verification_gate(
-        contract,
-        &subject.repo,
-        &subject.baseline,
-        restored,
-        held_out,
-        candidate_ids,
-        scratch,
-    );
+    let gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
     Ok(Verified {
         statuses,
         runs,
@@ -895,6 +917,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     let rev = candidate_rev(&repo, candidate, &candidate_id)?;
     let subject = Subject {
         repo,
+        authority: store.dir.parent().unwrap_or(&store.dir).to_path_buf(),
         baseline,
         rev,
         candidate_id: candidate_id.clone(),

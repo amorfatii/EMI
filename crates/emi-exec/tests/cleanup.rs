@@ -177,3 +177,34 @@ fn a_sandbox_that_never_starts_the_command_is_not_the_commands_failure() {
     assert_eq!((o.status, o.exit_code), (Status::Exited, Some(3)));
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn hidden_paths_are_unreadable_except_what_is_mounted_back() {
+    if !emi_exec::bwrap_available() {
+        return;
+    }
+    let ws = scratch("hid-ws");
+    let secret = scratch("hid-secret");
+    std::fs::write(secret.join("held_out.py"), "secret").unwrap_or_default();
+    std::fs::create_dir_all(secret.join("deps")).unwrap_or_default();
+    std::fs::write(secret.join("deps").join("lib.txt"), "dep").unwrap_or_default();
+    let script = format!(
+        "cat {0}/held_out.py; echo; cat {0}/deps/lib.txt; echo x > {0}/deps/lib.txt",
+        secret.display()
+    );
+    let mut s = Spec::new(&["/bin/sh", "-c", &script], &ws);
+    s.isolation = Isolation::Bwrap { network: false };
+    s.hidden = vec![secret.clone()];
+    s.read_only = vec![secret.join("deps")];
+    let o = run(&s);
+    assert!(o.receipt.hidden_enforced);
+    assert!(!o.stdout.contains("secret"), "{}", o.stdout);
+    assert!(o.stdout.contains("dep"), "{} {}", o.stdout, o.stderr);
+    assert_eq!(
+        std::fs::read_to_string(secret.join("deps").join("lib.txt")).unwrap_or_default(),
+        "dep",
+        "a path mounted back stays read-only"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&secret);
+}
