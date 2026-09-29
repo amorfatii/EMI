@@ -352,15 +352,22 @@ fn candidate(a: &VerifyArgs) -> emi_controller::Candidate {
     }
 }
 
+/// `emi task create`: freeze the spec; warn about what it cannot rule out.
+fn create(a: &CreateArgs) -> anyhow::Result<u8> {
+    let text = std::fs::read_to_string(&a.spec)?;
+    let spec = emi_ledger::strict::loads(&text).map_err(anyhow::Error::msg)?;
+    let contract = emi_controller::create(&a.authority, &spec).map_err(anyhow::Error::msg)?;
+    if contract["verification"]["inventory"].is_null() {
+        eprintln!("emi: warning: {}", emi_controller::verify::NO_INVENTORY);
+    }
+    print(&contract);
+    Ok(0)
+}
+
 fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
     let err = anyhow::Error::msg;
     match cmd {
-        TaskCommand::Create(a) => {
-            let text = std::fs::read_to_string(&a.spec)?;
-            let spec = emi_ledger::strict::loads(&text).map_err(err)?;
-            print(&emi_controller::create(&a.authority, &spec).map_err(err)?);
-            Ok(0)
-        }
+        TaskCommand::Create(a) => create(a),
         TaskCommand::Verify(a) => {
             let d = emi_controller::verify(
                 &store(&a.authority, &a.task, a.repo.as_ref())?,

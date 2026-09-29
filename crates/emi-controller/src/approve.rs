@@ -21,7 +21,7 @@ fn strs(v: &Value) -> impl Iterator<Item = &str> {
 
 /// The items a person must look at before a `needs_review` decision can
 /// complete, one per finding: `guard:<id>:<path>`, `trusted:<path>`,
-/// `structural:warn`, `refactor:erosion_rose`.
+/// `runner_config:<path>`, `structural:warn`, `refactor:erosion_rose`.
 pub fn review_items(decision: &Value) -> Vec<String> {
     let g = &decision["gates"];
     let mut items: Vec<String> = g["guardrails"]["violations"]
@@ -36,6 +36,9 @@ pub fn review_items(decision: &Value) -> Vec<String> {
         .collect();
     if g["verification"]["state"] == "needs_review" {
         items.extend(strs(&g["verification"]["restored"]).map(|p| format!("trusted:{p}")));
+        items.extend(
+            strs(&g["verification"]["added_runner_config"]).map(|p| format!("runner_config:{p}")),
+        );
     }
     if g["structural"]["state"] == "needs_review" {
         items.push("structural:warn".into());

@@ -68,6 +68,36 @@ pub static TRIVIAL: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     ]
 });
 
+/// Product code that can end a test run early or reach into the test
+/// runner. A check passes on its exit code, so code that exits with 0
+/// while the tests are being imported passes them all without running
+/// one. Some of these are legitimate in an entry point; that is for a
+/// reviewer to say.
+pub static EARLY_EXIT: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    vec![
+        ("Python os._exit", re(r"\bos\._exit\s*\(")),
+        (
+            "module-level exit",
+            re(r"^(sys\.exit|exit|quit)\s*\(|^raise\s+SystemExit\b"),
+        ),
+        (
+            "pytest internals in product code",
+            re(r"^\s*(from|import)\s+_pytest\b"),
+        ),
+        (
+            "pytest hook in product code",
+            re(r"^\s*def\s+pytest_\w+\s*\("),
+        ),
+        (
+            "JS process.reallyExit/abort",
+            re(r"\bprocess\.(reallyExit|abort)\s*\("),
+        ),
+        ("top-level process.exit", re(r"^process\.exit\s*\(")),
+        ("Go os.Exit", re(r"\bos\.Exit\s*\(")),
+        ("Rust process::exit", re(r"\bprocess::exit\s*\(")),
+    ]
+});
+
 /// A lint, type-check or EMI finding silenced in code.
 pub static SUPPRESS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     vec![

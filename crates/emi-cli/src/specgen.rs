@@ -76,23 +76,6 @@ const TEST_GLOBS: &[&str] = &[
     "*/conftest.py",
 ];
 
-/// Test-runner configuration: restored like the tests, so a candidate
-/// cannot load a plugin or deselect tests through it. Outside the
-/// envelope too: the task has no reason to change how tests run.
-const RUNNER_CONFIG_GLOBS: &[&str] = &[
-    "pytest.ini",
-    "pyproject.toml",
-    "setup.cfg",
-    "tox.ini",
-    "noxfile.py",
-    "package.json",
-    "jest.config.*",
-    "vitest.config.*",
-    "vite.config.*",
-    ".mocharc*",
-    "karma.conf.*",
-];
-
 /// The first target's file stem, for a default task id.
 fn stem(targets: &[String]) -> String {
     targets
@@ -127,8 +110,11 @@ fn base(repo: &Path, targets: &[String], tests: &[String], command: &[String]) -
     } else {
         tests.to_vec()
     };
+    // test-runner configuration: restored like the tests, and outside the
+    // envelope (the task has no reason to change how tests run)
+    let runner_config = emi_controller::runner_config::globs();
     let mut trusted = tests.clone();
-    trusted.extend(RUNNER_CONFIG_GLOBS.iter().map(|g| (*g).to_owned()));
+    trusted.extend(runner_config.iter().cloned());
     let mut verification = json!({"trusted": trusted});
     if command.iter().any(|c| c.contains("pytest")) {
         let mut inventory = command.to_vec();
@@ -143,7 +129,7 @@ fn base(repo: &Path, targets: &[String], tests: &[String], command: &[String]) -
         "repo": repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf()),
         "baseline": "HEAD",
         "checks": {"tests": {"command": command, "success": {"exit_code": 0}, "timeout_s": 1800}},
-        "envelope": {"permitted_paths": permitted(targets, &tests), "protected_paths": RUNNER_CONFIG_GLOBS},
+        "envelope": {"permitted_paths": permitted(targets, &tests), "protected_paths": runner_config},
         "verification": verification,
         "execution": {"isolation": "best", "network": false, "link": link},
         "warning_policy": {"treatment": "review"},

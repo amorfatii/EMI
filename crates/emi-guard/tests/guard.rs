@@ -614,3 +614,70 @@ fn s7_false_alarm_classes_are_quiet() {
         Tier::Review
     );
 }
+
+#[test]
+fn a_new_conftest_with_hooks_is_test_configuration_but_fixtures_are_not() {
+    let r = repo("newconftest");
+    let base = commit(&r);
+    write(
+        &r,
+        "tests/conftest.py",
+        "import pytest\n\n\n@pytest.fixture\ndef number():\n    return 1\n",
+    );
+    let fixtures = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&fixtures), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !ids(&report).contains(&"tests.config_changed"),
+        "{report:?}"
+    );
+
+    write(
+        &r,
+        "tests/sub/conftest.py",
+        "import pytest\n\n\n@pytest.hookimpl(hookwrapper=True)\ndef pytest_runtest_makereport(item, call):\n    outcome = yield\n    outcome.get_result().outcome = \"passed\"\n",
+    );
+    let hooks = commit(&r);
+    let report =
+        guard(&r.0, &fixtures, Some(&hooks), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let v = report
+        .violations
+        .iter()
+        .find(|v| v.id == "tests.config_changed")
+        .unwrap_or_else(|| panic!("{report:?}"));
+    assert_eq!(v.path, "tests/sub/conftest.py");
+    assert_eq!(v.tier, Tier::Review);
+}
+
+#[test]
+fn product_code_that_ends_the_run_early_needs_review() {
+    let r = repo("earlyexit");
+    let base = commit(&r);
+    write(
+        &r,
+        "src/app.py",
+        "import os\nos._exit(0)\n\n\ndef f():\n    return 1\n",
+    );
+    write(
+        &r,
+        "cmd/tool/main.go",
+        "package main\n\nimport \"os\"\n\nfunc main() {\n\tos.Exit(2)\n}\n",
+    );
+    write(
+        &r,
+        "src/cli.py",
+        "import sys\n\n\ndef main():\n    sys.exit(run())\n",
+    );
+    let head = commit(&r);
+    let report =
+        guard(&r.0, &base, Some(&head), &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    let early: Vec<(&str, Option<u32>)> = report
+        .violations
+        .iter()
+        .filter(|v| v.id == "code.early_exit")
+        .map(|v| (v.path.as_str(), v.line))
+        .collect();
+    // an entry point's exit and an exit inside a function are not flagged
+    assert_eq!(early, vec![("src/app.py", Some(2))], "{report:?}");
+    assert_eq!(report.decision(), "review");
+}

@@ -802,3 +802,36 @@ fn a_committed_entry_cannot_stand_in_for_a_linked_dependency() {
         .unwrap_or_default();
     assert!(err.contains("linked from the repository"), "{err}");
 }
+
+#[test]
+fn added_test_runner_configuration_needs_review() {
+    let (repo, _authority, store) = verification_task("vconf", json!({}));
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    // restoring trusted files cannot undo a file the baseline never had
+    std::fs::write(
+        repo.0.join("tests/conftest.py"),
+        "def pytest_runtest_makereport(item, call):\n    pass\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "fix, plus a conftest"]);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    assert_eq!(
+        d["gates"]["verification"]["added_runner_config"],
+        json!(["tests/conftest.py"]),
+        "{d}"
+    );
+    assert!(
+        d["review_items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|i| i == "runner_config:tests/conftest.py"),
+        "{d}"
+    );
+    assert!(
+        d.get("limits").is_some(),
+        "no inventory: the limit is recorded"
+    );
+}

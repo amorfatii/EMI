@@ -14,6 +14,11 @@ use serde_json::{Value, json};
 use crate::contract::Result;
 use crate::store::Store;
 
+/// What a contract without a test inventory cannot rule out.
+pub const NO_INVENTORY: &str = "no test inventory: each check passes on its exit code alone, so code \
+     that ends the test process with status 0 before the tests run would pass; configure \
+     verification.inventory";
+
 /// What is being verified.
 #[derive(Clone, Debug)]
 pub enum Candidate {
@@ -425,9 +430,19 @@ fn verification_gate(
     if spec.is_null() {
         return json!({"state": "not_required"});
     }
-    let mut gate =
-        json!({"restored": restored, "held_out": held_out, "inventory": {"state": "not_required"}});
-    let mut state = if restored.is_empty() {
+    // runner configuration the candidate added: restoring only undoes
+    // changes to files the baseline had, and a new conftest.py's hooks run
+    // in every check
+    let added_config: Vec<&String> = setup
+        .changed
+        .iter()
+        .filter(|(p, kind)| *kind == "add" && crate::runner_config::matches(p))
+        .map(|(p, _)| p)
+        .collect();
+    let mut gate = json!({"restored": restored, "held_out": held_out,
+                          "added_runner_config": added_config,
+                          "inventory": {"state": "not_required"}});
+    let mut state = if restored.is_empty() && added_config.is_empty() {
         "pass"
     } else {
         "needs_review"
@@ -694,10 +709,18 @@ fn reviews(g: &Gates) -> Vec<String> {
             guard_ids(g.guardrails, "review")
         ));
     }
-    if g.verification["state"] == "needs_review" {
+    let restored = globs(&g.verification["restored"]);
+    if g.verification["state"] == "needs_review" && !restored.is_empty() {
         reasons.push(format!(
             "trusted files changed (verified against their baseline versions): {}",
-            globs(&g.verification["restored"]).join(", ")
+            restored.join(", ")
+        ));
+    }
+    let added = globs(&g.verification["added_runner_config"]);
+    if g.verification["state"] == "needs_review" && !added.is_empty() {
+        reasons.push(format!(
+            "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
+            added.join(", ")
         ));
     }
     reasons
@@ -966,6 +989,9 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     } else {
         "unsandboxed (execution.isolation = none)"
     });
+    if contract["verification"]["inventory"].is_null() {
+        d["limits"] = json!([NO_INVENTORY]);
+    }
     d["budget"] =
         json!({"retries_used": state["cumulative"]["retries"], "budgets": contract["budgets"]});
     store.append("decision", &d)?;

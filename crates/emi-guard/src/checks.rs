@@ -9,8 +9,8 @@ use emi_scan::classify::{PathClass, classify, is_test};
 use emi_scan::walk::fnmatch;
 
 use crate::patterns::{
-    LineKind, SKIP, SUPPRESS, TRIVIAL, count_assertions, count_tests, first_match, lang_of,
-    line_kinds,
+    EARLY_EXIT, LineKind, SKIP, SUPPRESS, TRIVIAL, count_assertions, count_tests, first_match,
+    lang_of, line_kinds,
 };
 use crate::policy::Policy;
 
@@ -414,8 +414,12 @@ fn config_changed(repo: &Path, base: &str, head: Option<&str>, fc: &FileChange) 
     if classify(&fc.path) == PathClass::Vendored {
         return None; // a dependency's own test setup
     }
+    // a new conftest.py can install hooks that decide every test's
+    // outcome; a new package's own ini files only configure its tests
+    let new_conftest =
+        fc.status == Status::Added && fc.path.rsplit('/').next() == Some("conftest.py");
     if classify(&fc.path) == PathClass::TestConfig
-        && fc.status != Status::Added
+        && (fc.status != Status::Added || new_conftest)
         && !multipurpose(&fc.path)
     {
         if !configures(repo, base, head, fc) {
@@ -603,6 +607,38 @@ fn counts(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> 
                 at,
                 None,
                 format!("assertions {a0} -> {a1} across {files} changed test file(s)"),
+            ));
+        }
+    }
+    out
+}
+
+/// An entry point, where ending the process is its job.
+fn entry_point(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(name, "main.go" | "main.rs" | "__main__.py")
+        || path.contains("/cmd/")
+        || path.starts_with("cmd/")
+        || path.contains("/bin/")
+        || path.starts_with("bin/")
+}
+
+/// `code.early_exit`: added product code that ends the process or hooks
+/// into the test runner (see `patterns::EARLY_EXIT`).
+pub fn early_exit(repo: &Path, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
+    let mut moved = Moved::of(files, &EARLY_EXIT);
+    let mut out = Vec::new();
+    let product = |f: &&FileChange| !f.binary && !is_test(&f.path) && lang_of(&f.path).is_some();
+    for fc in files.iter().filter(product) {
+        for (line, kind, text) in added_markers(repo, head, fc, &EARLY_EXIT, &mut moved, true) {
+            if entry_point(&fc.path) && !kind.starts_with("pytest") {
+                continue;
+            }
+            out.push(finding(
+                "code.early_exit",
+                &fc.path,
+                Some(line),
+                format!("{kind}: {}", text.trim()),
             ));
         }
     }

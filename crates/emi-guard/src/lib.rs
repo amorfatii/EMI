@@ -13,6 +13,7 @@
 //! | `tests.config_changed` | test or coverage configuration changed |
 //! | `prohibited.lockfile/ci/secret/vendored` | changes to those file classes unless allowed |
 //! | `suppress.added` | lint, type-check or EMI suppressions added |
+//! | `code.early_exit` | product code that ends the process or hooks into the test runner |
 //! | `dup.introduced` | added product code that repeats code elsewhere in the tree |
 //! | `growth.net_sloc/files` | growth beyond the task's budget |
 
@@ -138,6 +139,7 @@ pub fn evaluate(
     found.extend(checks::prohibited(files, policy));
     found.extend(checks::tests(repo, base, head, files));
     found.extend(checks::suppress(repo, head, files));
+    found.extend(checks::early_exit(repo, head, files));
     found.extend(checks::growth(files, policy));
     match dup::introduced(repo, base, head, files) {
         Ok(d) => found.extend(d),

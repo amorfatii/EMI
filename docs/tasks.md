@@ -136,11 +136,19 @@ optional `verification` section does this the way benchmarks grade:
   - New files the agent adds (new regression tests) still run.
   - The candidate still carries its edit to a trusted file, so such a
     candidate is `needs_review` even when the checks pass.
+  - Restoring cannot undo a file the baseline did not have. A candidate
+    that **adds** test-runner configuration (`conftest.py`, `pytest.ini`,
+    `sitecustomize.py`, jest/vitest configs, … anywhere in the tree) is
+    `needs_review`: a new `conftest.py` can rewrite every test's outcome.
   - Changing what a trusted test expects takes a contract revision.
 - **`held_out`:** files frozen into the contract (outside the repository)
   and written into the workspace before the checks run. They catch code
   that special-cases the visible tests. Keep the authority directory out of
   the agent's reach.
+- **Without an inventory**, a check passes on its exit code alone: code
+  that ends the test process with status 0 before the tests run would
+  pass. `task create` warns, every decision lists it under `limits`, and
+  the `code.early_exit` guardrail flags the usual ways to do it.
 - **`inventory`:** a command that lists test ids (one per line; `pytest`
   keeps `path::name` lines). It runs on the baseline and on the verified
   workspace. A baseline test missing from the candidate rejects it, which
