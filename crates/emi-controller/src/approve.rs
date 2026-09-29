@@ -98,7 +98,7 @@ pub fn approve(
     let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
     let sha = snapshot::resolve_ref(&repo, reference)?;
     let cid = contract["contract_id"].as_str().unwrap_or("");
-    let Some(d) = store.latest_decision(&sha, cid) else {
+    let Some(d) = store.latest_decision(&sha, cid)? else {
         return Err(format!(
             "{sha} has no verification under the current contract"
         ));
@@ -121,11 +121,11 @@ pub fn approve(
 }
 
 /// The approval covering `decision`, if one was recorded.
-pub fn approval_for(store: &Store, decision: &Value) -> Option<Value> {
+pub fn approval_for(store: &Store, decision: &Value) -> Result<Option<Value>> {
     let id = decision_id(decision);
-    store.rows("approval").into_iter().rev().find(|a| {
+    Ok(store.rows("approval")?.into_iter().rev().find(|a| {
         a["decision_id"] == id.as_str()
             && a["candidate_id"] == decision["candidate_id"]
             && a["contract_id"] == decision["contract_id"]
-    })
+    }))
 }

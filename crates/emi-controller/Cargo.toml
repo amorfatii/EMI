@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+rustix.workspace = true
 emi-git.workspace = true
 emi-diff = { path = "../emi-diff" }
 emi-exec.workspace = true

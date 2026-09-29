@@ -896,3 +896,43 @@ fn creation_bounds_timeouts_and_validates_execution() {
         "Go is a measured language"
     );
 }
+
+#[test]
+fn a_damaged_evidence_log_is_an_error_not_a_shorter_log() {
+    let (repo, authority, store) = buggy_task("dmg");
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix"]);
+    assert_eq!(
+        decision(&check(&store, Candidate::Ref("HEAD".into()))),
+        "accepted"
+    );
+    // a later row torn in half (a crash, or two writers interleaving)
+    let log = authority.0.join("dmg").join("evidence.jsonl");
+    let mut text = std::fs::read_to_string(&log).unwrap_or_default();
+    text.push_str("{\"kind\": \"decision\", \"record\": {\"decision\": \"rej\n");
+    std::fs::write(&log, text).unwrap_or_default();
+    let err = complete(&store, "HEAD").err().unwrap_or_default();
+    assert!(err.contains("evidence log is damaged"), "{err}");
+}
+
+#[test]
+fn concurrent_verifications_are_all_charged_and_logged_whole() {
+    let (_repo, authority, _store) = buggy_task("conc");
+    let runs: Vec<_> = (0..4)
+        .map(|_| {
+            let (authority, repo) = (authority.0.clone(), _repo.0.clone());
+            std::thread::spawn(move || {
+                let store =
+                    Store::open(&authority, "conc", &repo).unwrap_or_else(|e| panic!("{e}"));
+                verify(&store, &Candidate::Ref("HEAD".into())).is_ok()
+            })
+        })
+        .collect();
+    assert!(runs.into_iter().all(|t| t.join().unwrap_or(false)));
+    let store = Store::open(&authority.0, "conc", &_repo.0).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        store.state().unwrap_or_default()["cumulative"]["retries"],
+        4
+    );
+    assert_eq!(store.rows("decision").map(|r| r.len()).unwrap_or(0), 4);
+}

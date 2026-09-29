@@ -953,7 +953,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         Candidate::Ref(r) => snapshot::resolve_ref(&repo, r)?,
         Candidate::Worktree => WORKTREE.to_owned(),
     };
-    let mut state = store.state()?;
+    let state = store.state()?;
     let head = |decision: &str, reasons: Vec<String>| {
         json!({"task_id": contract["task_id"], "contract_id": contract["contract_id"],
                "candidate_id": candidate_id, "decision": decision, "reasons": reasons})
@@ -988,12 +988,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         dependencies: &g["dependencies"],
     };
     let (decision, reasons) = reduce(&eval.ledger, &gates, require_all);
-    let elapsed = started.elapsed().as_secs_f64();
-    state["cumulative"]["retries"] =
-        json!(state["cumulative"]["retries"].as_u64().unwrap_or(0) + 1);
-    state["cumulative"]["time_s"] =
-        json!(state["cumulative"]["time_s"].as_f64().unwrap_or(0.0) + elapsed);
-    store.save_state(&state)?;
+    let state = store.charge(started.elapsed().as_secs_f64())?;
     let mut d = head(decision, reasons);
     d["content_id"] = json!(subject.rev);
     d["requirements"] = Value::Array(eval.ledger);
@@ -1026,11 +1021,11 @@ pub fn complete(store: &Store, reference: &str) -> Result<(bool, Value)> {
     let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
     let sha = snapshot::resolve_ref(&repo, reference)?;
     let cid = contract["contract_id"].as_str().unwrap_or("");
-    let latest = store.latest_decision(&sha, cid);
-    let approval = latest
-        .as_ref()
-        .filter(|d| d["decision"] == "needs_review")
-        .and_then(|d| crate::approve::approval_for(store, d));
+    let latest = store.latest_decision(&sha, cid)?;
+    let approval = match latest.as_ref().filter(|d| d["decision"] == "needs_review") {
+        Some(d) => crate::approve::approval_for(store, d)?,
+        None => None,
+    };
     let accepted = latest.as_ref().is_some_and(|d| d["decision"] == "accepted");
     let reason = match (&latest, &approval) {
         (None, _) => "no verification of this commit under the current contract".to_owned(),
@@ -1058,7 +1053,7 @@ pub fn hook_check(store: &Store, reference: &str) -> Result<(bool, String)> {
     let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
     let sha = snapshot::resolve_ref(&repo, reference)?;
     let cid = contract["contract_id"].as_str().unwrap_or("");
-    let done = store.rows("completion").into_iter().any(|c| {
+    let done = store.rows("completion")?.into_iter().any(|c| {
         c["candidate_id"] == sha.as_str() && c["contract_id"] == cid && c["completed"] == true
     });
     let task = contract["task_id"].as_str().unwrap_or("");

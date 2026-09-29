@@ -187,7 +187,11 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 
 Every verification charges the budget and appends its check runs (with
 cleanup receipts) and its decision to the append-only `evidence.jsonl` in
-the authority. `complete` accepts only a commit whose latest decision
+the authority. Rows are written whole under a lock on the task, and the
+budget is charged by re-reading the state under that lock, so concurrent
+verifications are all counted. A line that is not a record is an error
+("the evidence log is damaged"), never skipped: a lost row could make an
+older decision look like the latest. `complete` accepts only a commit whose latest decision
 under the current contract is `accepted`, or `needs_review` with an
 approval of exactly that decision; verifying the working tree never
 completes a task.

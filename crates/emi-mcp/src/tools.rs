@@ -435,7 +435,7 @@ fn task_status(args: &Value) -> Out {
         emi_controller::Candidate::Worktree => emi_controller::verify::WORKTREE.to_owned(),
         emi_controller::Candidate::Ref(r) => emi_diff::snapshot::resolve_ref(&repo, &r)?,
     };
-    let latest = store.latest_decision(&id, contract["contract_id"].as_str().unwrap_or(""));
+    let latest = store.latest_decision(&id, contract["contract_id"].as_str().unwrap_or(""))?;
     let state = store.state()?;
     Ok(
         json!({"task_id": contract["task_id"], "objective": contract["objective"], "revision": contract["revision"],

@@ -15,6 +15,11 @@ pub struct Store {
     pub dir: PathBuf,
 }
 
+/// An exclusive lock on a task's store, released when dropped. Appends to
+/// the evidence and read-modify-write updates of `state.json` hold it, so
+/// concurrent verifications neither interleave rows nor lose updates.
+pub struct Lock(#[allow(dead_code)] std::fs::File);
+
 fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
@@ -86,6 +91,32 @@ impl Store {
         atomic_write(&self.contract_path(rev, id), contract)
     }
 
+    fn lock(&self) -> Result<Lock> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.dir.join("lock"))
+            .map_err(|e| format!("lock {}: {e}", self.dir.display()))?;
+        #[cfg(unix)]
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+            .map_err(|e| format!("lock {}: {e}", self.dir.display()))?;
+        Ok(Lock(file))
+    }
+
+    /// Charge one verification of `seconds` to the budget, re-reading the
+    /// state under the lock so concurrent runs are all counted.
+    pub fn charge(&self, seconds: f64) -> Result<Value> {
+        let _lock = self.lock()?;
+        let mut state = self.state()?;
+        state["cumulative"]["retries"] =
+            json!(state["cumulative"]["retries"].as_u64().unwrap_or(0) + 1);
+        state["cumulative"]["time_s"] =
+            json!(state["cumulative"]["time_s"].as_f64().unwrap_or(0.0) + seconds);
+        self.save_state(&state)?;
+        Ok(state)
+    }
+
     pub fn state(&self) -> Result<Value> {
         read(&self.dir.join("state.json"))
     }
@@ -139,43 +170,67 @@ impl Store {
         core["predecessor"] = old["contract_id"].clone();
         let new = contract::finalize(core);
         self.write_contract(&new)?;
-        let mut state = self.state()?;
-        state["current_revision"] = new["revision"].clone();
-        state["current_contract_id"] = new["contract_id"].clone();
-        if let Some(h) = state["history"].as_array_mut() {
-            h.push(json!({"revision": new["revision"], "contract_id": new["contract_id"],
-                          "actor": actor, "reason": reason, "changed": obj.keys().collect::<Vec<_>>()}));
+        let history = json!({"revision": new["revision"], "contract_id": new["contract_id"],
+                             "actor": actor, "reason": reason, "changed": obj.keys().collect::<Vec<_>>()});
+        {
+            let _lock = self.lock()?;
+            let mut state = self.state()?;
+            state["current_revision"] = new["revision"].clone();
+            state["current_contract_id"] = new["contract_id"].clone();
+            if let Some(h) = state["history"].as_array_mut() {
+                h.push(history);
+            }
+            self.save_state(&state)?;
         }
-        self.save_state(&state)?;
         Ok(new)
     }
 
-    /// Append one evidence row (`kind`: check_run, decision, completion).
+    /// Append one evidence row (`kind`: check_run, decision, approval,
+    /// completion): one write of the whole line, under the store's lock.
     pub fn append(&self, kind: &str, row: &Value) -> Result<()> {
+        let _lock = self.lock()?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.dir.join("evidence.jsonl"))
             .map_err(|e| e.to_string())?;
-        let line = json!({"kind": kind, "at": emi_diff::trajectory::utc_now_iso(), "record": row});
-        writeln!(file, "{line}").map_err(|e| e.to_string())
+        let mut line =
+            json!({"kind": kind, "at": emi_diff::trajectory::utc_now_iso(), "record": row})
+                .to_string();
+        line.push('\n');
+        file.write_all(line.as_bytes()).map_err(|e| e.to_string())
     }
 
-    pub fn rows(&self, kind: &str) -> Vec<Value> {
-        std::fs::read_to_string(self.dir.join("evidence.jsonl"))
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|r| r["kind"] == kind)
-            .map(|r| r["record"].clone())
-            .collect()
+    /// Every row of `kind`, oldest first. A line that is not a record
+    /// means the log is damaged: an error, never a silently shorter log
+    /// (a lost row could make an older decision look like the latest).
+    pub fn rows(&self, kind: &str) -> Result<Vec<Value>> {
+        let text = match std::fs::read_to_string(self.dir.join("evidence.jsonl")) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("evidence.jsonl: {e}")),
+        };
+        let mut out = Vec::new();
+        for (n, line) in text.lines().enumerate() {
+            let row: Value = serde_json::from_str(line).map_err(|_| {
+                format!(
+                    "evidence.jsonl line {} is not a record; the evidence log is damaged",
+                    n + 1
+                )
+            })?;
+            if row["kind"] == kind {
+                out.push(row["record"].clone());
+            }
+        }
+        Ok(out)
     }
 
     /// The latest decision about `candidate` under the current contract.
-    pub fn latest_decision(&self, candidate: &str, contract_id: &str) -> Option<Value> {
-        self.rows("decision")
+    pub fn latest_decision(&self, candidate: &str, contract_id: &str) -> Result<Option<Value>> {
+        Ok(self
+            .rows("decision")?
             .into_iter()
             .rev()
-            .find(|d| d["candidate_id"] == candidate && d["contract_id"] == contract_id)
+            .find(|d| d["candidate_id"] == candidate && d["contract_id"] == contract_id))
     }
 }

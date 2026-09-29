@@ -390,7 +390,9 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
             } else {
                 snapshot::resolve_ref(&repo, &a.candidate).map_err(err)?
             };
-            let d = s.latest_decision(&id, c["contract_id"].as_str().unwrap_or(""));
+            let d = s
+                .latest_decision(&id, c["contract_id"].as_str().unwrap_or(""))
+                .map_err(err)?;
             print(&d.unwrap_or_else(|| json!({"candidate_id": id, "decision": null, "reasons": ["not verified under the current contract"]})));
             Ok(0)
         }
