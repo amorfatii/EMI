@@ -835,3 +835,64 @@ fn added_test_runner_configuration_needs_review() {
         "no inventory: the limit is recorded"
     );
 }
+
+#[test]
+fn revisions_are_validated_like_creation() {
+    let (_repo, _authority, store) = buggy_task("rv");
+    let revise = |changes: Value| store.revise(&changes, "lead", "why");
+    let refused = [
+        json!({"requirements": []}),
+        json!({"checks": {"unit": {"command": "python3 -c pass", "success": {"exit_code": 0}}}}),
+        json!({"requirements": [{"id": "R1", "acceptance": "x", "checks": ["missing"]}]}),
+        json!({"structural": {"probe": "cobol", "source": "."}}),
+        json!({"execution": {"isolation": "bwarp"}}),
+        json!({"checks": {"unit": {"command": ["true"], "success": {"exit_code": 0}, "timeout_s": 1e30}}}),
+        json!({"measurement_contract_id": "x"}),
+        json!({"dependencies": {}}),
+    ];
+    for changes in refused {
+        assert!(revise(changes.clone()).is_err(), "accepted {changes}");
+    }
+    // the structural policy's derived ids follow a revision of it
+    let before = store.contract().unwrap_or_default();
+    let after = revise(json!({"structural": {"probe": "python", "source": ".", "allowance": 3}}))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_ne!(after["gate_policy_id"], before["gate_policy_id"]);
+}
+
+#[test]
+fn creation_bounds_timeouts_and_validates_execution() {
+    let repo = scratch("cv-repo");
+    let authority = scratch("cv-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "x = 1\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "a"]);
+    let with = |patch: Value| {
+        let mut s = spec(&repo.0, "cv");
+        if let (Some(s), Some(p)) = (s.as_object_mut(), patch.as_object()) {
+            for (k, v) in p {
+                s.insert(k.clone(), v.clone());
+            }
+        }
+        s
+    };
+    let refused = [
+        json!({"checks": {"unit": {"command": ["true"], "success": {"exit_code": 0}, "timeout_s": 1e30}}}),
+        json!({"verification": {"inventory": {"command": ["true"], "timeout_s": -1}}}),
+        json!({"execution": {"network": "yes"}}),
+        json!({"execution": {"link": ["../outside"]}}),
+        json!({"completion_policy": {"require_all_requirements_verified": "no"}}),
+    ];
+    for patch in refused {
+        assert!(
+            create(&authority.0, &with(patch.clone())).is_err(),
+            "accepted {patch}"
+        );
+    }
+    let go = with(json!({"structural": {"probe": "go", "source": "."}}));
+    assert!(
+        create(&authority.0, &go).is_ok(),
+        "Go is a measured language"
+    );
+}

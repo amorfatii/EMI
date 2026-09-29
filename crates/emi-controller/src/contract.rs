@@ -61,11 +61,52 @@ fn check_definition(id: &str, def: &Value) -> Result<()> {
     if !d.get("success").is_some_and(Value::is_object) {
         return Err(format!("check {id} needs success criteria"));
     }
-    let timeout = d.get("timeout_s").map_or(Some(120.0), Value::as_f64);
-    if !timeout.is_some_and(|t| t.is_finite() && t > 0.0) {
-        return Err(format!("check {id} timeout_s must be positive finite"));
+    if !valid_timeout(d.get("timeout_s")) {
+        return Err(format!(
+            "check {id} timeout_s must be a number of seconds in (0, {MAX_TIMEOUT_S}]"
+        ));
     }
     Ok(())
+}
+
+/// Longest run a contract may allow (one week): anything longer is a
+/// mistake, and far larger values cannot be represented as a duration.
+pub const MAX_TIMEOUT_S: f64 = 604_800.0;
+
+/// Absent, or a number of seconds in `(0, MAX_TIMEOUT_S]`.
+fn valid_timeout(v: Option<&Value>) -> bool {
+    v.is_none_or(|t| t.as_f64().is_some_and(|t| t > 0.0 && t <= MAX_TIMEOUT_S))
+}
+
+/// The execution policy: sandbox, network, linked dependency
+/// directories, extra environment. Unknown keys and values are refused
+/// rather than read as the default.
+pub fn execution(v: Option<&Value>) -> Result<Value> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(json!({}));
+    };
+    let Some(obj) = v.as_object() else {
+        return Err("execution must be an object".into());
+    };
+    for (k, x) in obj {
+        let ok = match k.as_str() {
+            "isolation" => matches!(x.as_str(), Some("best" | "bwrap" | "none")),
+            "network" => x.is_boolean(),
+            "link" => string_list(Some(x), "execution.link", false)
+                .is_ok_and(|l| l.iter().all(|p| safe_relative(p))),
+            "env" => x
+                .as_object()
+                .is_some_and(|m| m.values().all(Value::is_string)),
+            _ => return Err(format!("execution: unknown key {k}")),
+        };
+        if !ok {
+            return Err(format!(
+                "execution.{k} is invalid (isolation: best, bwrap or none; network: a boolean; \
+                 link: relative paths; env: an object of strings)"
+            ));
+        }
+    }
+    Ok(v.clone())
 }
 
 fn envelope(v: Option<&Value>) -> Result<Value> {
@@ -143,9 +184,9 @@ fn structural(v: Option<&Value>) -> Result<Value> {
     };
     if !matches!(
         m.get("probe").and_then(Value::as_str),
-        Some("python" | "js" | "rust")
+        Some("python" | "js" | "rust" | "go")
     ) {
-        return Err("structural.probe must be python, js or rust".into());
+        return Err("structural.probe must be python, js, rust or go".into());
     }
     if !nonempty_str(m.get("source")) {
         return Err("structural.source must be a scope directory".into());
@@ -256,6 +297,11 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
         Some(inv) => {
             let command = string_list(inv.get("command"), "verification.inventory.command", true)?;
             let format = inv.get("format").and_then(Value::as_str).unwrap_or("lines");
+            if !valid_timeout(inv.get("timeout_s")) {
+                return Err(format!(
+                    "verification.inventory.timeout_s must be a number of seconds in (0, {MAX_TIMEOUT_S}]"
+                ));
+            }
             if !matches!(format, "lines" | "pytest") {
                 return Err("verification.inventory.format must be lines or pytest".into());
             }
@@ -266,6 +312,80 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     Ok(Some(
         json!({"trusted": trusted, "held_out": held_out, "inventory": inventory}),
     ))
+}
+
+fn warning_policy(v: Option<&Value>) -> Result<Value> {
+    let treatment = v
+        .map_or(Some("review"), |w| {
+            w.get("treatment").and_then(Value::as_str)
+        })
+        .unwrap_or("");
+    if matches!(treatment, "blocking" | "review" | "advisory") {
+        Ok(json!({"treatment": treatment}))
+    } else {
+        Err("warning_policy.treatment must be one of advisory, blocking, review".into())
+    }
+}
+
+fn completion_policy(v: Option<&Value>) -> Result<Value> {
+    let Some(v) = v else {
+        return Ok(json!({"require_all_requirements_verified": true}));
+    };
+    let valid = v.as_object().is_some_and(|m| {
+        m.iter()
+            .all(|(k, x)| k == "require_all_requirements_verified" && x.is_boolean())
+    });
+    if valid {
+        Ok(v.clone())
+    } else {
+        Err("completion_policy may only set require_all_requirements_verified (a boolean)".into())
+    }
+}
+
+/// One section of a revision, validated like at freeze (the value stored
+/// is the validated one). Identity, baseline and derived fields cannot be
+/// revised. Requirement bindings are checked by [`rebind`] once every
+/// section of the revision is in place.
+pub fn revised(key: &str, v: &Value) -> Result<Value> {
+    let some = Some(v);
+    match key {
+        "objective" if nonempty_str(some) => Ok(json!(v.as_str().unwrap_or("").trim())),
+        "objective" => Err("objective must be a nonempty string".into()),
+        "requirements" if v.as_array().is_some_and(|r| !r.is_empty()) => Ok(v.clone()),
+        "requirements" => Err("requirements must be a nonempty array".into()),
+        "checks" => {
+            let checks = v
+                .as_object()
+                .filter(|c| !c.is_empty())
+                .ok_or("checks must be a nonempty map of check definitions")?;
+            for (id, def) in checks {
+                check_definition(id, def)?;
+            }
+            Ok(v.clone())
+        }
+        "envelope" => envelope(some),
+        "guardrails" => guardrails(some),
+        "structural" => structural(some),
+        "budgets" => budgets(some),
+        "warning_policy" => warning_policy(some),
+        "completion_policy" => completion_policy(some),
+        "execution" => execution(some),
+        "exclusions" => string_list(some, "exclusions", false).map(|l| json!(l)),
+        "verification" => verification(some).map(|x| x.unwrap_or(Value::Null)),
+        "refactor" => crate::refactor::spec(some).map(|x| x.unwrap_or(Value::Null)),
+        _ => Err(format!("{key} cannot be revised")),
+    }
+}
+
+/// After a revision: every requirement binds to an existing check, and the
+/// ids derived from the structural policy follow it.
+pub fn rebind(core: &mut Value) -> Result<()> {
+    let checks = core["checks"].as_object().cloned().unwrap_or_default();
+    requirements(Some(&core["requirements"]), &checks)?;
+    let structural = core["structural"].clone();
+    core["measurement_contract_id"] = json!(measurement_contract_id(&structural));
+    core["gate_policy_id"] = json!(gate_policy_id(&structural));
+    Ok(())
 }
 
 /// The spec a controller writes; `baseline` is a ref resolved at freeze.
@@ -295,13 +415,7 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
         check_definition(id, def)?;
     }
     let structural = structural(spec.get("structural"))?;
-    let treatment = spec
-        .pointer("/warning_policy/treatment")
-        .and_then(Value::as_str)
-        .unwrap_or("review");
-    if !matches!(treatment, "blocking" | "review" | "advisory") {
-        return Err("warning_policy.treatment must be one of advisory, blocking, review".into());
-    }
+    let warning_policy = warning_policy(spec.get("warning_policy"))?;
     let verification = verification(spec.get("verification"))?;
     let refactor = crate::refactor::spec(spec.get("refactor"))?;
     let mut core = json!({
@@ -319,11 +433,11 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
         "checks": checks,
         "envelope": envelope(spec.get("envelope"))?,
         "guardrails": guardrails(spec.get("guardrails"))?,
-        "execution": spec.get("execution").cloned().unwrap_or_else(|| json!({})),
+        "execution": execution(spec.get("execution"))?,
         "structural": structural,
         "budgets": budgets(spec.get("budgets"))?,
-        "warning_policy": {"treatment": treatment},
-        "completion_policy": spec.get("completion_policy").cloned().unwrap_or_else(|| json!({"require_all_requirements_verified": true})),
+        "warning_policy": warning_policy,
+        "completion_policy": completion_policy(spec.get("completion_policy"))?,
         "exceptions": [],
     });
     // only when configured, so contracts without it keep their ids

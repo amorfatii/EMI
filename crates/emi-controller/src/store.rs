@@ -118,26 +118,10 @@ impl Store {
             return Err("changes must be an object".into());
         };
         for (k, v) in obj {
-            if matches!(
-                k.as_str(),
-                "task_id"
-                    | "schema_version"
-                    | "contract_id"
-                    | "revision"
-                    | "predecessor"
-                    | "repo"
-                    | "baseline"
-                    | "dependencies"
-            ) {
-                return Err(format!("{k} cannot be revised"));
-            }
-            core[k] = match k.as_str() {
-                // validated (and held-out files frozen) like at creation
-                "verification" => contract::verification(Some(v))?.unwrap_or(Value::Null),
-                "refactor" => crate::refactor::spec(Some(v))?.unwrap_or(Value::Null),
-                _ => v.clone(),
-            };
+            // validated (and held-out files frozen) like at creation
+            core[k] = contract::revised(k, v)?;
         }
+        contract::rebind(&mut core)?;
         if obj.contains_key("execution") {
             // revising the execution policy re-pins the linked directories
             // as they are now: the controller's way to accept a new runner

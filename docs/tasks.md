@@ -59,7 +59,15 @@ simplification.
 - **The contract.** It is `emi-task-contract-0.1`, the oracle's schema,
   content-addressed by `contract_id`. Editing a frozen contract is detected
   ("tampered"). A revision needs an actor and a reason, gets a new id, and
-  voids earlier acceptances.
+  voids earlier acceptances. Every revised section is validated as at
+  creation, requirements must still bind to existing checks, and the ids
+  derived from the structural policy follow it; identity, baseline and
+  derived fields cannot be revised. A contract with no requirements never
+  reduces to `accepted`.
+- **Limits.** Check and inventory `timeout_s` must be in (0, 604800]
+  seconds. `execution` accepts only `isolation` (`best`, `bwrap`, `none`),
+  `network` (a boolean), `link` (relative paths) and `env` (strings);
+  anything else is refused rather than read as the default.
 - **Checks.** Commands are argv lists, never a shell. They run through
   `emi-exec` in a fresh snapshot of the candidate (a commit's raw blobs, or
   the working tree as a commit would contain it). By default they run under

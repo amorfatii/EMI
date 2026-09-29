@@ -344,7 +344,11 @@ fn exec_spec(
     execution: &Value,
     timeout_s: f64,
     mounts: Mounts,
-) -> Spec {
+) -> std::result::Result<Spec, String> {
+    // contracts frozen before timeouts were bounded may hold values no
+    // duration can represent: the run cannot happen, and says why
+    let timeout = Duration::try_from_secs_f64(timeout_s)
+        .map_err(|_| format!("timeout_s {timeout_s} is not a usable number of seconds"))?;
     let argv: Vec<&str> = argv
         .as_array()
         .into_iter()
@@ -352,7 +356,7 @@ fn exec_spec(
         .filter_map(Value::as_str)
         .collect();
     let mut spec = Spec::new(&argv, workspace);
-    spec.timeout = Duration::from_secs_f64(timeout_s);
+    spec.timeout = timeout;
     spec.isolation = isolation(execution);
     spec.read_only = mounts.read_only;
     spec.hidden = mounts.hidden;
@@ -362,7 +366,7 @@ fn exec_spec(
                 .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))),
         );
     }
-    spec
+    Ok(spec)
 }
 
 /// Files of `rev` matching `globs`.
@@ -394,7 +398,7 @@ fn inventory_ids(
     mounts: Mounts,
 ) -> std::result::Result<std::collections::BTreeSet<String>, String> {
     let timeout = inv["timeout_s"].as_f64().unwrap_or(300.0);
-    let spec = exec_spec(&inv["command"], workspace, execution, timeout, mounts);
+    let spec = exec_spec(&inv["command"], workspace, execution, timeout, mounts)?;
     let o = emi_exec::run(&spec);
     if sandbox_required(execution) && o.receipt.isolation != "bwrap" {
         return Err("the inventory could not run sandboxed (bubblewrap unavailable)".into());
@@ -496,7 +500,14 @@ fn run_check(
     mounts: Mounts,
 ) -> (String, String, Value) {
     let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
-    let spec = exec_spec(&def["command"], workspace, execution, timeout, mounts);
+    let spec = match exec_spec(&def["command"], workspace, execution, timeout, mounts) {
+        Ok(spec) => spec,
+        Err(e) => {
+            let record = json!({"check_id": id, "check_definition_id": digest("check-definition", def),
+                                "status": "error", "attribution": "environment", "launch_error": e});
+            return ("error".into(), "environment".into(), record);
+        }
+    };
     let expected = def["success"]["exit_code"].as_i64().unwrap_or(0);
     let o = emi_exec::run(&spec);
     let unsandboxed = sandbox_required(execution) && o.receipt.isolation != "bwrap";
@@ -526,8 +537,10 @@ fn structural_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &st
     if s.is_null() {
         return json!({"state": "not_required"});
     }
-    let probe = emi_scan::Probe::from_name(s["probe"].as_str().unwrap_or("python"))
-        .unwrap_or(emi_scan::Probe::Python);
+    let Some(probe) = emi_scan::Probe::from_name(s["probe"].as_str().unwrap_or("")) else {
+        return json!({"state": "unverified",
+                      "detail": format!("structural.probe {} is not a language EMI measures", s["probe"])});
+    };
     let mut req = emi_diff::Request::new(
         repo,
         s["source"].as_str().unwrap_or("src"),
@@ -727,6 +740,13 @@ fn reviews(g: &Gates) -> Vec<String> {
 }
 
 fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, Vec<String>) {
+    if ledger.is_empty() {
+        // nothing required is nothing verified
+        return (
+            "incomplete",
+            vec!["the contract has no requirements, so nothing was verified".into()],
+        );
+    }
     let rejected = rejections(ledger, gates);
     if !rejected.is_empty() {
         return ("rejected", rejected);
