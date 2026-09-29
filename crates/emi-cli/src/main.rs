@@ -20,6 +20,7 @@ mod mergecli;
 mod profilecli;
 mod report;
 mod sarif;
+mod specgen;
 mod taskcli;
 
 #[derive(Parser)]

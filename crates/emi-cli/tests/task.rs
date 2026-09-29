@@ -107,3 +107,71 @@ fn refactor_specs_trust_and_protect_test_runner_configuration() {
         "pyproject.toml"
     );
 }
+
+fn emi_err(args: &[&str]) -> (i32, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_emi"))
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("emi: {e}"));
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn drafts_carry_held_out_tests_and_warn_from_the_profile() {
+    let (repo, authority) = (scratch("dr-repo"), scratch("dr-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(repo.0.join("src")).unwrap_or_default();
+    std::fs::write(repo.0.join("src/pricing.py"), "def f(x):\n    return x\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "init"]);
+    let hidden = authority.0.join("hidden_test.py");
+    std::fs::write(&hidden, "import sys\n").unwrap_or_default();
+    // a profile saved earlier, of another commit
+    let profile = authority.0.join("profile.json");
+    std::fs::write(
+        &profile,
+        r#"{"head": "0000000000000000000000000000000000000000", "functions": [
+            {"file": "src/pricing.py", "function": "f", "start": 1, "readiness": "weak",
+             "advice": "add held-out tests"}]}"#,
+    )
+    .unwrap_or_default();
+    let repo_arg = repo.0.to_string_lossy().into_owned();
+    let held = format!("tests/test_hidden.py={}", hidden.display());
+    let profile_arg = profile.to_string_lossy().into_owned();
+    let (code, out, err) = emi_err(&[
+        "task",
+        "draft",
+        "--repo",
+        &repo_arg,
+        "--target",
+        "src/pricing.py",
+        "--objective",
+        "f returns its argument doubled",
+        "--held-out",
+        &held,
+        "--profile",
+        &profile_arg,
+        "--",
+        "python3",
+        "-c",
+        "pass",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("the profile is of"), "{err}");
+    assert!(err.contains("src/pricing.py:1 f is weak"), "{err}");
+    let spec: Value = serde_json::from_str(&out).unwrap_or_default();
+    assert_eq!(spec["task_id"], "change-pricing");
+    assert!(spec["verification"]["held_out"]["tests/test_hidden.py"]["file"].is_string());
+    assert!(strs(&spec["envelope"]["permitted_paths"]).contains(&"src/*"));
+
+    let spec_path = authority.0.join("spec.json");
+    std::fs::write(&spec_path, &out).unwrap_or_default();
+    let auth = authority.0.join("store").to_string_lossy().into_owned();
+    let spec_arg = spec_path.to_string_lossy().into_owned();
+    let (code, _, err) = emi_err(&["task", "create", "--authority", &auth, "--spec", &spec_arg]);
+    assert_eq!(code, 0, "the drafted spec freezes: {err}");
+}
