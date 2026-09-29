@@ -30,6 +30,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
 roxmltree = "0.21"
+shlex = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.10"

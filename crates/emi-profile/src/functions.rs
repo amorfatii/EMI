@@ -18,6 +18,8 @@ use crate::mutation::{FunctionKey, Tally};
 pub enum Coverage {
     NoReport,
     NotInReport,
+    /// EMI's own coverage run failed (the profile's `coverage.error`).
+    RunFailed,
     /// The report names lines past the end of the file: it is from another
     /// version of it, so its line numbers mean nothing here.
     Stale,
@@ -162,9 +164,14 @@ fn line_count(tree: &Path, file: &str) -> u32 {
     })
 }
 
+/// The function's lines in `lines`. The header line is left out: a
+/// definition executes when its module loads (coverage.py marks every
+/// `def` line run on import), so it says nothing about whether any test
+/// called the function. A one-line function keeps its only line.
 fn function_lines(lines: &Lines, start: u32, end: u32) -> Coverage {
+    let first = if end > start { start + 1 } else { start };
     let within = |set: &std::collections::BTreeSet<u32>| {
-        u32::try_from(set.range(start..=end).count()).unwrap_or(u32::MAX)
+        u32::try_from(set.range(first..=end).count()).unwrap_or(u32::MAX)
     };
     Coverage::Lines {
         executable: within(&lines.executable),
@@ -260,15 +267,24 @@ mod tests {
     }
 
     #[test]
-    fn function_lines_count_only_the_span() {
+    fn function_lines_count_the_body_not_the_header() {
+        // a function on lines 2-5 whose def line ran on import only
         let lines = Lines {
-            executable: [1, 2, 3, 10].into(),
-            executed: [2, 10].into(),
+            executable: [1, 2, 3, 4, 10].into(),
+            executed: [1, 2, 10].into(),
         };
         assert_eq!(
             function_lines(&lines, 2, 5),
             Coverage::Lines {
                 executable: 2,
+                executed: 0
+            }
+        );
+        // a one-line function keeps its line
+        assert_eq!(
+            function_lines(&lines, 10, 10),
+            Coverage::Lines {
+                executable: 1,
                 executed: 1
             }
         );

@@ -16,7 +16,10 @@ decides.
 
 ```sh
 emi profile --repo . --source src                       # structure and history only
-emi profile --repo . --source src --coverage coverage.json
+emi profile --repo . --source src --coverage coverage.json      # a report you produced at HEAD
+emi profile --repo . --source src --link .venv \
+    --coverage-command "python -m coverage run -m pytest -q" \
+    --coverage-command "python -m coverage json -o cov.json" --coverage-output cov.json
 emi profile --repo . --source src --coverage lcov.info --link .venv -- python -m pytest -q -x
 emi profile ... --format json -o profile.json           # for `emi task draft --profile`
 ```
@@ -27,12 +30,33 @@ emi profile ... --format json -o profile.json           # for `emi task draft --
 |---|---|---|
 | Structure | `emi-panel` (the `graded` profile, as `emi explain`) | SLOC, cognitive complexity, graded erosion, refactoring steps |
 | History | `emi hotspots` over `--days` (default 365) | the file's revisions, authors, AI-attributed share, files it changes together with |
-| Coverage | `--coverage`: lcov, Cobertura XML, coverage.py JSON (`coverage json`), Go cover profile | executable and executed lines inside the function |
+| Coverage | `--coverage REPORT`, or `--coverage-command` run by EMI; lcov, Cobertura XML, coverage.py JSON, Go cover profile | executable and executed lines of the function's body (the header line runs on import, so it is not counted) |
 | Mutation | the test command after `--` | sampled mutants caught or missed, and the missed ones by line |
 
 Functions are ranked by **exposure**: the file's revisions × the function's
 graded erosion (the hotspot product at function level), then graded
 erosion.
+
+### Coverage measured by EMI
+
+`--coverage-command` (repeatable) and `--coverage-output` make EMI measure
+coverage itself: the commands run in order in one fresh copy of the
+profiled commit, under the same sandbox as mutant runs (below), and the
+report they write at `--coverage-output` is read back. The evidence then
+belongs to exactly the commit profiled, and the JSON records each step
+(command, exit code, duration, isolation). Commands are quoted like shell
+words but never run by a shell. Examples:
+
+| Stack | Commands | Output |
+|---|---|---|
+| Python | `python -m coverage run -m pytest -q`, then `python -m coverage json -o cov.json` | `cov.json` |
+| Go | `go test -coverprofile=cover.out ./...` | `cover.out` |
+| Jest | `npx jest --coverage --coverageReporters=lcov` | `coverage/lcov.info` |
+
+A step that fails, times out or leaves processes behind is not a partial
+report: `coverage.error` says which step and why, and every function's
+coverage is unknown. A failing test suite fails the step; profile a commit
+whose tests pass.
 
 ### Coverage import
 

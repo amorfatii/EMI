@@ -92,6 +92,7 @@ fn coverage_unknown(c: &Coverage) -> Option<&'static str> {
     match c {
         Coverage::NoReport => Some("coverage: no report given"),
         Coverage::NotInReport => Some("coverage: the report does not include this file"),
+        Coverage::RunFailed => Some("coverage: the coverage run failed (see coverage.error)"),
         Coverage::Stale => Some(
             "coverage: the report does not match this version of the file (it names lines past its end)",
         ),

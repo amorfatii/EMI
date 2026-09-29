@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Args;
+use emi_profile::covrun::CoverageRun;
 use emi_profile::history::Window;
-use emi_profile::{MutationOptions, Options};
+use emi_profile::{CoverageSource, Execution, MutationOptions, Options};
 
 use crate::Language;
 
@@ -31,8 +32,17 @@ pub struct ProfileArgs {
     days: u32,
     /// Coverage report produced at the head: lcov, Cobertura XML,
     /// coverage.py JSON or a Go cover profile.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "coverage_command")]
     coverage: Option<PathBuf>,
+    /// Measure coverage here instead: a command run in a sandboxed copy of
+    /// the head, quoted like a shell word list but never run by a shell
+    /// (repeatable; the steps run in order in the same copy).
+    #[arg(long, requires = "coverage_output")]
+    coverage_command: Vec<String>,
+    /// Where the coverage commands write their report, relative to the
+    /// repository root.
+    #[arg(long, requires = "coverage_command")]
+    coverage_output: Option<String>,
     /// Functions listed (0: all; the summary always counts all).
     #[arg(long, default_value_t = 20)]
     top: usize,
@@ -42,16 +52,16 @@ pub struct ProfileArgs {
     /// With a test command: mutants per function, spread over its lines.
     #[arg(long, default_value_t = 5)]
     mutants_per_function: usize,
-    /// Ignored dependency directory linked into each test copy (repeatable).
+    /// Ignored dependency directory linked into each copy (repeatable).
     #[arg(long)]
     link: Vec<String>,
-    /// KEY=VALUE for the test command's environment (repeatable).
+    /// KEY=VALUE for the environment of coverage and test runs (repeatable).
     #[arg(long = "env")]
     env: Vec<String>,
-    /// Upper bound for one test run, in seconds.
+    /// Upper bound for one coverage step or test run, in seconds.
     #[arg(long, default_value_t = 600)]
     timeout_s: u64,
-    /// Let test runs use the network.
+    /// Let coverage and test runs use the network.
     #[arg(long)]
     network: bool,
     /// Record unparseable files instead of aborting the measurement.
@@ -77,20 +87,34 @@ fn env_pairs(env: &[String]) -> anyhow::Result<Vec<(String, String)>> {
         .collect()
 }
 
-fn options(a: &ProfileArgs) -> anyhow::Result<Options> {
-    let mutation = if a.command.is_empty() {
-        None
-    } else {
-        Some(MutationOptions {
-            command: a.command.clone(),
-            link: a.link.clone(),
-            env: env_pairs(&a.env)?,
-            timeout: Duration::from_secs(a.timeout_s),
-            network: a.network,
-            functions: a.mutate_functions,
-            per_function: a.mutants_per_function,
-        })
+fn coverage(a: &ProfileArgs) -> anyhow::Result<Option<CoverageSource>> {
+    if let Some(path) = &a.coverage {
+        return Ok(Some(CoverageSource::File(path.clone())));
+    }
+    let Some(output) = &a.coverage_output else {
+        return Ok(None);
     };
+    let commands = a
+        .coverage_command
+        .iter()
+        .map(|c| {
+            shlex::split(c)
+                .filter(|argv| !argv.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("cannot split --coverage-command {c:?}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(Some(CoverageSource::Run(CoverageRun {
+        commands,
+        output: output.clone(),
+    })))
+}
+
+fn options(a: &ProfileArgs) -> anyhow::Result<Options> {
+    let mutation = (!a.command.is_empty()).then(|| MutationOptions {
+        command: a.command.clone(),
+        functions: a.mutate_functions,
+        per_function: a.mutants_per_function,
+    });
     Ok(Options {
         repo: a.repo.clone(),
         source: a.source.clone(),
@@ -100,8 +124,14 @@ fn options(a: &ProfileArgs) -> anyhow::Result<Options> {
             days: (a.days > 0).then_some(a.days),
             ..Window::default()
         },
-        coverage: a.coverage.clone(),
+        coverage: coverage(a)?,
         mutation,
+        execution: Execution {
+            link: a.link.clone(),
+            env: env_pairs(&a.env)?,
+            timeout: Duration::from_secs(a.timeout_s),
+            network: a.network,
+        },
         top: a.top,
         tolerate_syntax_errors: a.tolerate_syntax_errors,
     })

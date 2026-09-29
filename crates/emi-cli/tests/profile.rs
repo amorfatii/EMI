@@ -80,11 +80,11 @@ fn readiness_follows_what_the_tests_run_and_check() {
 
     let discount = by_name(&p, "discount");
     assert_eq!(discount["readiness"], "strong", "{discount}");
-    assert_eq!(discount["facts"]["coverage"]["executed"], 4);
+    assert_eq!(discount["facts"]["coverage"]["executed"], 3);
 
     let shipping = by_name(&p, "shipping");
     assert_eq!(shipping["readiness"], "weak", "{shipping}");
-    assert_eq!(shipping["facts"]["coverage"]["executable"], 6);
+    assert_eq!(shipping["facts"]["coverage"]["executable"], 5);
     let missed = shipping["facts"]["mutation"]["survivors"].to_string();
     assert!(missed.contains("line 8: `<` -> `>=`"), "{missed}");
 
@@ -110,4 +110,94 @@ fn a_failing_baseline_yields_no_mutant_verdicts() {
     let p: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
     assert_eq!(p["mutation"]["baseline"]["passed"], false);
     assert_eq!(p["summary"]["readiness"]["unknown"], 3, "{p}");
+}
+
+// A dependency-free coverage tool: runs the tests under a line tracer and
+// writes lcov for src/pricing.py (executable lines from its code objects).
+const TRACER: &str = r#"import runpy, sys
+target = "src/pricing.py"
+ran = set()
+def local(frame, event, arg):
+    if event == "line":
+        ran.add(frame.f_lineno)
+    return local
+def trace(frame, event, arg):
+    return local if frame.f_code.co_filename.endswith(target) else None
+sys.settrace(trace)
+runpy.run_path("tests/run.py")
+sys.settrace(None)
+def lines(code):
+    out = {l for _, _, l in code.co_lines() if l}
+    for c in code.co_consts:
+        if hasattr(c, "co_lines"):
+            out |= lines(c)
+    return out
+src = open(target).read()
+with open("cov.lcov", "w") as f:
+    f.write("SF:" + target + "\n")
+    for n in sorted(lines(compile(src, target, "exec"))):
+        f.write("DA:%d,%d\n" % (n, 1 if n in ran else 0))
+    f.write("end_of_record\n")
+"#;
+
+fn profile_json(repo: &Path, extra: &[&str]) -> Value {
+    let out = Command::new(env!("CARGO_BIN_EXE_emi"))
+        .args(["profile", "--source", "src", "--format", "json", "--repo"])
+        .arg(repo)
+        .args(extra)
+        .output()
+        .unwrap_or_else(|e| panic!("emi: {e}"));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_default()
+}
+
+#[test]
+fn emi_measures_coverage_at_the_head_itself() {
+    let repo = scratch("covrun");
+    std::fs::create_dir_all(repo.0.join("src")).unwrap_or_default();
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(repo.0.join("src/pricing.py"), PRICING).unwrap_or_default();
+    std::fs::write(repo.0.join("tests/run.py"), TESTS).unwrap_or_default();
+    std::fs::write(repo.0.join("tests/cov.py"), TRACER).unwrap_or_default();
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "init"]);
+    let p = profile_json(
+        &repo.0,
+        &[
+            "--coverage-command",
+            "python3 tests/cov.py",
+            "--coverage-output",
+            "cov.lcov",
+        ],
+    );
+    assert_eq!(p["coverage"]["source"], "run", "{p}");
+    assert_eq!(p["coverage"]["run"]["steps"][0]["exit_code"], 0);
+    // label's def line ran on import; no test called it
+    assert_eq!(by_name(&p, "label")["readiness"], "unexecuted", "{p}");
+    assert_eq!(by_name(&p, "discount")["readiness"], "executed");
+    assert!(
+        !repo.0.join("cov.lcov").exists(),
+        "the run happens in a copy, never the checkout"
+    );
+
+    let failed = profile_json(
+        &repo.0,
+        &[
+            "--coverage-command",
+            "python3 -c 'raise SystemExit(4)'",
+            "--coverage-output",
+            "cov.lcov",
+        ],
+    );
+    assert_eq!(
+        failed["coverage"]["error"], "coverage step 1 exited 4",
+        "{failed}"
+    );
+    let unknowns = by_name(&failed, "label")["unknowns"].to_string();
+    assert!(unknowns.contains("the coverage run failed"), "{unknowns}");
 }

@@ -36,10 +36,17 @@ fn header(p: &Value) -> Vec<String> {
     let c = &p["coverage"];
     out.push(if c.is_null() {
         "coverage: no report given".to_owned()
+    } else if let Some(e) = c["error"].as_str() {
+        format!("coverage: the coverage run failed: {e}")
     } else {
         format!(
-            "coverage: {} report, {} of {} scope files in it; {} entries unmatched, {} ambiguous",
+            "coverage: {} report{}, {} of {} scope files in it; {} entries unmatched, {} ambiguous",
             c["format"].as_str().unwrap_or(""),
+            if c["source"] == "run" {
+                " measured by emi at the head"
+            } else {
+                ""
+            },
             c["scope_files_in_report"],
             c["scope_files"],
             c["unmatched"],

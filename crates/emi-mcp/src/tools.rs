@@ -385,8 +385,9 @@ fn profile(args: &Value) -> Out {
         coverage: args
             .get("coverage")
             .and_then(Value::as_str)
-            .map(PathBuf::from),
+            .map(|p| emi_profile::CoverageSource::File(PathBuf::from(p))),
         mutation: None,
+        execution: emi_profile::Execution::default(),
         top: usize::try_from(top).unwrap_or(20),
         tolerate_syntax_errors: true,
     };

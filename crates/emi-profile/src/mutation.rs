@@ -6,28 +6,20 @@
 //! and none is reported.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
-use emi_diff::snapshot;
-use emi_exec::{Isolation, Spec, Status};
+use emi_exec::Status;
 use emi_panel::mutate::Mutant;
 use serde_json::{Value, json};
 
 use crate::Result;
+use crate::sandbox::{Runner, tail};
 
-/// How to run the tests.
+/// How to run the tests: the sandbox and the test command.
 pub struct Plan<'a> {
-    pub repo: &'a Path,
-    /// The commit whose copies are mutated.
-    pub rev: &'a str,
+    pub runner: Runner<'a>,
     pub command: &'a [String],
-    /// Ignored dependency directories linked into each copy.
-    pub link: &'a [String],
-    pub env: &'a [(String, String)],
-    /// Upper bound for one run.
-    pub timeout: Duration,
-    pub network: bool,
 }
 
 /// The mutants chosen for one function.
@@ -79,40 +71,6 @@ pub struct Results {
     pub isolation: String,
 }
 
-/// Scratch directory for one run's copy, removed when dropped.
-struct Copy(PathBuf);
-
-impl Drop for Copy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn fresh_copy(plan: &Plan, n: usize) -> Result<(Copy, Vec<PathBuf>)> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let dir = std::env::temp_dir().join(format!("emi-mutant-{}-{nanos}-{n}", std::process::id()));
-    let copy = Copy(dir);
-    snapshot::materialize(plan.repo, plan.rev, &copy.0)?;
-    let linked = snapshot::link_dependencies(plan.repo, &copy.0, plan.link)?;
-    Ok((copy, linked))
-}
-
-fn spec(plan: &Plan, dir: &Path, linked: Vec<PathBuf>, timeout: Duration) -> Spec {
-    let argv: Vec<&str> = plan.command.iter().map(String::as_str).collect();
-    let mut spec = Spec::new(&argv, dir);
-    spec.timeout = timeout;
-    spec.isolation = Isolation::Best {
-        network: plan.network,
-    };
-    // imports must come from the copy, never the live checkout
-    spec.hidden = vec![plan.repo.to_path_buf()];
-    spec.read_only = linked;
-    spec.env.extend(plan.env.iter().cloned());
-    spec
-}
-
 /// Write the mutated file, refusing to write through a link in the tree.
 fn write_mutant(dir: &Path, file: &str, mutant: &Mutant) -> Result<()> {
     let path = dir.join(file);
@@ -143,19 +101,14 @@ fn verdict(o: &emi_exec::Outcome) -> Verdict {
     }
 }
 
-fn tail(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    chars[chars.len().saturating_sub(600)..].iter().collect()
-}
-
-/// Run the unmutated commit's tests; `(record, passed, duration)`.
+/// Run the unmutated commit's tests; `(record, passed, duration, isolation)`.
 fn baseline(plan: &Plan) -> Result<(Value, bool, Duration, String)> {
-    let (copy, linked) = fresh_copy(plan, 0)?;
-    let o = emi_exec::run(&spec(plan, &copy.0, linked, plan.timeout));
+    let copy = plan.runner.copy("baseline")?;
+    let o = plan.runner.run(&copy, plan.command, plan.runner.timeout);
     let passed = matches!(verdict(&o), Verdict::Survived);
     let record = json!({"passed": passed, "status": o.status, "exit_code": o.exit_code,
                         "duration_ms": o.duration_ms, "isolation": o.receipt.isolation,
-                        "stderr_tail": if passed { String::new() } else { tail(&o.stderr) }});
+                        "stderr_tail": if passed { String::new() } else { tail(&o.stderr, 600) }});
     Ok((
         record,
         passed,
@@ -166,10 +119,12 @@ fn baseline(plan: &Plan) -> Result<(Value, bool, Duration, String)> {
 
 /// One mutant's verdict (errors preparing the copy count as errors).
 fn run_mutant(plan: &Plan, key: &FunctionKey, m: &Mutant, n: usize, timeout: Duration) -> Verdict {
-    let prepared = fresh_copy(plan, n)
-        .and_then(|(copy, linked)| write_mutant(&copy.0, &key.0, m).map(|()| (copy, linked)));
+    let prepared = plan
+        .runner
+        .copy(&format!("mutant-{n}"))
+        .and_then(|copy| write_mutant(&copy.dir, &key.0, m).map(|()| copy));
     match prepared {
-        Ok((copy, linked)) => verdict(&emi_exec::run(&spec(plan, &copy.0, linked, timeout))),
+        Ok(copy) => verdict(&plan.runner.run(&copy, plan.command, timeout)),
         Err(_) => Verdict::Error,
     }
 }
@@ -188,6 +143,7 @@ pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
     }
     // a mutant that loops forever must not cost the whole budget
     let timeout = plan
+        .runner
         .timeout
         .min((took * 3).max(took + Duration::from_secs(10)));
     let mut n = 1;

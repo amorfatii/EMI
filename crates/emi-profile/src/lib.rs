@@ -10,11 +10,13 @@
 //! decides.
 
 pub mod coverage;
+pub mod covrun;
 pub mod findings;
 pub mod functions;
 pub mod history;
 pub mod mutation;
 pub mod readiness;
+pub mod sandbox;
 pub mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,8 +27,10 @@ use emi_diff::{Request, snapshot};
 use serde_json::{Value, json};
 
 use crate::coverage::Resolved;
-use crate::functions::{Mutation, Record};
+use crate::covrun::CoverageRun;
+use crate::functions::{Coverage, Mutation, Record};
 use crate::history::{History, Window};
+use crate::sandbox::Runner;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -39,24 +43,64 @@ pub struct Options {
     pub probe: emi_scan::Probe,
     pub head: String,
     pub window: Window,
-    /// A coverage report produced at the head commit.
-    pub coverage: Option<PathBuf>,
+    pub coverage: Option<CoverageSource>,
     pub mutation: Option<MutationOptions>,
+    /// How coverage and mutant runs execute.
+    pub execution: Execution,
     /// Function entries in the output (all are counted in the summary).
     pub top: usize,
     pub tolerate_syntax_errors: bool,
 }
 
+/// Where line coverage comes from.
+pub enum CoverageSource {
+    /// A report produced elsewhere; it must be of the head commit.
+    File(PathBuf),
+    /// Commands EMI runs on a sandboxed copy of the head commit.
+    Run(CoverageRun),
+}
+
 /// Sampled mutation: which functions, how many mutants, how to test.
 pub struct MutationOptions {
     pub command: Vec<String>,
-    pub link: Vec<String>,
-    pub env: Vec<(String, String)>,
-    pub timeout: Duration,
-    pub network: bool,
     /// The most exposed functions that get mutants.
     pub functions: usize,
     pub per_function: usize,
+}
+
+/// The sandbox for commands the profile runs.
+#[derive(Clone, Debug)]
+pub struct Execution {
+    /// Ignored dependency directories linked into each copy.
+    pub link: Vec<String>,
+    pub env: Vec<(String, String)>,
+    /// Upper bound for one command.
+    pub timeout: Duration,
+    pub network: bool,
+}
+
+impl Default for Execution {
+    fn default() -> Self {
+        Execution {
+            link: Vec::new(),
+            env: Vec::new(),
+            timeout: Duration::from_secs(600),
+            network: false,
+        }
+    }
+}
+
+impl Execution {
+    fn runner<'a>(&'a self, repo: &'a Path, rev: &'a str) -> Runner<'a> {
+        Runner {
+            repo,
+            rev,
+            link: &self.link,
+            env: &self.env,
+            timeout: self.timeout,
+            network: self.network,
+        }
+    }
 }
 
 /// The head's files, read from a copy that is removed afterwards.
@@ -102,28 +146,46 @@ pub fn build(o: &Options) -> Result<Value> {
     let scope = snapshot::normalize_source(&o.source)?;
     let tree = Tree::new(&o.repo, &h.sha)?;
     let (mut records, skipped) = functions::collect(&tree.dir, &scope, &h);
-    let report = o
-        .coverage
-        .as_deref()
-        .map(|p| load_coverage(p, &o.repo, &tree.files))
-        .transpose()?;
-    if let Some(r) = &report {
-        functions::attach_coverage(&mut records, r, &tree.dir);
+    let (report, provenance) = gather_coverage(o, &h.sha, &tree)?;
+    match &report {
+        Some(r) => functions::attach_coverage(&mut records, r, &tree.dir),
+        None if provenance["error"].is_string() => {
+            for r in &mut records {
+                r.coverage = Coverage::RunFailed;
+            }
+        }
+        None => {}
     }
     functions::rank(&mut records);
     let sampled = match &o.mutation {
         Some(m) => Some(sample(o, m, &h.sha, &tree, report.as_ref(), &mut records)?),
         None => None,
     };
-    Ok(render(
-        o,
-        &h,
-        &scope,
-        &records,
-        &skipped,
-        report.as_ref(),
-        sampled,
-    ))
+    let coverage = report.as_ref().map_or(provenance.clone(), |r| {
+        coverage_summary(r, &records, provenance)
+    });
+    Ok(render(o, &h, &scope, &records, &skipped, coverage, sampled))
+}
+
+/// The coverage report, if any, and where it came from (`null` when none
+/// was asked for). A report file that cannot be read is an error; a
+/// coverage run that fails is recorded, and its functions stay unknown.
+fn gather_coverage(o: &Options, sha: &str, tree: &Tree) -> Result<(Option<Resolved>, Value)> {
+    match &o.coverage {
+        None => Ok((None, Value::Null)),
+        Some(CoverageSource::File(path)) => {
+            let report = load_coverage(path, &o.repo, &tree.files)?;
+            Ok((Some(report), json!({"source": "file", "path": path})))
+        }
+        Some(CoverageSource::Run(run)) => {
+            let runner = o.execution.runner(&o.repo, sha);
+            let (report, record) = covrun::measure(&runner, run, &tree.files);
+            Ok(match report {
+                Ok(r) => (Some(r), json!({"source": "run", "run": record})),
+                Err(e) => (None, json!({"source": "run", "run": record, "error": e})),
+            })
+        }
+    }
 }
 
 /// Choose targets among the most exposed functions with something to
@@ -158,13 +220,8 @@ fn sample(
         };
     }
     let plan = mutation::Plan {
-        repo: &o.repo,
-        rev: sha,
+        runner: o.execution.runner(&o.repo, sha),
         command: &m.command,
-        link: &m.link,
-        env: &m.env,
-        timeout: m.timeout,
-        network: m.network,
     };
     let results = mutation::run(&plan, &targets)?;
     for r in records.iter_mut() {
@@ -179,17 +236,21 @@ fn sample(
     )
 }
 
-fn coverage_summary(report: &Resolved, records: &[Record]) -> Value {
+fn coverage_summary(report: &Resolved, records: &[Record], mut provenance: Value) -> Value {
     let scope_files: BTreeSet<&str> = records.iter().map(|r| r.file.as_str()).collect();
     let in_report = scope_files
         .iter()
         .filter(|f| report.files.contains_key(**f))
         .count();
     let sample = |v: &[String]| v.iter().take(10).cloned().collect::<Vec<_>>();
-    json!({"format": report.format, "scope_files": scope_files.len(),
+    let summary = json!({"format": report.format, "scope_files": scope_files.len(),
            "scope_files_in_report": in_report, "placed": report.files.len(),
            "unmatched": report.unmatched.len(), "unmatched_sample": sample(&report.unmatched),
-           "ambiguous": report.ambiguous.len(), "ambiguous_sample": sample(&report.ambiguous)})
+           "ambiguous": report.ambiguous.len(), "ambiguous_sample": sample(&report.ambiguous)});
+    if let (Some(p), Value::Object(s)) = (provenance.as_object_mut(), summary) {
+        p.extend(s);
+    }
+    provenance
 }
 
 fn counts(records: &[Record]) -> (Value, Value) {
@@ -209,7 +270,7 @@ fn render(
     scope: &str,
     records: &[Record],
     skipped: &[String],
-    report: Option<&Resolved>,
+    coverage: Value,
     sampled: Option<Value>,
 ) -> Value {
     let ctx = findings::Context::of(records);
@@ -224,7 +285,7 @@ fn render(
         "window_days": o.window.days,
         "summary": {"files": files.len(), "functions": records.len(), "commits": h.commits.len(),
                     "readiness": levels, "delegation": delegation},
-        "coverage": report.map(|r| coverage_summary(r, records)),
+        "coverage": coverage,
         "mutation": sampled,
         "skipped_files": skipped,
         "functions": records.iter().take(top).map(|r| findings::entry(r, &ctx)).collect::<Vec<_>>(),

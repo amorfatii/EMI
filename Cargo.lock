@@ -335,6 +335,7 @@ dependencies = [
  "emi-rules",
  "emi-scan",
  "serde_json",
+ "shlex",
 ]
 
 [[package]]

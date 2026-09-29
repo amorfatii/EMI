@@ -27,6 +27,7 @@ emi-profile.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+shlex.workspace = true
 
 [lints]
 workspace = true
