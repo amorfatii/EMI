@@ -64,11 +64,10 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
 /// `(path, kind)` of every change from the baseline, renames split into
 /// delete + add.
 fn changes(repo: &Path, baseline: &str, candidate: &str) -> Result<Vec<(String, &'static str)>> {
-    let mut args = vec!["diff", "--name-status", "-z", "-M", baseline];
-    if candidate != WORKTREE {
-        args.push(candidate);
-    }
-    let raw = git(repo, &args)?;
+    let raw = git(
+        repo,
+        &["diff", "--name-status", "-z", "-M", baseline, candidate],
+    )?;
     let tokens: Vec<String> = raw
         .split(|b| *b == 0)
         .map(|t| String::from_utf8_lossy(t).into_owned())
@@ -96,12 +95,6 @@ fn changes(repo: &Path, baseline: &str, candidate: &str) -> Result<Vec<(String, 
                 i += 2;
             }
             _ => i += 1,
-        }
-    }
-    if candidate == WORKTREE {
-        let untracked = git(repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-        for p in untracked.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-            out.push((String::from_utf8_lossy(p).into_owned(), "add"));
         }
     }
     out.sort();
@@ -158,8 +151,7 @@ fn guardrails_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &st
         Err(e) => return json!({"state": "unverified", "error": e}),
     };
     policy.tiers.insert("scope".into(), emi_guard::Tier::Off);
-    let head = (candidate != WORKTREE).then_some(candidate);
-    match emi_guard::guard(repo, baseline, head, &policy) {
+    match emi_guard::guard(repo, baseline, Some(candidate), &policy) {
         Ok(report) => {
             let state = match report.decision() {
                 "block" => "fail",
@@ -192,11 +184,7 @@ fn guard_ids(gate: &Value, tier: &str) -> String {
 }
 
 fn materialize(repo: &Path, candidate: &str, dest: &Path, contract: &Value) -> Result<()> {
-    if candidate == WORKTREE {
-        snapshot::materialize_worktree(repo, dest)?;
-    } else {
-        snapshot::materialize(repo, candidate, dest)?;
-    }
+    snapshot::materialize(repo, candidate, dest)?;
     // Ignored dependency directories (node_modules, .venv) the checks need.
     for rel in globs(&contract["execution"]["link"]) {
         let (src, dst) = (repo.join(&rel), dest.join(&rel));
@@ -519,7 +507,6 @@ fn structural_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &st
         candidate,
         probe,
     );
-    req.worktree = candidate == WORKTREE;
     req.tolerate_syntax_errors = true;
     let profile = s["profile"].as_str().unwrap_or("precise");
     let Some(profile) = emi_scan::Profile::from_name(profile) else {
@@ -774,14 +761,24 @@ struct Verified {
     gate: Value,
 }
 
+/// What one verification reads: the pinned baseline and one commit holding
+/// the candidate (the submitted commit, or the working tree frozen into
+/// one), so every gate and every run sees the same content.
+struct Subject {
+    repo: PathBuf,
+    baseline: String,
+    /// The commit every gate and check reads.
+    rev: String,
+    /// What the records name: the commit, or `worktree`.
+    candidate_id: String,
+}
+
 /// Run the inventory and every check, each in a fresh workspace with
 /// trusted files restored read-only and held-out files injected.
 fn run_verified(
     store: &Store,
     contract: &Value,
-    repo: &Path,
-    baseline: &str,
-    candidate_id: &str,
+    subject: &Subject,
     changed: &[(String, &'static str)],
     scratch: &Scratch,
 ) -> Result<Verified> {
@@ -790,12 +787,12 @@ fn run_verified(
     let vspec = &contract["verification"];
     let trusted = globs(&vspec["trusted"]);
     let setup = RunSetup {
-        repo,
-        candidate: candidate_id,
-        baseline,
+        repo: &subject.repo,
+        candidate: &subject.rev,
+        baseline: &subject.baseline,
         contract,
         changed,
-        trusted_files: files_matching(repo, baseline, &trusted),
+        trusted_files: files_matching(&subject.repo, &subject.baseline, &trusted),
     };
     let restored = trusted_changes(&trusted, changed);
     let held_out: Vec<String> = vspec["held_out"]
@@ -814,11 +811,11 @@ fn run_verified(
             read_only,
         ))
     };
-    let (statuses, runs) = run_checks(store, &setup, &scratch.0, candidate_id)?;
+    let (statuses, runs) = run_checks(store, &setup, &scratch.0, &subject.candidate_id)?;
     let gate = verification_gate(
         contract,
-        repo,
-        baseline,
+        &subject.repo,
+        &subject.baseline,
         restored,
         held_out,
         candidate_ids,
@@ -829,6 +826,46 @@ fn run_verified(
         runs,
         gate,
     })
+}
+
+/// Every gate's result and the requirement ledger for one candidate.
+struct Evaluation {
+    ledger: Vec<Value>,
+    gates: Value,
+    runs: Vec<Value>,
+}
+
+/// Run the checks and compute every gate over `subject`.
+fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evaluation> {
+    let (repo, baseline, rev) = (&subject.repo, &subject.baseline, &subject.rev);
+    let changed = changes(repo, baseline, rev)?;
+    let envelope = envelope_gate(contract, &changed);
+    let scratch = Scratch::new()?;
+    // the submitted tree, measured and never executed in (checks run in
+    // their own copies and cannot rewrite what is measured)
+    let workspace = scratch.0.join("candidate");
+    materialize(repo, rev, &workspace, contract)?;
+    let verified = run_verified(store, contract, subject, &changed, &scratch)?;
+    let structural = structural_gate(contract, repo, baseline, rev);
+    let guardrails = guardrails_gate(contract, repo, baseline, rev);
+    let refactor = crate::refactor::gate(contract, repo, baseline, &workspace, &changed);
+    Ok(Evaluation {
+        ledger: ledger(contract, &verified.statuses),
+        gates: json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
+                      "verification": verified.gate, "refactor": refactor}),
+        runs: verified.runs,
+    })
+}
+
+/// The commit holding the candidate's content.
+fn candidate_rev(repo: &Path, candidate: &Candidate, candidate_id: &str) -> Result<String> {
+    match candidate {
+        Candidate::Ref(_) => Ok(candidate_id.to_owned()),
+        Candidate::Worktree => {
+            let scratch = Scratch::new()?;
+            snapshot::commit_worktree(repo, &scratch.0)
+        }
+    }
 }
 
 /// Verify a candidate: run every frozen check, compute the gates, reduce,
@@ -855,39 +892,26 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         return Ok(d);
     }
     let started = std::time::Instant::now();
-    let changed = changes(&repo, &baseline, &candidate_id)?;
-    let envelope = envelope_gate(&contract, &changed);
-    let scratch = Scratch::new()?;
-    // the submitted tree, measured and never executed in (checks run in
-    // their own copies and cannot rewrite what is measured)
-    let workspace = scratch.0.join("candidate");
-    materialize(&repo, &candidate_id, &workspace, &contract)?;
-    let verification = run_verified(
-        store,
-        &contract,
-        &repo,
-        &baseline,
-        &candidate_id,
-        &changed,
-        &scratch,
-    )?;
-    let (statuses, runs) = (verification.statuses, verification.runs);
-    let verification = verification.gate;
-    let structural = structural_gate(&contract, &repo, &baseline, &candidate_id);
-    let guardrails = guardrails_gate(&contract, &repo, &baseline, &candidate_id);
-    let refactor = crate::refactor::gate(&contract, &repo, &baseline, &workspace, &changed);
-    let ledger = ledger(&contract, &statuses);
+    let rev = candidate_rev(&repo, candidate, &candidate_id)?;
+    let subject = Subject {
+        repo,
+        baseline,
+        rev,
+        candidate_id: candidate_id.clone(),
+    };
+    let eval = evaluate(store, &contract, &subject)?;
     let require_all = contract["completion_policy"]["require_all_requirements_verified"]
         .as_bool()
         .unwrap_or(true);
+    let g = &eval.gates;
     let gates = Gates {
-        envelope: &envelope,
-        structural: &structural,
-        guardrails: &guardrails,
-        verification: &verification,
-        refactor: &refactor,
+        envelope: &g["envelope"],
+        structural: &g["structural"],
+        guardrails: &g["guardrails"],
+        verification: &g["verification"],
+        refactor: &g["refactor"],
     };
-    let (decision, reasons) = reduce(&ledger, &gates, require_all);
+    let (decision, reasons) = reduce(&eval.ledger, &gates, require_all);
     let elapsed = started.elapsed().as_secs_f64();
     state["cumulative"]["retries"] =
         json!(state["cumulative"]["retries"].as_u64().unwrap_or(0) + 1);
@@ -895,10 +919,10 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         json!(state["cumulative"]["time_s"].as_f64().unwrap_or(0.0) + elapsed);
     store.save_state(&state)?;
     let mut d = head(decision, reasons);
-    d["requirements"] = Value::Array(ledger);
-    d["gates"] = json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
-                        "verification": verification, "refactor": refactor});
-    d["checks"] = Value::Array(runs.iter().map(check_summary).collect());
+    d["content_id"] = json!(subject.rev);
+    d["requirements"] = Value::Array(eval.ledger);
+    d["gates"] = eval.gates;
+    d["checks"] = Value::Array(eval.runs.iter().map(check_summary).collect());
     // what the checks' results are worth: sandboxed runs, or an explicit
     // opt-out of isolation (weaker: the candidate could reach the host)
     d["assurance"] = json!(if sandbox_required(&contract["execution"]) {

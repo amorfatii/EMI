@@ -71,7 +71,7 @@ and `hook-check` return 0 or 3. Agents get the same through MCP as
 
 ## What a verification runs on
 
-**The measured tree.** The submitted tree (a commit's blobs, or the working tree as a commit would hold it) is materialized once. Every measurement reads that copy, and no check ever runs in it. The refactor gate, the envelope and the structural gate all see exactly what was submitted, whatever a check did at run time.
+**The measured tree.** Every verification reads one commit. For `--candidate` it is the submitted commit. For `--worktree`, the working tree (tracked and untracked-but-not-ignored files) is first frozen into a commit object through a private index, leaving the repository's index, HEAD and refs alone; the decision names it as `content_id`. The envelope, the guardrails, the structural and refactor gates and every check run all read that commit, so an edit made while verification runs cannot show two gates two different trees. No check ever runs in the measured copy, so the gates see exactly what was submitted, whatever a check did at run time.
 
 **The check runs.** Each check, and the test inventory, runs in its own fresh copy:
 - trusted files are restored and mounted **read-only**, along with the held-out files;

@@ -21,10 +21,16 @@ fn is_sha(s: &str) -> bool {
 
 /// `git -C repo args...`; failures carry the oracle's message shape.
 pub(crate) fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    git_bytes_env(repo, &[], args)
+}
+
+/// [`git_bytes`] with extra environment variables (a private index file).
+fn git_bytes_env(repo: &Path, env: &[(&str, &Path)], args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo)
         .args(args)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .output()
         .map_err(|e| match e.kind() {
@@ -457,6 +463,38 @@ pub fn materialize_scoped(
         files,
         symlinks,
     })
+}
+
+/// Freeze the working tree into a commit object, as `git commit -a` plus
+/// the untracked-but-not-ignored files would record it, without touching
+/// the repository's index, HEAD or refs. Every later read of the candidate
+/// goes through this one commit, so an edit made while it is being checked
+/// cannot give two gates two different trees. `scratch` holds the private
+/// index while the tree is written.
+pub fn commit_worktree(repo: &Path, scratch: &Path) -> Result<String> {
+    ensure_repo(repo)?;
+    fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
+    let index = scratch.join("worktree.index");
+    let env = [("GIT_INDEX_FILE", index.as_path())];
+    let head = resolve_ref(repo, "HEAD").ok();
+    if let Some(h) = &head {
+        git_bytes_env(repo, &env, &["read-tree", h])?;
+    }
+    git_bytes_env(repo, &env, &["add", "-A", "--", ":/"])?;
+    let tree = git_text_env(repo, &env, &["write-tree"])?.trim().to_owned();
+    let _ = fs::remove_file(&index);
+    let mut args = vec!["-c", "user.name=emi", "-c", "user.email=emi@localhost"];
+    args.extend(["-c", "commit.gpgsign=false"]);
+    args.extend(["commit-tree", tree.as_str(), "-m", "emi worktree snapshot"]);
+    if let Some(h) = &head {
+        args.extend(["-p", h.as_str()]);
+    }
+    let out = git_text(repo, &args)?;
+    single_sha(out.trim()).ok_or_else(|| "commit-tree did not return a commit SHA".to_owned())
+}
+
+fn git_text_env(repo: &Path, env: &[(&str, &Path)], args: &[&str]) -> Result<String> {
+    git_bytes_env(repo, env, args).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 /// The working tree as a commit of it would contain it: tracked and

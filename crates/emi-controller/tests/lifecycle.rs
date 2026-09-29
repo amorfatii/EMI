@@ -117,6 +117,42 @@ fn freeze_verify_complete() {
     assert!(hook_check(&store, "HEAD").is_ok_and(|(ok, _)| ok));
 }
 
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+#[test]
+fn worktree_is_verified_as_one_frozen_commit() {
+    let (repo, _authority, store) = buggy_task("t-snap");
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    std::fs::write(repo.0.join("notes.txt"), "untracked\n").unwrap_or_default();
+    let status_before = git_out(&repo.0, &["status", "--porcelain"]);
+    let d = check(&store, Candidate::Worktree);
+    assert_eq!(d["candidate_id"], "worktree", "{d}");
+    let content = d["content_id"].as_str().unwrap_or("");
+    assert_eq!(content.len(), 40, "{d}");
+    // the gates read the frozen commit: the untracked file is in it (and
+    // outside the envelope), the edit to app.py too
+    assert_eq!(
+        git_out(&repo.0, &["show", &format!("{content}:app.py")]),
+        "def add(a, b):\n    return a + b\n"
+    );
+    assert_eq!(
+        d["gates"]["envelope"]["violations"][0]["path"], "notes.txt",
+        "{d}"
+    );
+    // freezing touches neither the index nor HEAD
+    assert_eq!(git_out(&repo.0, &["status", "--porcelain"]), status_before);
+    let (done, _) = complete(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));
+    assert!(!done, "a working-tree verification never completes a task");
+}
+
 #[test]
 fn scope_budget_and_tampering() {
     let (repo, _authority, store) = buggy_task("t3");
