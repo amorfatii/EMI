@@ -67,6 +67,7 @@ pub fn changes(repo: &Path, base: &str, head: Option<&str>) -> Result<Vec<FileCh
         "-c",
         "core.quotePath=false",
         "diff",
+        "--no-textconv",
         "-U0",
         "-M",
         "--no-color",
@@ -97,7 +98,7 @@ pub fn file_at(repo: &Path, rev: Option<&str>, path: &str) -> Option<String> {
 /// already treats as text (a test of a tokenizer may contain `"\0"`).
 pub fn text_at(repo: &Path, rev: Option<&str>, path: &str) -> Option<String> {
     let bytes = match rev {
-        Some(r) => git_bytes(repo, &["show", &format!("{r}:{path}")]).ok()?,
+        Some(r) => git_bytes(repo, &["show", "--no-textconv", &format!("{r}:{path}")]).ok()?,
         None => {
             let top =
                 String::from_utf8_lossy(&git_bytes(repo, &["rev-parse", "--show-toplevel"]).ok()?)

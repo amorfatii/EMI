@@ -104,3 +104,45 @@ fn exit_codes_and_formats() {
     let s: serde_json::Value = serde_json::from_str(&sarif).unwrap_or_default();
     assert_eq!(s["runs"][0]["results"].as_array().map(Vec::len), Some(2));
 }
+
+#[test]
+fn the_repositorys_own_attributes_and_drivers_cannot_hide_a_skip() {
+    let r = Repo(std::env::temp_dir().join(format!("emi-guard-hostile-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&r.0);
+    std::fs::create_dir_all(&r.0).unwrap_or_default();
+    git(&r.0, &["init", "-q", "-b", "main"]);
+    write(
+        &r,
+        "tests/test_app.py",
+        "def test_add():\n    assert 1 + 2 == 3\n",
+    );
+    git(&r.0, &["add", "-A"]);
+    git(&r.0, &["commit", "-q", "-m", "base"]);
+    write(
+        &r,
+        "tests/test_app.py",
+        "import pytest\n\n\n@pytest.mark.skip\ndef test_add():\n    assert 1 + 2 == 3\n",
+    );
+    git(&r.0, &["commit", "-q", "-am", "skip"]);
+    // uncommitted configuration the diff never shows: tests marked binary,
+    // Python routed through a driver that drops skip markers and leaves a trace
+    let trace = r.0.join("driver-ran");
+    write(
+        &r,
+        ".git/info/attributes",
+        "tests/* -diff\n*.py diff=hide filter=hide\n",
+    );
+    let driver = format!(
+        "sh -c 'touch {}; grep -v mark.skip \"$0\"'",
+        trace.display()
+    );
+    git(&r.0, &["config", "diff.hide.textconv", &driver]);
+    git(&r.0, &["config", "filter.hide.clean", &driver]);
+    for head in [&["--head", "HEAD"][..], &[][..]] {
+        let mut args = vec!["--base", "HEAD~1", "--format", "json"];
+        args.extend_from_slice(head);
+        let (_, out) = emi(&r, &args);
+        assert!(out.contains("tests.skip_added"), "{head:?}: {out}");
+    }
+    assert!(!trace.exists(), "the repository's driver ran");
+}

@@ -12,6 +12,7 @@ name = "emi"
 path = "src/main.rs"
 
 [dependencies]
+emi-git.workspace = true
 emi-ir.workspace = true
 emi-scan.workspace = true
 emi-ledger = { path = "../emi-ledger" }

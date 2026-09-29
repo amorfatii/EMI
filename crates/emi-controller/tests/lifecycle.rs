@@ -137,16 +137,15 @@ fn worktree_is_verified_as_one_frozen_commit() {
     assert_eq!(d["candidate_id"], "worktree", "{d}");
     let content = d["content_id"].as_str().unwrap_or("");
     assert_eq!(content.len(), 40, "{d}");
-    // the gates read the frozen commit: the untracked file is in it (and
-    // outside the envelope), the edit to app.py too
-    assert_eq!(
-        git_out(&repo.0, &["show", &format!("{content}:app.py")]),
-        "def add(a, b):\n    return a + b\n"
-    );
+    // the gates read the frozen commit: the edit to app.py (the check
+    // passes) and the untracked file (outside the envelope) are in it
+    assert_eq!(d["requirements"][0]["state"], "verified", "{d}");
     assert_eq!(
         d["gates"]["envelope"]["violations"][0]["path"], "notes.txt",
         "{d}"
     );
+    // it was built in a clean view: nothing is written to the agent's repository
+    assert_eq!(git_out(&repo.0, &["cat-file", "-t", content]), "");
     // freezing touches neither the index nor HEAD
     assert_eq!(git_out(&repo.0, &["status", "--porcelain"]), status_before);
     let (done, _) = complete(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));

@@ -436,12 +436,8 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
 }
 
 fn install_hook(a: &HookArgs) -> anyhow::Result<u8> {
-    let git_dir = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&a.repo)
-        .args(["rev-parse", "--git-dir"])
-        .output()?;
-    let git_dir = a.repo.join(String::from_utf8_lossy(&git_dir.stdout).trim());
+    let git_dir = emi_git::run(&a.repo, &["rev-parse", "--git-dir"]).map_err(anyhow::Error::msg)?;
+    let git_dir = a.repo.join(String::from_utf8_lossy(&git_dir).trim());
     let hook = git_dir.join("hooks").join("pre-push");
     if hook.exists() {
         anyhow::bail!(

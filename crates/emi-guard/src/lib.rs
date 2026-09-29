@@ -88,14 +88,42 @@ impl Report {
 
 /// Run every guardrail on the change from `base` to `head` (the working
 /// tree when `None`). `base` and `head` must be resolved commits.
+///
+/// Everything is read through a clean view of the repository's objects:
+/// the repository's own configuration and attributes (a textconv driver,
+/// a `-diff` attribute that makes tests "binary") could otherwise change
+/// what the guard sees, and run programs. The working tree is first frozen
+/// into a commit in that view, byte for byte.
 pub fn guard(
     repo: &Path,
     base: &str,
     head: Option<&str>,
     policy: &Policy,
 ) -> Result<Report, String> {
-    let files = changes(repo, base, head)?;
-    Ok(evaluate(repo, base, head, &files, policy))
+    let view = emi_git::CleanView::of(repo)?;
+    let rev = match head {
+        Some(h) => h.to_owned(),
+        None => emi_diff::snapshot::commit_worktree(
+            repo,
+            view.path(),
+            &view.path().join("emi-snapshot"),
+        )?,
+    };
+    let mut report = guard_commits(view.path(), base, &rev, policy)?;
+    report.head = head.map(str::to_owned);
+    Ok(report)
+}
+
+/// [`guard`] between two commits of `objects`, a repository whose
+/// configuration EMI controls (a clean view).
+pub fn guard_commits(
+    objects: &Path,
+    base: &str,
+    head: &str,
+    policy: &Policy,
+) -> Result<Report, String> {
+    let files = changes(objects, base, Some(head))?;
+    Ok(evaluate(objects, base, Some(head), &files, policy))
 }
 
 /// Guardrails over an already-computed change.

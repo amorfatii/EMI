@@ -21,6 +21,7 @@ emi-history = { path = "crates/emi-history" }
 emi-rules = { path = "crates/emi-rules" }
 emi-guard = { path = "crates/emi-guard" }
 emi-exec = { path = "crates/emi-exec" }
+emi-git = { path = "crates/emi-git" }
 emi-controller = { path = "crates/emi-controller" }
 emi-lsp = { path = "crates/emi-lsp" }
 emi-panel = { path = "crates/emi-panel" }

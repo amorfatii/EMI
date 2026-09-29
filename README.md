@@ -99,6 +99,7 @@ Exit code 2 on any error.
 | `emi-ledger` | Calculator (ledger, review report) and gate, with CPython-exact arithmetic and JSON |
 | `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
 | `emi-rules` | Declarative query rules, first-party catalog, suppressions, baselines |
+| `emi-git` | The one git runner: repository config, attributes, hooks and replace refs switched off; clean views of a repository's objects |
 | `emi-exec` | Check execution: process groups, subreaping, PID namespaces, verified cleanup receipts |
 | `emi-controller` | Supervised tasks: frozen contracts, isolated check runs, envelope/structural/verification/refactor gates, requirement ledger, completion |
 | `emi-panel` | Classic function metrics (SLOC, cognitive complexity, Halstead volume) for the `graded` profile and `emi explain` |

@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+emi-git.workspace = true
 emi-ir.workspace = true
 emi-lang-js.workspace = true
 emi-lang-python.workspace = true

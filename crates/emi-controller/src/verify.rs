@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
 use std::time::Duration;
 
 use emi_diff::snapshot;
@@ -44,21 +44,7 @@ impl Drop for Scratch {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(out.stdout)
-    } else {
-        Err(format!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or(""),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
+    emi_git::run(repo, args)
 }
 
 /// `(path, kind)` of every change from the baseline, renames split into
@@ -66,7 +52,16 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
 fn changes(repo: &Path, baseline: &str, candidate: &str) -> Result<Vec<(String, &'static str)>> {
     let raw = git(
         repo,
-        &["diff", "--name-status", "-z", "-M", baseline, candidate],
+        &[
+            "diff",
+            "--no-textconv",
+            "--no-ext-diff",
+            "--name-status",
+            "-z",
+            "-M",
+            baseline,
+            candidate,
+        ],
     )?;
     let tokens: Vec<String> = raw
         .split(|b| *b == 0)
@@ -151,7 +146,7 @@ fn guardrails_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &st
         Err(e) => return json!({"state": "unverified", "error": e}),
     };
     policy.tiers.insert("scope".into(), emi_guard::Tier::Off);
-    match emi_guard::guard(repo, baseline, Some(candidate), &policy) {
+    match emi_guard::guard_commits(repo, baseline, candidate, &policy) {
         Ok(report) => {
             let state = match report.decision() {
                 "block" => "fail",
@@ -188,12 +183,13 @@ fn guard_ids(gate: &Value, tier: &str) -> String {
 /// sources, which a sandbox mounts back read-only inside the hidden
 /// repository.
 fn materialize(
+    objects: &Path,
     repo: &Path,
     candidate: &str,
     dest: &Path,
     contract: &Value,
 ) -> Result<Vec<PathBuf>> {
-    snapshot::materialize(repo, candidate, dest)?;
+    snapshot::materialize(objects, candidate, dest)?;
     snapshot::link_dependencies(repo, dest, &globs(&contract["execution"]["link"]))
 }
 
@@ -252,7 +248,7 @@ fn restore_trusted(
         if !is_trusted || !matches!(*kind, "modify" | "delete") {
             continue;
         }
-        let bytes = git(repo, &["show", &format!("{baseline}:{path}")])?;
+        let bytes = git(repo, &["cat-file", "blob", &format!("{baseline}:{path}")])?;
         write_beneath(workspace, path, &bytes).map_err(|e| format!("restore {e}"))?;
         restored.push(path.clone());
     }
@@ -277,6 +273,9 @@ fn inject_held_out(workspace: &Path, held_out: &Value) -> Result<Vec<String>> {
 
 /// Everything needed to build a run workspace.
 struct RunSetup<'a> {
+    /// The clean view every git read goes through.
+    objects: &'a Path,
+    /// The real repository: linked dependencies come from it.
     repo: &'a Path,
     candidate: &'a str,
     baseline: &'a str,
@@ -298,10 +297,10 @@ impl RunSetup<'_> {
     /// A fresh workspace at `dest`: the candidate, trusted files restored,
     /// held-out files injected.
     fn prepare(&self, dest: &Path) -> Result<Mounts> {
-        let linked = materialize(self.repo, self.candidate, dest, self.contract)?;
+        let linked = materialize(self.objects, self.repo, self.candidate, dest, self.contract)?;
         let v = &self.contract["verification"];
         restore_trusted(
-            self.repo,
+            self.objects,
             self.baseline,
             dest,
             &globs(&v["trusted"]),
@@ -324,7 +323,7 @@ impl RunSetup<'_> {
 
     /// The baseline, for its test inventory (nothing restored or injected).
     fn prepare_baseline(&self, dest: &Path) -> Result<Mounts> {
-        let linked = materialize(self.repo, self.baseline, dest, self.contract)?;
+        let linked = materialize(self.objects, self.repo, self.baseline, dest, self.contract)?;
         Ok(Mounts {
             read_only: linked,
             hidden: self.hidden.clone(),
@@ -787,6 +786,9 @@ struct Verified {
 /// one), so every gate and every run sees the same content.
 struct Subject {
     repo: PathBuf,
+    /// A clean view of the repository's objects (no config, attributes,
+    /// hooks or replace refs of the agent's repository apply to reads).
+    objects: PathBuf,
     /// The authority root (every task's contracts and held-out files).
     authority: PathBuf,
     baseline: String,
@@ -810,12 +812,13 @@ fn run_verified(
     let vspec = &contract["verification"];
     let trusted = globs(&vspec["trusted"]);
     let setup = RunSetup {
+        objects: &subject.objects,
         repo: &subject.repo,
         candidate: &subject.rev,
         baseline: &subject.baseline,
         contract,
         changed,
-        trusted_files: files_matching(&subject.repo, &subject.baseline, &trusted),
+        trusted_files: files_matching(&subject.objects, &subject.baseline, &trusted),
         hidden: vec![subject.authority.clone(), subject.repo.clone()],
     };
     let restored = trusted_changes(&trusted, changed);
@@ -854,20 +857,21 @@ struct Evaluation {
 /// Run the checks and compute every gate over `subject`.
 fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evaluation> {
     let (repo, baseline, rev) = (&subject.repo, &subject.baseline, &subject.rev);
-    let changed = changes(repo, baseline, rev)?;
+    let objects = &subject.objects;
+    let changed = changes(objects, baseline, rev)?;
     let envelope = envelope_gate(contract, &changed);
     let scratch = Scratch::new()?;
     // the submitted tree, measured and never executed in (checks run in
     // their own copies and cannot rewrite what is measured)
     let workspace = scratch.0.join("candidate");
-    materialize(repo, rev, &workspace, contract)?;
+    materialize(objects, repo, rev, &workspace, contract)?;
     // checked before and after the runs: the checks execute these tools
     let drifted = crate::deps::drift(repo, contract);
     let verified = run_verified(store, contract, subject, &changed, &scratch)?;
     let dependencies = crate::deps::gate(repo, contract, drifted);
-    let structural = structural_gate(contract, repo, baseline, rev);
-    let guardrails = guardrails_gate(contract, repo, baseline, rev);
-    let refactor = crate::refactor::gate(contract, repo, baseline, &workspace, &changed);
+    let structural = structural_gate(contract, objects, baseline, rev);
+    let guardrails = guardrails_gate(contract, objects, baseline, rev);
+    let refactor = crate::refactor::gate(contract, objects, baseline, &workspace, &changed);
     Ok(Evaluation {
         ledger: ledger(contract, &verified.statuses),
         gates: json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
@@ -878,12 +882,17 @@ fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evalua
 }
 
 /// The commit holding the candidate's content.
-fn candidate_rev(repo: &Path, candidate: &Candidate, candidate_id: &str) -> Result<String> {
+fn candidate_rev(
+    repo: &Path,
+    view: &Path,
+    candidate: &Candidate,
+    candidate_id: &str,
+) -> Result<String> {
     match candidate {
         Candidate::Ref(_) => Ok(candidate_id.to_owned()),
         Candidate::Worktree => {
             let scratch = Scratch::new()?;
-            snapshot::commit_worktree(repo, &scratch.0)
+            snapshot::commit_worktree(repo, view, &scratch.0)
         }
     }
 }
@@ -912,8 +921,10 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         return Ok(d);
     }
     let started = std::time::Instant::now();
-    let rev = candidate_rev(&repo, candidate, &candidate_id)?;
+    let view = emi_git::CleanView::of(&repo)?;
+    let rev = candidate_rev(&repo, view.path(), candidate, &candidate_id)?;
     let subject = Subject {
+        objects: view.path().to_path_buf(),
         repo,
         authority: store.dir.parent().unwrap_or(&store.dir).to_path_buf(),
         baseline,

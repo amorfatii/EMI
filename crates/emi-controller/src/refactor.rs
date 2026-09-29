@@ -115,19 +115,14 @@ fn is_target(path: &str, targets: &[String]) -> bool {
 
 /// Files of the tree at `rev` matching `targets`.
 fn target_files(repo: &Path, rev: &str, targets: &[String]) -> Vec<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["ls-tree", "-r", "-z", "--name-only", rev])
-        .output();
-    out.map(|o| {
-        o.stdout
-            .split(|b| *b == 0)
-            .map(|p| String::from_utf8_lossy(p).into_owned())
-            .filter(|p| is_target(p, targets))
-            .collect()
-    })
-    .unwrap_or_default()
+    emi_git::run(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
+        .map(|out| {
+            out.split(|b| *b == 0)
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .filter(|p| is_target(p, targets))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The refactor gate. `workspace` holds the candidate as the checks saw

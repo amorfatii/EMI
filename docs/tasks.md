@@ -89,7 +89,9 @@ simplification.
 
 ## What a verification runs on
 
-**The measured tree.** Every verification reads one commit. For `--candidate` it is the submitted commit. For `--worktree`, the working tree (tracked and untracked-but-not-ignored files) is first frozen into a commit object through a private index, leaving the repository's index, HEAD and refs alone; the decision names it as `content_id`. The envelope, the guardrails, the structural and refactor gates and every check run all read that commit, so an edit made while verification runs cannot show two gates two different trees. No check ever runs in the measured copy, so the gates see exactly what was submitted, whatever a check did at run time.
+**Reading the repository.** The agent can write the repository's `.git/config`, `.git/info/attributes` and refs, and git would let those run programs (filters, textconv drivers, fsmonitor, hooks) or change what a read returns (a `-diff` attribute makes test files "binary", a replace ref swaps an object). Every git call EMI makes switches those off, and every read that compares revisions goes through a clean view: a scratch bare repository that borrows the repository's objects and nothing else.
+
+**The measured tree.** Every verification reads one commit. For `--candidate` it is the submitted commit. For `--worktree`, the working tree (tracked and untracked-but-not-ignored files) is first frozen, byte for byte and without running any filter, into a commit inside the clean view, leaving the repository's index, HEAD, refs and object store alone; the decision names it as `content_id`. The envelope, the guardrails, the structural and refactor gates and every check run all read that commit, so an edit made while verification runs cannot show two gates two different trees. No check ever runs in the measured copy, so the gates see exactly what was submitted, whatever a check did at run time.
 
 **The check runs.** Each check, and the test inventory, runs in its own fresh copy:
 - trusted files are restored and mounted **read-only**, along with the held-out files;

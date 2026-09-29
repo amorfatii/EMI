@@ -127,10 +127,8 @@ impl Server {
 
     /// The file's content at the base revision, if tracked there.
     fn base_text(&self, rel: &str) -> Option<String> {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args(["show", &format!("{}:./{rel}", self.base)])
+        let out = emi_git::command(&self.root)
+            .args(["show", "--no-textconv", &format!("{}:./{rel}", self.base)])
             .output()
             .ok()?;
         out.status

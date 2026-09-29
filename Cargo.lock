@@ -324,6 +324,7 @@ dependencies = [
  "clap",
  "emi-controller",
  "emi-diff",
+ "emi-git",
  "emi-guard",
  "emi-history",
  "emi-ir",
@@ -344,6 +345,7 @@ version = "0.1.0"
 dependencies = [
  "emi-diff",
  "emi-exec",
+ "emi-git",
  "emi-guard",
  "emi-ir",
  "emi-ledger",
@@ -356,6 +358,7 @@ dependencies = [
 name = "emi-diff"
 version = "0.1.0"
 dependencies = [
+ "emi-git",
  "emi-history",
  "emi-ir",
  "emi-ledger",
@@ -373,10 +376,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "emi-git"
+version = "0.1.0"
+
+[[package]]
 name = "emi-guard"
 version = "0.1.0"
 dependencies = [
  "emi-diff",
+ "emi-git",
  "emi-scan",
  "regex",
  "serde_json",
@@ -386,6 +394,7 @@ dependencies = [
 name = "emi-history"
 version = "0.1.0"
 dependencies = [
+ "emi-git",
  "regex",
  "serde",
  "serde_json",
@@ -470,6 +479,7 @@ dependencies = [
 name = "emi-lsp"
 version = "0.1.0"
 dependencies = [
+ "emi-git",
  "emi-ir",
  "emi-lang-go",
  "emi-lang-js",
@@ -514,6 +524,7 @@ version = "0.1.0"
 dependencies = [
  "emi-diff",
  "emi-exec",
+ "emi-git",
  "emi-history",
  "emi-panel",
  "emi-scan",

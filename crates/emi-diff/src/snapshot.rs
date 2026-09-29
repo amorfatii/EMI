@@ -4,10 +4,11 @@
 //! rewrite the measured tree. Gitlinks fail closed; symlinks are recreated
 //! (never followed) so the scan reports them.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use emi_ir::pyrepr;
 
@@ -26,12 +27,9 @@ pub(crate) fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 /// [`git_bytes`] with extra environment variables (a private index file).
 fn git_bytes_env(repo: &Path, env: &[(&str, &Path)], args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let out = emi_git::command(repo)
         .args(args)
         .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::null())
         .output()
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => "emi diff requires a git binary on PATH".to_owned(),
@@ -279,9 +277,7 @@ pub fn text_files_at(
 
 /// Read many blobs through one `git cat-file --batch`.
 fn read_blobs(repo: &Path, shas: &[String]) -> Result<Vec<Vec<u8>>> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let mut child = emi_git::command(repo)
         .args(["cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -494,36 +490,195 @@ pub fn link_dependencies(repo: &Path, dest: &Path, rels: &[String]) -> Result<Ve
     Ok(linked)
 }
 
-/// Freeze the working tree into a commit object, as `git commit -a` plus
-/// the untracked-but-not-ignored files would record it, without touching
-/// the repository's index, HEAD or refs. Every later read of the candidate
-/// goes through this one commit, so an edit made while it is being checked
-/// cannot give two gates two different trees. `scratch` holds the private
-/// index while the tree is written.
-pub fn commit_worktree(repo: &Path, scratch: &Path) -> Result<String> {
+/// Freeze the working tree of `repo` into a commit object inside `view`
+/// (a clean view of `repo`'s objects): tracked and untracked-but-not-ignored
+/// files as they are on disk, deleted files absent, the parent the current
+/// HEAD. Every later read of the candidate goes through this one commit, so
+/// an edit made while it is being checked cannot give two gates two
+/// different trees. The bytes are hashed raw (`--no-filters`): no clean
+/// filter, attribute or hook of the repository runs, and nothing is written
+/// to its index, refs or object store. `scratch` holds the private index.
+pub fn commit_worktree(repo: &Path, view: &Path, scratch: &Path) -> Result<String> {
     ensure_repo(repo)?;
     fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
-    let index = scratch.join("worktree.index");
-    let env = [("GIT_INDEX_FILE", index.as_path())];
+    let top = PathBuf::from(git_text(repo, &["rev-parse", "--show-toplevel"])?.trim());
+    let (paths, gitlinks) = worktree_paths(repo)?;
+    let entries = hash_worktree(view, &top, scratch, &paths, &gitlinks)?;
+    let tree = write_tree(view, scratch, &entries)?;
     let head = resolve_ref(repo, "HEAD").ok();
-    if let Some(h) = &head {
-        git_bytes_env(repo, &env, &["read-tree", h])?;
-    }
-    git_bytes_env(repo, &env, &["add", "-A", "--", ":/"])?;
-    let tree = git_text_env(repo, &env, &["write-tree"])?.trim().to_owned();
-    let _ = fs::remove_file(&index);
     let mut args = vec!["-c", "user.name=emi", "-c", "user.email=emi@localhost"];
     args.extend(["-c", "commit.gpgsign=false"]);
     args.extend(["commit-tree", tree.as_str(), "-m", "emi worktree snapshot"]);
     if let Some(h) = &head {
         args.extend(["-p", h.as_str()]);
     }
-    let out = git_text(repo, &args)?;
+    let out = git_text(view, &args)?;
     single_sha(out.trim()).ok_or_else(|| "commit-tree did not return a commit SHA".to_owned())
 }
 
-fn git_text_env(repo: &Path, env: &[(&str, &Path)], args: &[&str]) -> Result<String> {
-    git_bytes_env(repo, env, args).map(|b| String::from_utf8_lossy(&b).into_owned())
+/// Tracked and untracked-but-not-ignored paths, and the tracked gitlinks
+/// (submodules) with their recorded commits.
+/// Paths of the working tree, and gitlink paths to their commits.
+type WorktreePaths = (Vec<Vec<u8>>, BTreeMap<Vec<u8>, String>);
+
+fn worktree_paths(repo: &Path) -> Result<WorktreePaths> {
+    let mut paths = std::collections::BTreeSet::new();
+    let mut gitlinks = BTreeMap::new();
+    let staged = git_bytes(repo, &["ls-files", "-z", "-s", "--full-name", "--", ":/"])?;
+    for entry in staged.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
+            return Err("cannot parse ls-files -s entry".into());
+        };
+        let meta = String::from_utf8_lossy(&entry[..tab]).into_owned();
+        let path = entry[tab + 1..].to_vec();
+        let mut fields = meta.split(' ');
+        if let (Some("160000"), Some(sha)) = (fields.next(), fields.next()) {
+            gitlinks.insert(path.clone(), sha.to_owned());
+        }
+        paths.insert(path);
+    }
+    let others = git_bytes(
+        repo,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "--",
+            ":/",
+        ],
+    )?;
+    paths.extend(
+        others
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .map(<[u8]>::to_vec),
+    );
+    Ok((paths.into_iter().collect(), gitlinks))
+}
+
+/// One entry of the snapshot tree: mode, object type, id, path.
+struct SnapEntry {
+    mode: &'static str,
+    kind: &'static str,
+    sha: String,
+    path: Vec<u8>,
+}
+
+#[cfg(unix)]
+fn executable(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o100 != 0
+}
+
+#[cfg(not(unix))]
+fn executable(_meta: &fs::Metadata) -> bool {
+    false
+}
+
+/// Hash every present path into `view`: regular files by content,
+/// symlinks by their target (written to a scratch file first), gitlinks
+/// by their recorded commit. Missing paths (deleted) are left out.
+fn hash_worktree(
+    view: &Path,
+    top: &Path,
+    scratch: &Path,
+    paths: &[Vec<u8>],
+    gitlinks: &BTreeMap<Vec<u8>, String>,
+) -> Result<Vec<SnapEntry>> {
+    let (mut pending, mut sources) = (Vec::new(), Vec::new());
+    let mut entries = Vec::new();
+    for (n, path) in paths.iter().enumerate() {
+        let full = top.join(os_path(path));
+        let Ok(meta) = full.symlink_metadata() else {
+            continue;
+        };
+        let shown = String::from_utf8_lossy(path).into_owned();
+        if let Some(sha) = gitlinks.get(path) {
+            entries.push(SnapEntry {
+                mode: "160000",
+                kind: "commit",
+                sha: sha.clone(),
+                path: path.clone(),
+            });
+            continue;
+        }
+        let (mode, source) = if meta.file_type().is_symlink() {
+            let target = fs::read_link(&full).map_err(|e| format!("{shown}: {e}"))?;
+            let holder = scratch.join(format!("link-{n}"));
+            fs::write(&holder, target.as_os_str().as_encoded_bytes())
+                .map_err(|e| format!("{shown}: {e}"))?;
+            ("120000", holder)
+        } else if meta.is_file() {
+            (
+                if executable(&meta) {
+                    "100755"
+                } else {
+                    "100644"
+                },
+                full,
+            )
+        } else {
+            continue;
+        };
+        let text = source.to_string_lossy().into_owned();
+        if text.contains('\n') {
+            return Err(format!(
+                "cannot snapshot {shown}: its path contains a newline"
+            ));
+        }
+        sources.push(text);
+        pending.push((mode, path.clone()));
+    }
+    let input: String = sources.iter().map(|s| format!("{s}\n")).collect();
+    let out = emi_git::run_with(
+        view,
+        &["hash-object", "-w", "--no-filters", "--stdin-paths"],
+        &[],
+        Some(input.as_bytes()),
+    )?;
+    let shas: Vec<String> = String::from_utf8_lossy(&out)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    if shas.len() != pending.len() {
+        return Err(format!(
+            "hash-object returned {} ids for {} files",
+            shas.len(),
+            pending.len()
+        ));
+    }
+    for ((mode, path), sha) in pending.into_iter().zip(shas) {
+        entries.push(SnapEntry {
+            mode,
+            kind: "blob",
+            sha,
+            path,
+        });
+    }
+    Ok(entries)
+}
+
+/// The tree of `entries`, built in `view` through a private index.
+fn write_tree(view: &Path, scratch: &Path, entries: &[SnapEntry]) -> Result<String> {
+    let index = scratch.join("snapshot.index");
+    let env = [("GIT_INDEX_FILE", index.as_path())];
+    let mut input = Vec::new();
+    for e in entries {
+        input.extend_from_slice(format!("{} {} {}\t", e.mode, e.kind, e.sha).as_bytes());
+        input.extend_from_slice(&e.path);
+        input.push(0);
+    }
+    emi_git::run_with(
+        view,
+        &["update-index", "--add", "-z", "--index-info"],
+        &env,
+        Some(&input),
+    )?;
+    let tree = emi_git::run_with(view, &["write-tree"], &env, None)?;
+    let _ = fs::remove_file(&index);
+    Ok(String::from_utf8_lossy(&tree).trim().to_owned())
 }
 
 /// The working tree as a commit of it would contain it: tracked and

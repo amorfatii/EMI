@@ -33,9 +33,7 @@ fn history(bt: &Backtest) -> Result<Vec<String>> {
     } else {
         format!("{}/", bt.source.trim_end_matches('/'))
     };
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&bt.repo)
+    let out = emi_git::command(&bt.repo)
         .args([
             "log",
             "--format=%H",

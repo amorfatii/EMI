@@ -7,7 +7,6 @@ pub mod hotspots;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::process::Command;
 
 use regex::Regex;
 use serde::Serialize;
@@ -53,9 +52,7 @@ pub struct Query {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let out = emi_git::command(repo)
         .args(args)
         .output()
         .map_err(|e| format!("git {} failed: {e}", args.first().copied().unwrap_or("")))?;
@@ -124,6 +121,21 @@ fn head_time(repo: &Path, head: &str) -> Result<i64> {
 /// the scope-relative path each file has at `head`.
 pub fn mine(q: &Query) -> Result<Vec<Commit>> {
     let ai = Regex::new(&q.ai_pattern).map_err(|e| format!("invalid --ai-pattern: {e}"))?;
+    // the head is resolved in the repository, the history read from a
+    // clean view of its objects: its attributes (a `-diff` that hides line
+    // counts) and drivers do not apply
+    let head = git(
+        &q.repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{}^{{commit}}", q.head),
+        ],
+    )?;
+    let head = String::from_utf8_lossy(&head).trim().to_owned();
+    let view = emi_git::CleanView::of(&q.repo)?;
+    let repo = view.path();
     let prefix = if q.source.is_empty() || q.source == "." {
         String::new()
     } else {
@@ -131,6 +143,8 @@ pub fn mine(q: &Query) -> Result<Vec<Commit>> {
     };
     let mut args = vec![
         "log".to_owned(),
+        "--no-textconv".into(),
+        "--no-ext-diff".into(),
         "-M".into(),
         "--no-merges".into(),
         "-z".into(),
@@ -138,12 +152,12 @@ pub fn mine(q: &Query) -> Result<Vec<Commit>> {
         "--format=%x1e%H%x1f%an%x1f%ae%x1f%ct%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1d)".into(),
     ];
     if let Some(days) = q.days {
-        let since = head_time(&q.repo, &q.head)? - i64::from(days) * 86_400;
+        let since = head_time(repo, &head)? - i64::from(days) * 86_400;
         args.push(format!("--since={since}"));
     }
     args.extend([
         "--end-of-options".into(),
-        q.head.clone(),
+        head.clone(),
         "--".into(),
         if prefix.is_empty() {
             ".".into()
@@ -152,7 +166,7 @@ pub fn mine(q: &Query) -> Result<Vec<Commit>> {
         },
     ]);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let raw = git(&q.repo, &refs)?;
+    let raw = git(repo, &refs)?;
     let text = String::from_utf8_lossy(&raw);
     let mut renamed: HashMap<String, String> = HashMap::new();
     let mut commits = Vec::new();
