@@ -18,6 +18,7 @@ mod historycli;
 mod markdown;
 mod mergecli;
 mod profilecli;
+mod readiness;
 mod report;
 mod sarif;
 mod specgen;

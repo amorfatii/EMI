@@ -124,6 +124,15 @@ most exposed, default 20; `--top 0` lists all) and `change_coupling`.
 Agents get the same profile without mutation through the MCP tool
 `emi_profile` (docs/agents.md).
 
+## In the PR comment
+
+`emi diff --guardrail --format markdown --profile-json profile.json` adds,
+for the functions the change touches, their readiness, lines run and
+wrong changes caught, least verifiable first (docs/ci.md). The profile must
+be of the change's head (`--top 0`, so every function is in it); one of
+another commit is flagged and not used. With `--format json` the same
+section is `changed_readiness`.
+
 ## From profile to task
 
 `emi task draft` writes a supervised task spec for a change to given

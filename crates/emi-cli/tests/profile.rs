@@ -201,3 +201,93 @@ fn emi_measures_coverage_at_the_head_itself() {
     let unknowns = by_name(&failed, "label")["unknowns"].to_string();
     assert!(unknowns.contains("the coverage run failed"), "{unknowns}");
 }
+
+fn emi_out(args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_emi"))
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("emi: {e}"));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn the_pr_comment_shows_the_evidence_behind_changed_functions() {
+    let repo = scratch("prcomment");
+    std::fs::create_dir_all(repo.0.join("src")).unwrap_or_default();
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(repo.0.join("src/pricing.py"), PRICING).unwrap_or_default();
+    std::fs::write(repo.0.join("tests/run.py"), TESTS).unwrap_or_default();
+    std::fs::write(repo.0.join("tests/cov.py"), TRACER).unwrap_or_default();
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "base"]);
+    let stale = repo.0.join("stale.json");
+    let r = repo.0.to_string_lossy().into_owned();
+    emi_out(&[
+        "profile",
+        "--repo",
+        &r,
+        "--source",
+        "src",
+        "--top",
+        "0",
+        "--format",
+        "json",
+        "-o",
+        &stale.to_string_lossy(),
+    ]);
+    std::fs::write(
+        repo.0.join("src/pricing.py"),
+        PRICING.replace("return 10", "return 12"),
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "change shipping"]);
+    let fresh = repo.0.join("fresh.json");
+    emi_out(&[
+        "profile",
+        "--repo",
+        &r,
+        "--source",
+        "src",
+        "--top",
+        "0",
+        "--format",
+        "json",
+        "-o",
+        &fresh.to_string_lossy(),
+        "--coverage-command",
+        "python3 tests/cov.py",
+        "--coverage-output",
+        "cov.lcov",
+        "--",
+        "python3",
+        "tests/run.py",
+    ]);
+    let diff = |profile: &Path| {
+        emi_out(&[
+            "diff",
+            "--repo",
+            &r,
+            "--source",
+            "src",
+            "--before",
+            "HEAD~1",
+            "--after",
+            "HEAD",
+            "--guardrail",
+            "--format",
+            "markdown",
+            "--profile-json",
+            &profile.to_string_lossy(),
+        ])
+    };
+    let md = diff(&fresh);
+    assert!(
+        md.contains("Test evidence for the changed functions"),
+        "{md}"
+    );
+    assert!(md.contains("`src/pricing.py:7 shipping` | ⚠️ weak"), "{md}");
+    assert!(!md.contains("discount"), "only changed functions: {md}");
+    // a profile of another commit is flagged, not used
+    assert!(diff(&stale).contains("Not shown: the profile is of"));
+}

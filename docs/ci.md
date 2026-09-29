@@ -40,6 +40,12 @@ Python tooling (`tools/`) until the Rust adapter exists. The comment comes
 from `emi diff --guardrail --format markdown --link-base URL`. It stays
 under 60 lines (checked in tests), and file names link to the PR head.
 
+With `--profile-json profile.json`, a saved `emi profile --top 0 --format
+json` of the PR head, the comment adds the test evidence behind each
+function the PR changes: its readiness, the lines the tests run, and the
+sampled wrong changes they caught or missed. A profile of another commit is
+flagged, not used. The section is advisory; it gates nothing.
+
 ## GitLab
 
 `ci/emi.gitlab-ci.yml` runs the same job on merge requests. It keeps the

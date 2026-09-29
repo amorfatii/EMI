@@ -63,6 +63,10 @@ pub struct DiffArgs {
     /// Output: the JSON document, or a Markdown PR comment (needs --guardrail).
     #[arg(long, default_value = "json", value_parser = ["json", "markdown"])]
     format: String,
+    /// A saved `emi profile --format json` of AFTER: adds the test evidence
+    /// behind each changed function (advisory).
+    #[arg(long, value_name = "PROFILE", conflicts_with = "worktree")]
+    profile_json: Option<PathBuf>,
     /// Markdown: URL prefix for file links (e.g. https://github.com/o/r/blob/SHA).
     #[arg(long, value_name = "URL")]
     link_base: Option<String>,
@@ -110,8 +114,22 @@ fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
     req.profile = args.profile.into();
     req.history = args.history;
     req.worktree = args.worktree;
-    let change = build_change(&req)?;
+    let mut change = build_change(&req)?;
+    let readiness = match &args.profile_json {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("--profile-json {}: {e}", path.display()))?;
+            let profile = emi_ledger::strict::loads(&text)?;
+            Some(crate::readiness::changed(
+                &profile, &args.repo, &before, &after,
+            ))
+        }
+        None => None,
+    };
     if !args.gate.guardrail {
+        if let Some(r) = readiness {
+            change["changed_readiness"] = r;
+        }
         return Ok((change, 0));
     }
     let report = emi_ledger::review(&change)?;
@@ -126,7 +144,11 @@ fn payload(args: &DiffArgs) -> Result<(Value, u8), String> {
     record.insert("before_ref".into(), Value::from(args.before.clone()));
     record.insert("after_ref".into(), Value::from(args.after.clone()));
     record.insert("probe".into(), Value::from(probe_name(args.probe)));
-    gatecli::apply(report, &args.gate, record).map_err(|e| e.to_string())
+    let (mut out, code) = gatecli::apply(report, &args.gate, record).map_err(|e| e.to_string())?;
+    if let Some(r) = readiness {
+        out["changed_readiness"] = r;
+    }
+    Ok((out, code))
 }
 
 pub fn run(args: &DiffArgs) -> anyhow::Result<u8> {
@@ -145,7 +167,19 @@ pub fn run(args: &DiffArgs) -> anyhow::Result<u8> {
     })?;
     let text = if args.format == "markdown" {
         let source = emi_diff::snapshot::normalize_source(&args.source).unwrap_or_default();
-        crate::markdown::render(&out, &source, args.link_base.as_deref(), 8)
+        let mut md = crate::markdown::render(&out, &source, args.link_base.as_deref(), 8);
+        if !out["changed_readiness"].is_null() {
+            let mut section = Vec::new();
+            crate::readiness::markdown(&out["changed_readiness"], &mut section);
+            md.push_str(
+                &(section.join(
+                    "
+",
+                ) + "
+"),
+            );
+        }
+        md
     } else {
         emi_ledger::pyfmt::dumps_pretty(&out)
     };
