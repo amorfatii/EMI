@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-fn re(p: &str) -> Regex {
+pub(crate) fn re(p: &str) -> Regex {
     Regex::new(p).unwrap_or_else(|e| panic!("bad built-in pattern {p}: {e}"))
 }
 
@@ -205,30 +205,78 @@ pub fn count_assertions(lang: Lang, text: &str) -> usize {
 /// `line` with the contents of its string literals removed (quotes kept),
 /// so a marker quoted in a test name or fixture string is not a marker.
 pub fn strip_strings(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
+    split_strings(line).0
+}
+
+/// One character of a line, by where it sits relative to string literals.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Piece {
+    Code(char),
+    Open(char),
+    Content(char),
+    Close(char),
+}
+
+/// The characters of `line` with their byte offsets, classified by one
+/// quote-aware pass (`"`, `'` and backquote; a backslash escapes the next
+/// character inside a string).
+fn lex(line: &str) -> Vec<(usize, Piece)> {
+    let mut out = Vec::with_capacity(line.len());
     let mut quote: Option<char> = None;
     let mut escaped = false;
-    for c in line.chars() {
-        match quote {
-            Some(q) => {
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' {
-                    escaped = true;
-                } else if c == q {
-                    quote = None;
-                    out.push(c);
-                }
+    for (i, c) in line.char_indices() {
+        let piece = match quote {
+            Some(_) if escaped => {
+                escaped = false;
+                Piece::Content(c)
             }
-            None => {
-                if matches!(c, '"' | '\'' | '`') {
-                    quote = Some(c);
-                }
-                out.push(c);
+            Some(_) if c == '\\' => {
+                escaped = true;
+                Piece::Content(c)
+            }
+            Some(q) if c == q => {
+                quote = None;
+                Piece::Close(c)
+            }
+            Some(_) => Piece::Content(c),
+            None if matches!(c, '"' | '\'' | '`') => {
+                quote = Some(c);
+                Piece::Open(c)
+            }
+            None => Piece::Code(c),
+        };
+        out.push((i, piece));
+    }
+    out
+}
+
+/// `line` split into its code with string contents removed (quotes kept)
+/// and the contents of its string literals, in order. An escaped
+/// character stays escaped in the content (`\"` is kept as written).
+pub fn split_strings(line: &str) -> (String, Vec<String>) {
+    let mut code = String::with_capacity(line.len());
+    let mut strings = Vec::new();
+    let mut current = String::new();
+    for (_, piece) in lex(line) {
+        match piece {
+            Piece::Code(c) | Piece::Open(c) => code.push(c),
+            Piece::Content(c) => current.push(c),
+            Piece::Close(c) => {
+                code.push(c);
+                strings.push(std::mem::take(&mut current));
             }
         }
     }
-    out
+    (code, strings)
+}
+
+/// Byte offset where a `marker` comment starts in `line` (outside string
+/// literals), or the line's length.
+pub fn comment_start(line: &str, marker: char) -> usize {
+    lex(line)
+        .into_iter()
+        .find(|(_, p)| *p == Piece::Code(marker))
+        .map_or(line.len(), |(i, _)| i)
 }
 
 /// What a line of source starts as, for telling a marker in code from one

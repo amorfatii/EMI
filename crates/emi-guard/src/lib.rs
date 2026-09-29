@@ -16,10 +16,12 @@
 //! | `suppress.added` | lint, type-check or EMI suppressions added |
 //! | `code.early_exit` | product code that ends the process or hooks into the test runner |
 //! | `dup.introduced` | added product code that repeats code elsewhere in the tree |
+//! | `gaming.test_sniff/always_equal/test_literals` | product code that passes the tests without doing what they check (Python) |
 //! | `growth.net_sloc/files` | growth beyond the task's budget |
 
 pub mod checks;
 pub mod dup;
+pub mod gaming;
 pub mod patterns;
 pub mod policy;
 
@@ -141,6 +143,7 @@ pub fn evaluate(
     found.extend(checks::tests(repo, base, head, files));
     found.extend(checks::suppress(repo, head, files));
     found.extend(checks::early_exit(repo, head, files));
+    found.extend(gaming::gaming(repo, head, files));
     found.extend(checks::growth(files, policy));
     match dup::introduced(repo, base, head, files) {
         Ok(d) => found.extend(d),

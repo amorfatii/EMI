@@ -23,7 +23,7 @@ pub struct Finding {
     pub evidence: String,
 }
 
-fn finding(
+pub(crate) fn finding(
     id: &'static str,
     path: &str,
     line: Option<u32>,

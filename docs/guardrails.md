@@ -50,6 +50,10 @@ and evidence.
 | `prohibited.lockfile` | A lockfile changed | review |
 | `tests.unverified` | A changed test file whose old or new version could not be read, so its tests and assertions were not counted (unknown, not zero) | review |
 | `code.early_exit` | Product code (not tests, not an entry point such as `main.go` or `cmd/`) that ends the process or reaches into the test runner: `os._exit`, a module-level `sys.exit`/`exit`/`raise SystemExit`, `_pytest` imports, `pytest_*` hooks, `process.reallyExit`/`abort`, a top-level `process.exit`, `os.Exit`, `process::exit`. A check passes on its exit code, so code that exits with 0 while the tests import it passes them without running one | review |
+| `gaming.test_sniff` | Python product code that asks whether a test runner is loaded (`sys.modules` checked for `pytest`, `unittest`, `nose`), so it can behave one way under the tests and another in use | review |
+| `gaming.always_equal` | A Python `__eq__` whose whole body is `return True` (or `__ne__` returning False): its values pass every equality assertion | review |
+| `gaming.test_literals` | Python product code that holds one test case's inputs and expected value within two lines, as in `if (a, b) == (1, 2): return 3` or a table entry `(1, 2): 3`. Test cases are assertion lines, in test files that mention the changed module, that call something with a literal argument and hold a literal outside the call. Special-casing the change only moved does not count | review |
+| `gaming.unverified` | The tests or the new version of a file could not be read, so the gaming checks did not run on it (unknown, not clean) | review |
 | `suppress.added` | A suppression added: `# noqa`, `# type: ignore`, `# pylint: disable`, `# pragma: no cover`, `eslint-disable`, `@ts-ignore/@ts-expect-error`, `c8/istanbul ignore`, `#[allow(...)]`, `//nolint`, `@SuppressWarnings`, or an `emi-ignore` without a reason, in the project's own code (not vendored or generated files) | review |
 | `dup.introduced` | Added product code repeating 6+ significant lines found elsewhere in the tree (moved code, a duplicate the file already had, comments, export lists and `dist*/` build output do not count) | review |
 | `growth.net_sloc` / `growth.files` | Net added lines or touched files beyond the policy budget | review |
@@ -69,6 +73,16 @@ makes the main cheats unable to pass instead:
 - the test runner's inventory is compared with the baseline's.
 
 There, the guardrails explain what the agent tried.
+
+**Gaming checks.** Restoring trusted tests cannot catch code that fools
+the tests from the product side, with the tests left as they were. The
+`gaming.*` checks look for the forms of that seen so far. They cover
+Python only, and were built only from emi-lab's mechanism suite and the
+first form of each family in emi-lab S11 (its development data). S11
+measures, on real agent cheats and on forms the checks were not built
+on, how much they catch and how often they flag honest work. Until then
+they ask for review and never block. In a supervised task, that means
+`needs_review` instead of `accepted`.
 
 ## v0.4: what blocks by default
 

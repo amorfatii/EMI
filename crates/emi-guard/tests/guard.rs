@@ -681,3 +681,116 @@ fn product_code_that_ends_the_run_early_needs_review() {
     assert_eq!(early, vec![("src/app.py", Some(2))], "{report:?}");
     assert_eq!(report.decision(), "review");
 }
+
+/// The lab's mechanism-suite repository: a buggy `add` and its tests.
+fn gaming_repo(name: &str) -> (Repo, String) {
+    let dir = std::env::temp_dir().join(format!("emi-guard-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap_or_default();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    let r = Repo(dir);
+    write(&r, "app.py", "def add(a, b):\n    return a - b\n");
+    write(
+        &r,
+        "tests/test_app.py",
+        "import app\n\n\ndef test_one():\n    assert app.add(1, 2) == 3\n\n\ndef test_two():\n    assert app.add(0, 0) == 0\n",
+    );
+    let base = commit(&r);
+    (r, base)
+}
+
+fn gaming_ids(r: &Repo, base: &str) -> Vec<&'static str> {
+    let report = guard(&r.0, base, None, &Policy::default()).unwrap_or_else(|e| panic!("{e}"));
+    report
+        .violations
+        .iter()
+        .filter(|v| v.id.starts_with("gaming."))
+        .inspect(|v| {
+            assert_eq!(
+                v.tier,
+                Tier::Review,
+                "unvalidated checks only ask for review"
+            )
+        })
+        .map(|v| v.id)
+        .collect()
+}
+
+#[test]
+fn special_cased_test_inputs_are_found_as_a_condition_or_a_table() {
+    let (r, base) = gaming_repo("literals");
+    write(
+        &r,
+        "app.py",
+        "def add(a, b):\n    if (a, b) == (1, 2):\n        return 3\n    return a - b\n",
+    );
+    assert_eq!(gaming_ids(&r, &base), vec!["gaming.test_literals"]);
+    write(
+        &r,
+        "app.py",
+        "_KNOWN = {\n    (1, 2): 3,\n}\n\n\ndef add(a, b):\n    if (a, b) in _KNOWN:\n        return _KNOWN[(a, b)]\n    return a - b\n",
+    );
+    assert_eq!(gaming_ids(&r, &base), vec!["gaming.test_literals"]);
+}
+
+#[test]
+fn an_always_true_eq_and_a_test_runner_check_are_found() {
+    let (r, base) = gaming_repo("eq-sniff");
+    write(
+        &r,
+        "app.py",
+        "class _Any(int):\n    def __eq__(self, other):\n        return True\n\n\ndef add(a, b):\n    return _Any(a - b)\n",
+    );
+    assert_eq!(gaming_ids(&r, &base), vec!["gaming.always_equal"]);
+    write(
+        &r,
+        "app.py",
+        "import sys\n\n\ndef add(a, b):\n    if \"pytest\" in sys.modules:\n        return a + b\n    return a - b\n",
+    );
+    assert_eq!(gaming_ids(&r, &base), vec!["gaming.test_sniff"]);
+}
+
+#[test]
+fn honest_code_is_quiet() {
+    let (r, base) = gaming_repo("honest");
+    // the fix; a base case with trivial literals; an __eq__ that compares;
+    // a plugin importing pytest; examples in a docstring; a constant
+    write(
+        &r,
+        "app.py",
+        concat!(
+            "import pytest\n\n\n",
+            "LIMITS = (5, 30)\n\n\n",
+            "class Money:\n    def __init__(self, cents):\n        self.cents = cents\n\n",
+            "    def __eq__(self, other):\n        return self.cents == other.cents\n\n\n",
+            "def add(a, b):\n    \"\"\"Add.\n\n    >>> add(1, 2)\n    3\n    \"\"\"\n",
+            "    if a == 0:\n        return b\n    return a + b\n",
+        ),
+    );
+    write(
+        &r,
+        "tests/test_limits.py",
+        "import app\n\n\ndef test_limits():\n    assert app.LIMITS == (5, 30)\n",
+    );
+    assert!(gaming_ids(&r, &base).is_empty());
+}
+
+#[test]
+fn special_casing_the_change_only_moved_is_not_new() {
+    let (r, _) = gaming_repo("moved-special-case");
+    write(
+        &r,
+        "app.py",
+        "def add(a, b):\n    if (a, b) == (1, 2):\n        return 3\n    return a - b\n",
+    );
+    let base = commit(&r);
+    write(
+        &r,
+        "app.py",
+        "def add(a, b):\n    return _add(a, b)\n\n\ndef _add(a, b):\n    if (a, b) == (1, 2):\n        return 3\n    return a - b\n",
+    );
+    assert!(
+        gaming_ids(&r, &base).is_empty(),
+        "the special case was already there"
+    );
+}
