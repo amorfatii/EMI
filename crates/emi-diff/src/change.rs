@@ -10,7 +10,7 @@ use emi_ledger::pyfmt::digest;
 use emi_scan::{OnSyntaxError, Options, Probe, ScanError};
 use serde_json::{Map, Value, json};
 
-use crate::snapshot::{self, Inventory, Result};
+use crate::snapshot::{self, Inventory, Result, TempDir};
 
 /// What to measure and how; mirrors `build_change`'s keyword arguments.
 #[derive(Clone, Debug)]
@@ -275,8 +275,8 @@ fn pin(req: &Request) -> Result<Pinned> {
 
 fn measure_both(req: &Request, pinned: &Pinned, source: &str) -> Result<[Side; 2]> {
     let tmp = TempDir::new("emi-diff-")?;
-    let before = measure(req, &pinned.before, &tmp.path.join("ref0"), source, false)?;
-    let after = measure(req, &pinned.after, &tmp.path.join("ref1"), source, false)?;
+    let before = measure(req, &pinned.before, &tmp.path().join("ref0"), source, false)?;
+    let after = measure(req, &pinned.after, &tmp.path().join("ref1"), source, false)?;
     Ok([before, after])
 }
 
@@ -336,7 +336,7 @@ pub fn measure_ref(req: &Request, reference: &str) -> Result<(String, Option<Val
         snapshot::resolve_ref(&req.repo, reference)?
     };
     let tmp = TempDir::new("emi-measure-")?;
-    let side = measure(req, &sha, &tmp.path.join("ref"), &source, true)?;
+    let side = measure(req, &sha, &tmp.path().join("ref"), &source, true)?;
     Ok((sha, side.measurement))
 }
 
@@ -444,31 +444,4 @@ pub fn build_change(req: &Request) -> Result<Value> {
     }
     emi_ledger::contracts::validate_change(&change)?;
     Ok(change)
-}
-
-/// A temporary directory removed on drop.
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(prefix: &str) -> Result<Self> {
-        let base = std::env::temp_dir();
-        for attempt in 0u32..100 {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.subsec_nanos());
-            let path = base.join(format!("{prefix}{}-{nanos}-{attempt}", std::process::id()));
-            if std::fs::create_dir(&path).is_ok() {
-                return Ok(TempDir { path });
-            }
-        }
-        Err("cannot create a temporary directory".into())
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
 }

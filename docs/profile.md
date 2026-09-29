@@ -133,6 +133,16 @@ be of the change's head (`--top 0`, so every function is in it); one of
 another commit is flagged and not used. With `--format json` the same
 section is `changed_readiness`.
 
+## In the HTML report
+
+`emi report --profile-json profile.json` adds a Test evidence section:
+functions by readiness and the least verifiable of the most changed ones,
+with the lines run and wrong changes caught. The profile must be of the
+reported commit (`--head`, and `--top 0` so every function is in it); one
+of another commit is flagged and not used. The rest of the report does not
+need it, so a report can be written first and rewritten with the profile
+once the mutation run has finished.
+
 ## From profile to task
 
 `emi task draft` writes a supervised task spec for a change to given

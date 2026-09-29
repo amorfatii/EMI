@@ -14,6 +14,38 @@ use emi_ir::pyrepr;
 
 pub type Result<T> = std::result::Result<T, String>;
 
+/// A scratch directory for materialized revisions, created fresh (never
+/// one that already exists) and removed on drop.
+pub struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    pub fn new(prefix: &str) -> Result<Self> {
+        let base = std::env::temp_dir();
+        for attempt in 0u32..100 {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            let path = base.join(format!("{prefix}{}-{nanos}-{attempt}", std::process::id()));
+            if std::fs::create_dir(&path).is_ok() {
+                return Ok(TempDir { path });
+            }
+        }
+        Err("cannot create a temporary directory".into())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 fn is_sha(s: &str) -> bool {
     matches!(s.len(), 40 | 64)
         && s.bytes()

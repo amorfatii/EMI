@@ -43,7 +43,10 @@ GitHub workflow that gates PRs and uploads annotations.
 
 Editor: `emi lsp` shows rule diagnostics, erosion hints and per-function
 burden-delta code lenses (`docs/editor.md`). Reports: `emi report` writes a
-self-contained HTML report; `emi diff --format markdown` a PR comment.
+self-contained HTML report (a map of the codebase by size and change,
+hotspots, what the burden is made of, files that change together, rule
+findings; `--profile-json` adds the test evidence of a saved profile,
+docs/profile.md); `emi diff --format markdown` a PR comment.
 
 Supervised tasks: `emi task create|verify|complete` freezes a task
 contract outside the repo and verifies candidates by running its checks in
