@@ -556,6 +556,7 @@ type Totals = std::collections::BTreeMap<String, (Side, Side, Vec<(String, i64)>
 /// Summing across files keeps a split or move from reading as removal.
 fn counts(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> Vec<Finding> {
     let mut totals: Totals = BTreeMap::new();
+    let mut unknown = Vec::new();
     for fc in files
         .iter()
         .filter(|f| !f.binary && f.status != Status::Deleted && is_test(&f.path))
@@ -563,8 +564,19 @@ fn counts(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> 
         let Some(lang) = lang_of(&fc.path) else {
             continue;
         };
-        // a side that cannot be read is unknown, not empty
+        // a side that cannot be read is unknown, not empty: say so
+        let unread = |side: &str| {
+            finding(
+                "tests.unverified",
+                &fc.path,
+                None,
+                format!(
+                    "cannot read the {side} version; its tests and assertions were not counted"
+                ),
+            )
+        };
         let Some(new) = text_at(repo, head, &fc.path) else {
+            unknown.push(unread("changed"));
             continue;
         };
         let old = if fc.status == Status::Added {
@@ -572,6 +584,7 @@ fn counts(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> 
         } else {
             let Some(old) = text_at(repo, Some(base), fc.old_path.as_deref().unwrap_or(&fc.path))
             else {
+                unknown.push(unread("baseline"));
                 continue;
             };
             old
@@ -585,7 +598,7 @@ fn counts(repo: &Path, base: &str, head: Option<&str>, files: &[FileChange]) -> 
             .2
             .push((fc.path.clone(), (t1 + a1) as i64 - (t0 + a0) as i64));
     }
-    let mut out = Vec::new();
+    let mut out = unknown;
     for ((t0, a0), (t1, a1), per_file) in totals.into_values() {
         let files = per_file.len();
         // report at the file that lost the most
@@ -688,6 +701,27 @@ mod tests {
         assert!(nox_line_is_test(NOX, 5), "body of the tests session");
         assert!(!nox_line_is_test(NOX, 7), "decorator of the mypy session");
         assert!(!nox_line_is_test(NOX, 9), "body of the typing session");
+    }
+
+    #[test]
+    fn an_unreadable_test_file_is_reported_not_skipped() {
+        let change = FileChange {
+            path: "tests/test_app.py".into(),
+            old_path: None,
+            status: Status::Modified,
+            binary: false,
+            added: Vec::new(),
+            removed: Vec::new(),
+        };
+        // neither side can be read from a repository that is not there
+        let found = counts(
+            Path::new("/nonexistent-emi-repo"),
+            "a",
+            Some("b"),
+            &[change],
+        );
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].id, "tests.unverified");
     }
 
     #[test]

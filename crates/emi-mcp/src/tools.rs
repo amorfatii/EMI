@@ -404,6 +404,10 @@ fn task_store(args: &Value) -> Result<(emi_controller::Store, Value), String> {
         .get("task")
         .and_then(Value::as_str)
         .ok_or("task is required")?;
+    // before the id becomes part of a path
+    if !emi_controller::contract::valid_task_id(task) {
+        return Err(format!("invalid task id {task:?}"));
+    }
     let probe = emi_controller::Store {
         dir: authority.join(task),
     };

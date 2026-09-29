@@ -936,3 +936,35 @@ fn concurrent_verifications_are_all_charged_and_logged_whole() {
     );
     assert_eq!(store.rows("decision").map(|r| r.len()).unwrap_or(0), 4);
 }
+
+#[test]
+fn a_dummy_test_does_not_hide_moved_product_code() {
+    let (repo, _a, store) = refactor_task("rf-dummy");
+    // the nested logic moved into a product module that also defines one
+    // trivial test, which used to leave the module out of the measurement
+    std::fs::write(
+        repo.0.join("helpers.py"),
+        format!("{NESTED}\n\ndef test_dummy():\n    assert True\n"),
+    )
+    .unwrap_or_default();
+    std::fs::write(
+        repo.0.join("app.py"),
+        "from helpers import classify  # noqa: F401\n",
+    )
+    .unwrap_or_default();
+    let d = check(&store, Candidate::Worktree);
+    assert_eq!(
+        d["gates"]["refactor"]["state"], "fail",
+        "{}",
+        d["gates"]["refactor"]
+    );
+    assert!(d["gates"]["refactor"]["after"]["files"]["helpers.py"].is_object());
+}
+
+#[test]
+fn task_ids_never_become_paths_outside_the_authority() {
+    let (_repo, authority, _store) = buggy_task("tid");
+    for id in ["../tid", "tid/../../x", ""] {
+        assert!(Store::open(&authority.0, id, &_repo.0).is_err(), "{id:?}");
+    }
+}

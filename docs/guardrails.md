@@ -48,6 +48,7 @@ and evidence.
 | `prohibited.secret` | A secret-like file (`.env*` other than templates, `*.pem` with a private key, `id_rsa*`, `.npmrc`, …) changed | review |
 | `prohibited.vendored` | Vendored third-party code (`vendor/`, `node_modules/`, `third_party/`, CMake `_deps/`) changed | review (block until v0.3) |
 | `prohibited.lockfile` | A lockfile changed | review |
+| `tests.unverified` | A changed test file whose old or new version could not be read, so its tests and assertions were not counted (unknown, not zero) | review |
 | `code.early_exit` | Product code (not tests, not an entry point such as `main.go` or `cmd/`) that ends the process or reaches into the test runner: `os._exit`, a module-level `sys.exit`/`exit`/`raise SystemExit`, `_pytest` imports, `pytest_*` hooks, `process.reallyExit`/`abort`, a top-level `process.exit`, `os.Exit`, `process::exit`. A check passes on its exit code, so code that exits with 0 while the tests import it passes them without running one | review |
 | `suppress.added` | A suppression added: `# noqa`, `# type: ignore`, `# pylint: disable`, `# pragma: no cover`, `eslint-disable`, `@ts-ignore/@ts-expect-error`, `c8/istanbul ignore`, `#[allow(...)]`, `//nolint`, `@SuppressWarnings`, or an `emi-ignore` without a reason, in the project's own code (not vendored or generated files) | review |
 | `dup.introduced` | Added product code repeating 6+ significant lines found elsewhere in the tree (moved code, a duplicate the file already had, comments, export lists and `dist*/` build output do not count) | review |

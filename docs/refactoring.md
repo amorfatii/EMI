@@ -51,7 +51,7 @@ src/app.py:1 classify  graded 9.8 (complexity 6.0, size 3.8)  cognitive 12 = 4 s
 | `envelope` | The targets, files next to them (new helpers), and tests. Test-runner configuration is protected: changing it rejects the candidate |
 | `checks` | The test command, run by EMI itself in a snapshot of the candidate |
 
-The `refactor` gate measures the targets plus **every source file the candidate adds or modifies**, before and after; only files that define tests are left out. So moving code into a new or existing module, or into a helper under `tests/`, is not a reduction.
+The `refactor` gate measures the targets plus **every source file the candidate adds or modifies**, before and after; only test files (in the test layout, and defining tests) are left out. A product module that also defines a test stays measured, so moving code next to a dummy test is not a reduction either. So moving code into a new or existing module, or into a helper under `tests/`, is not a reduction.
 
 It reads the submitted tree from a copy no check ran in, so code that rewrites itself at run time is measured as committed. A changed file that cannot be read or parsed makes the gate `unverified`: unmeasured code never counts as simpler.
 

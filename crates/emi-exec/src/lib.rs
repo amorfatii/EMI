@@ -139,12 +139,16 @@ fn resolve_isolation(isolation: &Isolation) -> Option<bool> {
     }
 }
 
-/// The sandbox's launcher: it proves the sandbox came up by creating the
-/// marker file (argument 0), then replaces itself with the command. The
+/// The sandbox's launcher: it proves the sandbox came up and found the
+/// command by writing the token (argument 0) as the first line of stderr,
+/// then replaces itself with the command. Bytes already written cannot be
+/// taken back, so the command cannot make its own failure look like a
+/// sandbox that never started (a marker file could be deleted). The
 /// command's argv is passed through as arguments, never interpreted.
-const LAUNCHER: &str = r#"command -v "$1" >/dev/null 2>&1 || exit 127; : > "$0"; exec "$@""#;
+const LAUNCHER: &str =
+    r#"command -v "$1" >/dev/null 2>&1 || exit 127; printf '%s\n' "$0" >&2; exec "$@""#;
 
-fn command(spec: &Spec, bwrap: Option<bool>, marker: Option<&std::path::Path>) -> Command {
+fn command(spec: &Spec, bwrap: Option<bool>, token: Option<&str>) -> Command {
     let mut cmd = match bwrap {
         None => {
             let mut c = Command::new(&spec.argv[0]);
@@ -175,17 +179,14 @@ fn command(spec: &Spec, bwrap: Option<bool>, marker: Option<&std::path::Path>) -
                     c.arg("--ro-bind").arg(ro).arg(ro);
                 }
             }
-            if let Some(m) = marker.and_then(std::path::Path::parent) {
-                c.arg("--bind").arg(m).arg(m);
-            }
             c.args(["--chdir", &cwd]);
             if !network {
                 c.arg("--unshare-net");
             }
             c.arg("--");
-            match marker {
-                Some(m) => {
-                    c.args(["/bin/sh", "-c", LAUNCHER]).arg(m).args(&spec.argv);
+            match token {
+                Some(t) => {
+                    c.args(["/bin/sh", "-c", LAUNCHER, t]).args(&spec.argv);
                 }
                 None => {
                     c.args(&spec.argv);
@@ -267,14 +268,12 @@ fn wait(
     }
 }
 
-/// A fresh directory for the launcher's readiness marker.
-fn ready_dir() -> std::io::Result<PathBuf> {
+/// A token for one launch: unique per run, so no earlier output matches.
+fn launch_token() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let d = std::env::temp_dir().join(format!("emi-ready-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&d)?;
-    Ok(d)
+    format!("emi-sandbox-ready-{}-{nanos}", std::process::id())
 }
 
 /// Run the command; never returns before its group is gone.
@@ -298,20 +297,11 @@ pub fn run(spec: &Spec) -> Outcome {
     }
     receipt.read_only_enforced = bwrap.is_some() && !spec.read_only.is_empty();
     receipt.hidden_enforced = bwrap.is_some() && !spec.hidden.is_empty();
-    // readiness: the launcher creates this file once the sandbox is up
-    let ready_dir = match bwrap.map(|_| ready_dir()).transpose() {
-        Ok(d) => d,
-        Err(e) => return not_launched(format!("readiness directory: {e}"), receipt),
-    };
-    let marker = ready_dir.as_ref().map(|d| d.join("ready"));
-    let mut child = match command(spec, bwrap, marker.as_deref()).spawn() {
+    // readiness: the launcher writes this token once the sandbox is up
+    let token = bwrap.map(|_| launch_token());
+    let mut child = match command(spec, bwrap, token.as_deref()).spawn() {
         Ok(c) => c,
-        Err(e) => {
-            if let Some(d) = &ready_dir {
-                let _ = std::fs::remove_dir_all(d);
-            }
-            return not_launched(format!("{}: {e}", spec.argv[0]), receipt);
-        }
+        Err(e) => return not_launched(format!("{}: {e}", spec.argv[0]), receipt),
     };
     let pgid = i32::try_from(child.id()).ok();
     let started = pgid.and_then(platform::start_time);
@@ -331,12 +321,20 @@ pub fn run(spec: &Spec) -> Outcome {
     };
     receipt.verified_clean = receipt.group_empty && (subreaper || receipt.pid_namespace);
     let (stdout, stdout_bytes) = out.and_then(|h| h.join().ok()).unwrap_or_default();
-    let (stderr, stderr_bytes) = err.and_then(|h| h.join().ok()).unwrap_or_default();
+    let (mut stderr, mut stderr_bytes) = err.and_then(|h| h.join().ok()).unwrap_or_default();
     let (exit_code, signal) = status.map_or((None, None), platform::exit_parts);
-    let launched = marker.as_ref().is_none_or(|m| m.exists());
-    if let Some(d) = &ready_dir {
-        let _ = std::fs::remove_dir_all(d);
-    }
+    let launched = match &token {
+        None => true,
+        Some(t) => {
+            let line = format!("{t}\n");
+            let found = stderr.starts_with(line.as_bytes());
+            if found {
+                stderr.drain(..line.len());
+                stderr_bytes = stderr_bytes.saturating_sub(line.len() as u64);
+            }
+            found
+        }
+    };
     if !launched && !timed_out {
         // the sandbox never came up, or the command does not exist: an
         // environment fault, not the candidate's result

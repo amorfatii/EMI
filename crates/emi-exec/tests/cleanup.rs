@@ -208,3 +208,28 @@ fn hidden_paths_are_unreadable_except_what_is_mounted_back() {
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&secret);
 }
+
+#[test]
+fn a_command_cannot_disown_its_launch() {
+    if !emi_exec::bwrap_available() {
+        return;
+    }
+    let ws = scratch("launch");
+    // a failing command is the command's failure, not a sandbox that
+    // never started, whatever it does to the filesystem
+    let mut s = Spec::new(&["/bin/sh", "-c", "echo oops >&2; exit 3"], &ws);
+    s.isolation = Isolation::Bwrap { network: false };
+    let o = run(&s);
+    assert_eq!(o.status, Status::Exited, "{o:?}");
+    assert_eq!(o.exit_code, Some(3));
+    assert_eq!(
+        o.stderr, "oops\n",
+        "the launch token is not part of the output"
+    );
+    let missing = Spec {
+        isolation: Isolation::Bwrap { network: false },
+        ..Spec::new(&["emi-no-such-command"], &ws)
+    };
+    assert_eq!(run(&missing).status, Status::NotLaunched);
+    let _ = std::fs::remove_dir_all(&ws);
+}

@@ -70,6 +70,7 @@ pub fn default_tier(id: &str) -> Tier {
             | "tests.config_changed"
             | "tests.skip_new_test"
             | "tests.assertion_trivialized"
+            | "tests.unverified"
     ) {
         return Tier::Review;
     }

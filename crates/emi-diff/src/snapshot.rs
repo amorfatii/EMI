@@ -324,8 +324,10 @@ fn write_entry(dest: &Path, entry: &Entry, blob: &[u8]) -> Result<()> {
     let shown = pyrepr::string(&String::from_utf8_lossy(&entry.path));
     let target = dest.join(&rel);
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("cannot write {shown}: {e}"))?;
+        // checked before creating anything: a symlink written earlier must
+        // not lead directory creation outside the tree
         assert_contained(dest, parent)?;
+        fs::create_dir_all(parent).map_err(|e| format!("cannot write {shown}: {e}"))?;
     }
     if entry.mode == "120000" {
         let link = os_path(blob);

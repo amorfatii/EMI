@@ -11,6 +11,7 @@
 //! | `tests.fewer` / `tests.fewer_assertions` | fewer test cases / assertions in a changed test file |
 //! | `tests.skip_added` | skip, ignore or xfail markers added |
 //! | `tests.config_changed` | test or coverage configuration changed |
+//! | `tests.unverified` | a changed test file that could not be read, so it was not counted |
 //! | `prohibited.lockfile/ci/secret/vendored` | changes to those file classes unless allowed |
 //! | `suppress.added` | lint, type-check or EMI suppressions added |
 //! | `code.early_exit` | product code that ends the process or hooks into the test runner |

@@ -8,8 +8,8 @@
 //! only required not to rise. Every source file the candidate adds or
 //! modifies is measured with the targets, on both sides, so moving code
 //! out of the target (into a new or existing module, or a helper under a
-//! test directory) is not a reduction; only files that define tests are
-//! left out. Extracting nested code into helpers does lower cognitive
+//! test directory) is not a reduction; only test files (in the test
+//! layout, defining tests) are left out. Extracting nested code into helpers does lower cognitive
 //! complexity (nesting penalties reset), so a pass is evidence of
 //! flatter code, not proof of a better design.
 //!
@@ -174,9 +174,13 @@ pub fn gate(
                 None
             }
         };
-        // test code is not the product being refactored
+        // test code is not the product being refactored: a file in the
+        // test layout that defines tests. A product file that also defines
+        // a test stays measured, or moving code into it next to one dummy
+        // test would count as simplification
         let is_test = |t: &Option<String>| t.as_deref().is_some_and(|t| defines_tests(path, t));
-        if !targets.iter().any(|g| fnmatch(path, g)) && (is_test(&old) || is_test(&new)) {
+        let test_file = emi_scan::classify::is_test(path) && (is_test(&old) || is_test(&new));
+        if !targets.iter().any(|g| fnmatch(path, g)) && test_file {
             continue;
         }
         if let Some(t) = &old {

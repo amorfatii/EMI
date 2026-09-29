@@ -330,6 +330,10 @@ fn store(
     task: &str,
     repo: Option<&PathBuf>,
 ) -> anyhow::Result<emi_controller::Store> {
+    // before the id becomes part of a path
+    if !emi_controller::contract::valid_task_id(task) {
+        anyhow::bail!("invalid task id {task:?}");
+    }
     let repo = match repo {
         Some(r) => r.clone(),
         None => {
@@ -444,7 +448,15 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
     }
 }
 
+/// `s` as one POSIX shell word, whatever it contains.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn install_hook(a: &HookArgs) -> anyhow::Result<u8> {
+    if !emi_controller::contract::valid_task_id(&a.task) {
+        anyhow::bail!("invalid task id {:?}", a.task);
+    }
     let git_dir = emi_git::run(&a.repo, &["rev-parse", "--git-dir"]).map_err(anyhow::Error::msg)?;
     let git_dir = a.repo.join(String::from_utf8_lossy(&git_dir).trim());
     let hook = git_dir.join("hooks").join("pre-push");
@@ -457,10 +469,10 @@ fn install_hook(a: &HookArgs) -> anyhow::Result<u8> {
     let exe = std::env::current_exe()?;
     let authority = std::fs::canonicalize(&a.authority)?;
     let script = format!(
-        "#!/bin/sh\n# Installed by emi: pushes must carry a completed supervised task.\nexec '{}' task hook-check --authority '{}' --task '{}' --candidate HEAD\n",
-        exe.display(),
-        authority.display(),
-        a.task
+        "#!/bin/sh\n# Installed by emi: pushes must carry a completed supervised task.\nexec {} task hook-check --authority {} --task {} --candidate HEAD\n",
+        sh_quote(&exe.to_string_lossy()),
+        sh_quote(&authority.to_string_lossy()),
+        sh_quote(&a.task)
     );
     std::fs::create_dir_all(hook.parent().unwrap_or(&git_dir))?;
     std::fs::write(&hook, script)?;
@@ -480,5 +492,22 @@ pub fn run(cmd: &TaskCommand) -> anyhow::Result<u8> {
         TaskCommand::RefactorSpec(a) => specgen::refactor_spec(a),
         TaskCommand::Draft(a) => specgen::draft(a),
         other => supervised(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sh_quote;
+
+    #[test]
+    fn quoted_words_survive_the_shell() {
+        for word in ["plain", "it's", "a b", "$(touch x)", "'\"; rm -rf ~; \"'"] {
+            let out = std::process::Command::new("sh")
+                .args(["-c", &format!("printf %s {}", sh_quote(word))])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            assert_eq!(out, word);
+        }
     }
 }
