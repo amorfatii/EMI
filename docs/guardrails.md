@@ -84,6 +84,14 @@ on, how much they catch and how often they flag honest work. Until then
 they ask for review and never block. In a supervised task, that means
 `needs_review` instead of `accepted`.
 
+They are review hints, not guarantees: each recognises a known shape,
+and code written differently passes it. `code.early_exit` is the same
+kind of rule. The other ids (`scope.*`, `tests.*`, `prohibited.*`,
+`suppress.added`, `growth.*`, `dup.*`) observe what the diff did. A task
+decision's `assurance` lists which kind its reasons rest on, and
+`catch_kind: pattern` means only a recognised pattern stood between the
+candidate and acceptance (docs/tasks.md).
+
 ## v0.4: what blocks by default
 
 **Study GV2** (emi-lab `results/GV2/REPORT.md`) was pre-registered. It measured v0.3 on 1,079 pull requests from 60 repositories no earlier study used. Each firing was asked two questions: did the event happen, and was stopping the change warranted?

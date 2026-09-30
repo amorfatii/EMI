@@ -1421,3 +1421,75 @@ fn status_lists_open_escalations_and_the_hook_mentions_them() {
     let (ok, msg) = hook_check(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));
     assert!(!ok && msg.contains("1 open escalation(s)"), "{msg}");
 }
+
+/// The `structural` and `pattern` lists and `catch_kind` of a decision.
+fn assurance_of(d: &Value) -> (Vec<String>, Vec<String>, &str) {
+    let list = |k: &str| -> Vec<String> {
+        d["assurance"][k]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str().map(str::to_owned))
+            .collect()
+    };
+    (
+        list("structural"),
+        list("pattern"),
+        d["assurance"]["catch_kind"].as_str().unwrap_or(""),
+    )
+}
+
+#[test]
+fn an_envelope_violation_is_a_structural_catch() {
+    let (repo, _authority, store) = buggy_task("as-env");
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    std::fs::write(repo.0.join("README.md"), "scope creep\n").unwrap_or_default();
+    let d = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&d), "rejected", "{d}");
+    let (structural, pattern, kind) = assurance_of(&d);
+    assert_eq!(structural, ["envelope"], "{d}");
+    assert!(pattern.is_empty(), "{d}");
+    assert_eq!(kind, "structural", "{d}");
+    assert_eq!(d["assurance"]["isolation"], "sandboxed", "{d}");
+}
+
+#[test]
+fn a_candidate_flagged_only_by_a_gaming_rule_is_a_pattern_catch() {
+    let (repo, _a, store) = guarded_task("as-gaming", json!({}));
+    // fixed, but it asks whether the test runner is loaded
+    std::fs::write(
+        repo.0.join("app.py"),
+        "import sys\n\nUNDER_TEST = 'pytest' in sys.modules\n\n\ndef add(a, b):\n    return a + b\n",
+    )
+    .unwrap_or_default();
+    let d = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    let (structural, pattern, kind) = assurance_of(&d);
+    assert!(structural.is_empty(), "{d}");
+    assert_eq!(pattern, ["gaming.test_sniff:app.py"], "{d}");
+    assert_eq!(kind, "pattern", "{d}");
+}
+
+#[test]
+fn an_accepted_candidate_rests_on_no_catch() {
+    let (repo, _authority, store) = buggy_task("as-ok");
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    let d = check(&store, Candidate::Worktree);
+    assert_eq!(decision(&d), "accepted", "{d}");
+    assert_eq!(
+        d["assurance"],
+        json!({"structural": [], "pattern": [], "catch_kind": "none", "isolation": "sandboxed"}),
+        "{d}"
+    );
+}
+
+#[test]
+fn an_escalation_hold_is_a_structural_catch_naming_the_escalation() {
+    let (_repo, _a, store) = escalated_task("as-esc");
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    let (structural, pattern, kind) = assurance_of(&d);
+    assert_eq!(structural, ["escalation:1"], "{d}");
+    assert!(pattern.is_empty(), "{d}");
+    assert_eq!(kind, "structural", "{d}");
+}

@@ -112,7 +112,12 @@ The full workflow, permissions and SARIF upload are in
   [docs/tasks.md](docs/tasks.md).
 - **Guardrails.** `emi guard` flags deleted or weakened tests, edits to
   prohibited paths, new lint suppressions and duplicated code
-  ([docs/guardrails.md](docs/guardrails.md)).
+  ([docs/guardrails.md](docs/guardrails.md)). Its `gaming.*` rules
+  recognise known shapes of test gaming: they are review hints, not
+  guarantees, since code written differently passes them. Verification
+  relies on the structural checks (restored and held-out tests, the test
+  inventory, the envelope), and each decision's `assurance` says which
+  kind of evidence it rests on.
 - **Agent tools.** `emi mcp` gives agents the gate, explanations and
   hotspots over the Model Context Protocol ([docs/agents.md](docs/agents.md)).
 

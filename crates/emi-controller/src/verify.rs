@@ -675,65 +675,120 @@ fn ids_in(ledger: &[Value], state: &str) -> Vec<String> {
         .collect()
 }
 
+/// One reason for a decision and the signals it rests on.
+struct Reason {
+    text: String,
+    signals: Vec<Signal>,
+}
+
+/// What a reason rests on: a structural check (`envelope`,
+/// `verification.inventory`, ...) or a guardrail finding, whose kind its
+/// id decides.
+enum Signal {
+    Structural(String),
+    Guard { id: String, path: String },
+}
+
+impl Reason {
+    fn new(text: String, signal: &str) -> Reason {
+        Reason {
+            text,
+            signals: vec![Signal::Structural(signal.to_owned())],
+        }
+    }
+}
+
+/// The guardrail findings of one tier, as a reason's signals.
+fn guard_signals(gate: &Value, tier: &str) -> Vec<Signal> {
+    gate["violations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| v["tier"] == tier)
+        .map(|v| Signal::Guard {
+            id: v["id"].as_str().unwrap_or("").to_owned(),
+            path: v["path"].as_str().unwrap_or("").to_owned(),
+        })
+        .collect()
+}
+
 /// Why the verification gate rejects the candidate: tests missing from
 /// the inventory, runner configuration added under the `reject` policy.
-fn verification_rejections(v: &Value) -> Vec<String> {
+fn verification_rejections(v: &Value) -> Vec<Reason> {
     let mut reasons = Vec::new();
     if v["state"] != "fail" {
         return reasons;
     }
     if v["inventory"]["state"] == "fail" {
-        reasons.push(format!(
-            "{} test(s) of the baseline are missing from the candidate's inventory",
-            v["inventory"]["missing"].as_array().map_or(0, Vec::len)
+        reasons.push(Reason::new(
+            format!(
+                "{} test(s) of the baseline are missing from the candidate's inventory",
+                v["inventory"]["missing"].as_array().map_or(0, Vec::len)
+            ),
+            "verification.inventory",
         ));
     }
     let added = globs(&v["added_runner_config"]);
     if v["runner_config"] == "reject" && !added.is_empty() {
-        reasons.push(format!(
-            "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
-            added.join(", ")
+        reasons.push(Reason::new(
+            format!(
+                "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
+                added.join(", ")
+            ),
+            "verification.runner_config",
         ));
     }
     reasons
 }
 
 /// Why the candidate is rejected (empty: it is not).
-fn rejections(ledger: &[Value], g: &Gates) -> Vec<String> {
+fn rejections(ledger: &[Value], g: &Gates) -> Vec<Reason> {
     let mut reasons = Vec::new();
     let failed = ids_in(ledger, "failed");
     if !failed.is_empty() {
-        reasons.push(format!(
-            "requirements failed their checks: {}",
-            failed.join(", ")
+        reasons.push(Reason::new(
+            format!("requirements failed their checks: {}", failed.join(", ")),
+            "requirements",
         ));
     }
     if g.refactor["state"] == "fail" {
-        reasons.push(format!(
-            "the refactor target's cognitive complexity fell {:.0}%, below the required {:.0}%",
-            g.refactor["cognitive_reduction"].as_f64().unwrap_or(0.0) * 100.0,
-            g.refactor["required"].as_f64().unwrap_or(0.0) * 100.0
+        reasons.push(Reason::new(
+            format!(
+                "the refactor target's cognitive complexity fell {:.0}%, below the required {:.0}%",
+                g.refactor["cognitive_reduction"].as_f64().unwrap_or(0.0) * 100.0,
+                g.refactor["required"].as_f64().unwrap_or(0.0) * 100.0
+            ),
+            "refactor",
         ));
     }
     if g.envelope["state"] == "fail" {
-        reasons.push(format!(
-            "{} change(s) outside the task envelope",
-            g.envelope["violations"].as_array().map_or(0, Vec::len)
+        reasons.push(Reason::new(
+            format!(
+                "{} change(s) outside the task envelope",
+                g.envelope["violations"].as_array().map_or(0, Vec::len)
+            ),
+            "envelope",
         ));
     }
     if g.guardrails["state"] == "fail" {
-        reasons.push(format!(
-            "blocking guardrail violations: {}",
-            guard_ids(g.guardrails, "block")
-        ));
+        reasons.push(Reason {
+            text: format!(
+                "blocking guardrail violations: {}",
+                guard_ids(g.guardrails, "block")
+            ),
+            signals: guard_signals(g.guardrails, "block"),
+        });
     }
     reasons.extend(verification_rejections(g.verification));
     if g.structural["state"] == "fail" {
-        reasons.push(format!(
-            "structural gate: {}",
-            g.structural["verdict"]["reasons"][0]
-                .as_str()
-                .unwrap_or("block")
+        reasons.push(Reason::new(
+            format!(
+                "structural gate: {}",
+                g.structural["verdict"]["reasons"][0]
+                    .as_str()
+                    .unwrap_or("block")
+            ),
+            "structural_gate",
         ));
     }
     reasons
@@ -777,47 +832,75 @@ fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
     reasons
 }
 
-/// What a person should look at before accepting (empty: nothing).
-fn reviews(g: &Gates) -> Vec<String> {
+/// What in the verification gate a person should look at.
+fn verification_reviews(v: &Value) -> Vec<Reason> {
     let mut reasons = Vec::new();
-    if g.refactor["state"] == "needs_review" {
-        reasons.push("the refactor lowered cognitive complexity but raised graded erosion".into());
+    if v["state"] != "needs_review" {
+        return reasons;
     }
-    if g.structural["state"] == "needs_review" {
-        reasons.push("structural gate warned; the task's warning policy asks for review".into());
-    }
-    if g.guardrails["state"] == "needs_review" {
-        reasons.push(format!(
-            "guardrails need review: {}",
-            guard_ids(g.guardrails, "review")
+    let restored = globs(&v["restored"]);
+    if !restored.is_empty() {
+        reasons.push(Reason::new(
+            format!(
+                "trusted files changed (verified against their baseline versions): {}",
+                restored.join(", ")
+            ),
+            "verification.trusted",
         ));
     }
-    let restored = globs(&g.verification["restored"]);
-    if g.verification["state"] == "needs_review" && !restored.is_empty() {
-        reasons.push(format!(
-            "trusted files changed (verified against their baseline versions): {}",
-            restored.join(", ")
+    let added = globs(&v["added_runner_config"]);
+    if !added.is_empty() {
+        reasons.push(Reason::new(
+            format!(
+                "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
+                added.join(", ")
+            ),
+            "verification.runner_config",
         ));
     }
-    let added = globs(&g.verification["added_runner_config"]);
-    if g.verification["state"] == "needs_review" && !added.is_empty() {
-        reasons.push(format!(
-            "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
-            added.join(", ")
-        ));
-    }
-    if g.verification["state"] == "needs_review" && g.verification["shake"]["state"] == "disagree" {
-        let ids: Vec<&str> = g.verification["shake"]["changed"]
+    if v["shake"]["state"] == "disagree" {
+        let ids: Vec<&str> = v["shake"]["changed"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|c| c["check"].as_str())
             .collect();
-        reasons.push(format!(
-            "checks passed as written but failed with the tests renamed, moved and reseeded: {}",
-            ids.join(", ")
+        reasons.push(Reason::new(
+            format!(
+                "checks passed as written but failed with the tests renamed, moved and reseeded: {}",
+                ids.join(", ")
+            ),
+            "verification.shake",
         ));
     }
+    reasons
+}
+
+/// What a person should look at before accepting (empty: nothing).
+fn reviews(g: &Gates) -> Vec<Reason> {
+    let mut reasons = Vec::new();
+    if g.refactor["state"] == "needs_review" {
+        reasons.push(Reason::new(
+            "the refactor lowered cognitive complexity but raised graded erosion".into(),
+            "refactor",
+        ));
+    }
+    if g.structural["state"] == "needs_review" {
+        reasons.push(Reason::new(
+            "structural gate warned; the task's warning policy asks for review".into(),
+            "structural_gate",
+        ));
+    }
+    if g.guardrails["state"] == "needs_review" {
+        reasons.push(Reason {
+            text: format!(
+                "guardrails need review: {}",
+                guard_ids(g.guardrails, "review")
+            ),
+            signals: guard_signals(g.guardrails, "review"),
+        });
+    }
+    reasons.extend(verification_reviews(g.verification));
     if g.escalation["state"] == "open" {
         reasons.extend(
             g.escalation["escalations"]
@@ -825,30 +908,43 @@ fn reviews(g: &Gates) -> Vec<String> {
                 .into_iter()
                 .flatten()
                 .map(|e| {
-                    format!(
-                        "the agent reported a contract conflict (escalation {}): {}",
-                        e["index"],
-                        e["reason"].as_str().unwrap_or("")
+                    Reason::new(
+                        format!(
+                            "the agent reported a contract conflict (escalation {}): {}",
+                            e["index"],
+                            e["reason"].as_str().unwrap_or("")
+                        ),
+                        &format!("escalation:{}", e["index"]),
                     )
                 }),
         );
     }
     let untrusted = globs(&g.verification["untrusted_test_changes"]);
     if g.verification["state"] == "needs_review" && !untrusted.is_empty() {
-        reasons.push(format!(
-            "test files outside the trusted set changed (verified as the candidate left them): {}",
-            untrusted.join(", ")
+        reasons.push(Reason::new(
+            format!(
+                "test files outside the trusted set changed (verified as the candidate left them): {}",
+                untrusted.join(", ")
+            ),
+            "verification.untrusted_tests",
         ));
     }
     reasons
 }
 
-fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, Vec<String>) {
+/// A decision's reasons and the signals behind them (none for a gap).
+fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, Vec<Reason>) {
+    let gap = |text: String| Reason {
+        text,
+        signals: Vec::new(),
+    };
     if ledger.is_empty() {
         // nothing required is nothing verified
         return (
             "incomplete",
-            vec!["the contract has no requirements, so nothing was verified".into()],
+            vec![gap(
+                "the contract has no requirements, so nothing was verified".into(),
+            )],
         );
     }
     let rejected = rejections(ledger, gates);
@@ -857,7 +953,7 @@ fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, 
     }
     let missing = gaps(ledger, gates, require_all);
     if !missing.is_empty() {
-        return ("incomplete", missing);
+        return ("incomplete", missing.into_iter().map(gap).collect());
     }
     let review = reviews(gates);
     if !review.is_empty() {
@@ -865,8 +961,61 @@ fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, 
     }
     (
         "accepted",
-        vec!["every requirement verified by its frozen checks; all gates pass".into()],
+        vec![gap(
+            "every requirement verified by its frozen checks; all gates pass".into(),
+        )],
     )
+}
+
+/// What kind of evidence a decision rests on: the structural signals and
+/// the pattern (guardrail heuristic) findings behind its reasons, and
+/// which kind carries it. A guardrail id with no kind is listed as
+/// `unclassified` and never counted as either.
+fn assurance(reasons: &[Reason], isolation: &str) -> Value {
+    let (mut structural, mut pattern, mut unclassified) = (Vec::new(), Vec::new(), Vec::new());
+    for signal in reasons.iter().flat_map(|r| &r.signals) {
+        match signal {
+            Signal::Structural(name) => structural.push(name.clone()),
+            Signal::Guard { id, path } => {
+                let entry = format!("{id}:{path}");
+                match emi_guard::kind(id) {
+                    Some(emi_guard::Kind::Structural) => structural.push(entry),
+                    Some(emi_guard::Kind::Pattern) => pattern.push(entry),
+                    None => unclassified.push(entry),
+                }
+            }
+        }
+    }
+    for list in [&mut structural, &mut pattern, &mut unclassified] {
+        list.sort();
+        list.dedup();
+    }
+    let catch_kind = match (
+        structural.is_empty(),
+        unclassified.is_empty(),
+        pattern.is_empty(),
+    ) {
+        (false, _, _) => "structural",
+        (true, false, _) => "unclassified",
+        (true, true, false) => "pattern",
+        _ => "none",
+    };
+    let mut out = json!({"structural": structural, "pattern": pattern,
+                         "catch_kind": catch_kind, "isolation": isolation});
+    if !unclassified.is_empty() {
+        out["unclassified"] = json!(unclassified);
+    }
+    out
+}
+
+/// What the checks' results are worth: sandboxed runs, or an explicit
+/// opt-out of isolation (weaker: the candidate could reach the host).
+fn isolation_of(contract: &Value) -> &'static str {
+    if sandbox_required(&contract["execution"]) {
+        "sandboxed"
+    } else {
+        "unsandboxed (execution.isolation = none)"
+    }
 }
 
 fn budget_exhausted(contract: &Value, state: &Value) -> Option<String> {
@@ -1068,7 +1217,9 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
                "candidate_id": candidate_id, "decision": decision, "reasons": reasons})
     };
     if let Some(why) = budget_exhausted(&contract, &state) {
-        let d = head("rejected", vec![why]);
+        // nothing was verified, so nothing was caught
+        let mut d = head("rejected", vec![why]);
+        d["assurance"] = assurance(&[], isolation_of(&contract));
         store.append("decision", &d)?;
         return Ok(d);
     }
@@ -1099,7 +1250,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     };
     let (decision, reasons) = reduce(&eval.ledger, &gates, require_all);
     let state = store.charge(started.elapsed().as_secs_f64())?;
-    let mut d = head(decision, reasons);
+    let mut d = head(decision, reasons.iter().map(|r| r.text.clone()).collect());
     d["content_id"] = json!(subject.rev);
     d["requirements"] = Value::Array(eval.ledger);
     d["gates"] = eval.gates;
@@ -1107,13 +1258,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     if decision == "needs_review" {
         d["review_items"] = json!(crate::approve::review_items(&d));
     }
-    // what the checks' results are worth: sandboxed runs, or an explicit
-    // opt-out of isolation (weaker: the candidate could reach the host)
-    d["assurance"] = json!(if sandbox_required(&contract["execution"]) {
-        "sandboxed"
-    } else {
-        "unsandboxed (execution.isolation = none)"
-    });
+    d["assurance"] = assurance(&reasons, isolation_of(&contract));
     if contract["verification"]["inventory"].is_null() {
         d["limits"] = json!([NO_INVENTORY]);
     }

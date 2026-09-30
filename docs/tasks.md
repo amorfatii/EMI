@@ -125,7 +125,7 @@ simplification.
 **Isolation fails closed.** Checks run under bubblewrap:
 - **bubblewrap unavailable:** the runs cannot count, and the decision is `incomplete`;
 - **the sandbox fails to start the command:** an environment fault (`incomplete`), not the candidate's failure;
-- **`"execution": {"isolation": "none"}`:** runs without a sandbox, and the decision's `assurance` says `unsandboxed`.
+- **`"execution": {"isolation": "none"}`:** runs without a sandbox, and the decision's `assurance.isolation` says `unsandboxed`.
 
 **What an acceptance means.** The candidate passed the frozen checks under the recorded environment:
 - the tests test what they test, and no more;
@@ -239,6 +239,53 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 | `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
 | `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, a test file outside the trusted set was changed, test-runner configuration was added under `runner_config: review` or in a contract without a `verification` section, or an escalation is open; completes only with an approval of its `review_items` |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
+
+### What a decision rests on (`assurance`)
+
+A `rejected` or `needs_review` decision rests on one of two kinds of
+evidence, and every decision says which:
+
+```json
+"assurance": {
+  "structural": ["envelope", "verification.runner_config"],
+  "pattern": ["gaming.test_sniff:app.py"],
+  "catch_kind": "structural",
+  "isolation": "sandboxed"
+}
+```
+
+- **Structural** signals follow from how verification is built, so
+  writing the code differently does not get past them. Their names:
+  - `requirements` (a check failed, held-out tests included, since they
+    run inside the checks);
+  - `envelope`;
+  - `verification.inventory`, `verification.runner_config`,
+    `verification.trusted` (trusted files changed),
+    `verification.untrusted_tests`, `verification.shake`;
+  - `refactor`, `structural_gate`;
+  - `escalation:<n>`;
+  - and guardrail findings that observe what the diff did, as
+    `<id>:<path>` (`scope.*`, `tests.*`, `prohibited.*`,
+    `suppress.added`, `growth.*`, `dup.*`).
+- **Pattern** findings are guardrail rules that recognise known shapes
+  of test gaming (`gaming.*`, `code.early_exit`), as `<id>:<path>`. They
+  are useful review hints, but code written differently passes them.
+- **`catch_kind`** is `structural` if any structural signal contributed,
+  else `pattern` if a pattern finding did, else `none`. `none` covers an
+  accepted candidate, an `incomplete` one (its reasons are gaps, not
+  catches) and a rejection because the budget ran out.
+- **Only what decided counts.** A rejection lists the signals behind its
+  rejection reasons; a review lists those behind its review reasons.
+- **For a reviewer,** `catch_kind: pattern` means the only evidence is a
+  recognised pattern: code written differently would pass it. Look at the
+  code itself, not only at the finding.
+- **Classification.** It lives in one table in emi-guard, and the test
+  suite fails if any guardrail id has no entry. A guardrail id without one
+  would be listed under `unclassified` and make `catch_kind`
+  `unclassified`, never counted as either kind.
+- **`isolation`:** `sandboxed`, or `unsandboxed (execution.isolation =
+  none)`.
+- **Reporting only.** `assurance` never changes a decision.
 
 Every verification charges the budget and appends its check runs (with
 cleanup receipts) and its decision to the append-only `evidence.jsonl` in
