@@ -20,6 +20,7 @@ well on human ones. It runs on Python, JavaScript/TypeScript, Rust and Go.
 | Block a pull request that makes the code worse | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
 | Hand a task to an AI agent and verify its result | `emi task create` / `verify` / `complete` |
 | Know whether your tests would catch a wrong change | `emi profile` |
+| See where a change now answers differently for inputs the tests pass | `emi drift` |
 | Find out why a function is hard to maintain and how to fix it | `emi explain` |
 | Enforce your own code rules | `emi check` |
 
@@ -207,6 +208,7 @@ takes about 58 s on the same tree.
 | Guardrails | [docs/guardrails.md](docs/guardrails.md) |
 | Agents and MCP | [docs/agents.md](docs/agents.md) |
 | Test readiness profile | [docs/profile.md](docs/profile.md) |
+| Behavioural drift | [docs/drift.md](docs/drift.md) |
 | History, hotspots, change coupling | [docs/history.md](docs/history.md) |
 | Rules | [docs/rules.md](docs/rules.md) |
 | Refactoring tasks and `emi explain` | [docs/refactoring.md](docs/refactoring.md) |
