@@ -20,6 +20,7 @@ well on human ones. It runs on Python, JavaScript/TypeScript, Rust and Go.
 | Block a pull request that makes the code worse | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
 | Hand a task to an AI agent and verify its result | `emi task create` / `verify` / `complete` |
 | Know whether your tests would catch a wrong change | `emi profile` |
+| See which lines of a change the tests would not notice going wrong | `emi diff-mutate` |
 | Find out why a function is hard to maintain and how to fix it | `emi explain` |
 | Enforce your own code rules | `emi check` |
 
@@ -128,7 +129,8 @@ or Go), and a sample of deliberately broken versions ("mutants") to see
 whether the tests notice. Each function gets a label such as `strong`,
 `weak` or `unexecuted`. It is advice only and never blocks anything. Pass
 the saved profile to `emi report --profile-json` or `emi task draft` to use
-it there ([docs/profile.md](docs/profile.md)).
+it there ([docs/profile.md](docs/profile.md)). `emi diff-mutate` does the
+same for only the lines a change added ([docs/diff-mutate.md](docs/diff-mutate.md)).
 
 ### Rules
 
@@ -207,6 +209,7 @@ takes about 58 s on the same tree.
 | Guardrails | [docs/guardrails.md](docs/guardrails.md) |
 | Agents and MCP | [docs/agents.md](docs/agents.md) |
 | Test readiness profile | [docs/profile.md](docs/profile.md) |
+| Mutation on a change's lines | [docs/diff-mutate.md](docs/diff-mutate.md) |
 | History, hotspots, change coupling | [docs/history.md](docs/history.md) |
 | Rules | [docs/rules.md](docs/rules.md) |
 | Refactoring tasks and `emi explain` | [docs/refactoring.md](docs/refactoring.md) |
