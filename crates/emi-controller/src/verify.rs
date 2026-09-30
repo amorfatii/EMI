@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 use crate::contract::Result;
 use crate::store::Store;
 
+mod drift;
+mod mutation;
 mod shake;
 
 /// What a contract without a test inventory cannot rule out.
@@ -295,6 +297,7 @@ struct RunSetup<'a> {
 }
 
 /// What a run's sandbox mounts besides its workspace.
+#[derive(Clone)]
 struct Mounts {
     read_only: Vec<PathBuf>,
     hidden: Vec<PathBuf>,
@@ -351,6 +354,17 @@ fn exec_spec(
     // duration can represent: the run cannot happen, and says why
     let timeout = Duration::try_from_secs_f64(timeout_s)
         .map_err(|_| format!("timeout_s {timeout_s} is not a usable number of seconds"))?;
+    Ok(spec_within(argv, workspace, execution, timeout, mounts))
+}
+
+/// [`exec_spec`] with a bound that is already a duration.
+fn spec_within(
+    argv: &Value,
+    workspace: &Path,
+    execution: &Value,
+    timeout: Duration,
+    mounts: Mounts,
+) -> Spec {
     let argv: Vec<&str> = argv
         .as_array()
         .into_iter()
@@ -368,7 +382,7 @@ fn exec_spec(
                 .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))),
         );
     }
-    Ok(spec)
+    spec
 }
 
 /// Files of `rev` matching `globs`.
@@ -546,6 +560,18 @@ fn run_check(
     mounts: Mounts,
 ) -> (String, String, Value) {
     let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
+    run_check_within(id, def, timeout, workspace, execution, mounts)
+}
+
+/// [`run_check`] bounded by `timeout` seconds instead of the check's own.
+fn run_check_within(
+    id: &str,
+    def: &Value,
+    timeout: f64,
+    workspace: &Path,
+    execution: &Value,
+    mounts: Mounts,
+) -> (String, String, Value) {
     let spec = match exec_spec(&def["command"], workspace, execution, timeout, mounts) {
         Ok(spec) => spec,
         Err(e) => {
@@ -1094,6 +1120,37 @@ struct Subject {
     candidate_id: String,
 }
 
+/// The checks the requirements bind, each once, in the contract's order.
+fn required_checks(contract: &Value) -> Vec<(&String, &Value)> {
+    let bound: Vec<String> = contract["requirements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|r| globs(&r["checks"]))
+        .collect();
+    contract["checks"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(id, _)| bound.contains(id))
+        .collect()
+}
+
+/// What the review signals (mutation, drift) work from: they run after
+/// the requirement checks, in workspaces prepared like theirs, and never
+/// change the decision.
+struct Signals<'a> {
+    store: &'a Store,
+    setup: &'a RunSetup<'a>,
+    scratch: &'a Path,
+    statuses: &'a BTreeMap<String, String>,
+    /// The unmutated check runs.
+    runs: &'a [Value],
+    candidate_id: &'a str,
+    /// The candidate as submitted (never executed in).
+    tree: &'a Path,
+}
+
 /// Run the inventory and every check, each in a fresh workspace with
 /// trusted files restored read-only and held-out files injected.
 fn run_verified(
@@ -1101,7 +1158,7 @@ fn run_verified(
     contract: &Value,
     subject: &Subject,
     changed: &[(String, &'static str)],
-    scratch: &Scratch,
+    (scratch, tree): (&Scratch, &Path),
 ) -> Result<Verified> {
     // verification policy: the checks see trusted files as they were at the
     // baseline (read-only), plus the held-out files the candidate never saw
@@ -1139,6 +1196,21 @@ fn run_verified(
     let mut gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
     if !vspec.is_null() {
         merge_shake(&mut gate, shaken);
+        let signals = Signals {
+            store,
+            setup: &setup,
+            scratch: &scratch.0,
+            statuses: &statuses,
+            runs: &runs,
+            candidate_id: &subject.candidate_id,
+            tree,
+        };
+        if let Some(m) = mutation::gate(&signals) {
+            gate["mutation"] = m;
+        }
+        if let Some(d) = drift::gate(&signals) {
+            gate["drift"] = d;
+        }
     }
     Ok(Verified {
         statuses,
@@ -1167,7 +1239,7 @@ fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evalua
     materialize(objects, repo, rev, &workspace, contract)?;
     // checked before and after the runs: the checks execute these tools
     let drifted = crate::deps::drift(repo, contract);
-    let verified = run_verified(store, contract, subject, &changed, &scratch)?;
+    let verified = run_verified(store, contract, subject, &changed, (&scratch, &workspace))?;
     let dependencies = crate::deps::gate(repo, contract, drifted);
     let structural = structural_gate(contract, objects, baseline, rev);
     let guardrails = guardrails_gate(contract, objects, baseline, rev);

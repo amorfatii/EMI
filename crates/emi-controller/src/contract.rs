@@ -146,9 +146,20 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("requirement", &["id", "acceptance", "checks"]),
     (
         "verification",
-        &["trusted", "held_out", "inventory", "shake", "runner_config"],
+        &[
+            "trusted",
+            "held_out",
+            "inventory",
+            "shake",
+            "runner_config",
+            "mutation",
+            "drift",
+        ],
     ),
     ("verification.held_out", &["content", "file"]),
+    ("verification.mutation", &["max_mutants"]),
+    // reserved for options; `{}` turns the comparison on
+    ("verification.drift", &[]),
     (
         "verification.inventory",
         &["command", "format", "timeout_s"],
@@ -310,6 +321,10 @@ fn safe_relative(path: &str) -> bool {
 ///   stops passing needs review.
 /// - `runner_config`: what added test-runner configuration does to the
 ///   decision, `reject` (the default) or `review`.
+/// - `mutation`: `{"max_mutants": 1..=200}` mutants on the lines the
+///   candidate added, run through the checks; a review signal only.
+/// - `drift`: `{}` replays the baseline tests' inputs against the old and
+///   new Python functions; a review signal only.
 pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     let Some(v) = v.filter(|v| !v.is_null()) else {
         return Ok(None);
@@ -328,7 +343,46 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     if let Some(policy) = runner_config_policy(obj.get("runner_config"))? {
         out["runner_config"] = json!(policy);
     }
+    if let Some(max) = mutation(obj.get("mutation"))? {
+        out["mutation"] = json!({"max_mutants": max});
+    }
+    if let Some(drift) = drift(obj.get("drift"))? {
+        out["drift"] = drift;
+    }
     Ok(Some(out))
+}
+
+/// Most mutants one verification may run: each costs a run of the checks.
+pub const MAX_MUTANTS: u64 = 200;
+
+/// The mutant budget (`verification.mutation.max_mutants`).
+fn mutation(v: Option<&Value>) -> Result<Option<u64>> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(fields) = v.as_object() else {
+        return Err("verification.mutation must be an object".into());
+    };
+    known_keys("verification.mutation", fields, "verification.mutation")?;
+    match fields.get("max_mutants").and_then(Value::as_u64) {
+        Some(n @ 1..=MAX_MUTANTS) => Ok(Some(n)),
+        _ => Err(format!(
+            "verification.mutation.max_mutants must be an integer in 1..={MAX_MUTANTS}"
+        )),
+    }
+}
+
+/// The drift comparison (`verification.drift`): an object whose keys are
+/// reserved for options, so `{}` turns it on.
+fn drift(v: Option<&Value>) -> Result<Option<Value>> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(fields) = v.as_object() else {
+        return Err("verification.drift must be an object ({} turns it on)".into());
+    };
+    known_keys("verification.drift", fields, "verification.drift")?;
+    Ok(Some(json!({})))
 }
 
 /// The held-out files, read and frozen with their digests.

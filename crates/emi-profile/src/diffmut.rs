@@ -144,8 +144,9 @@ pub fn diff_mutation(
 
 /// The mutants of each changed function's added lines, in the order of
 /// `changed` (file, then line). A line inside nested functions belongs to
-/// the innermost one, so no mutant is drawn twice.
-fn candidates(tree: &Path, changed: &ChangedFunctions, not: &mut NotMutated) -> Vec<Target> {
+/// the innermost one, so no mutant is drawn twice. `tree` holds the head's
+/// files.
+pub fn candidates(tree: &Path, changed: &ChangedFunctions, not: &mut NotMutated) -> Vec<Target> {
     let wanted: Vec<&ChangedFn> = changed
         .functions
         .iter()
@@ -232,7 +233,7 @@ fn quotas(sizes: &[usize], budget: usize) -> Vec<usize> {
 
 /// At most `budget` mutants in all, spread over each function's lines.
 /// Deterministic: the same change and budget always pick the same mutants.
-fn sample(all: Vec<Target>, budget: usize) -> Vec<Target> {
+pub fn sample(all: Vec<Target>, budget: usize) -> Vec<Target> {
     let sizes: Vec<usize> = all.iter().map(|t| t.mutants.len()).collect();
     all.into_iter()
         .zip(quotas(&sizes, budget))
@@ -245,7 +246,7 @@ fn sample(all: Vec<Target>, budget: usize) -> Vec<Target> {
 }
 
 /// The functions' tallies summed, and every survivor with where it is.
-fn gather(
+pub fn gather(
     targets: &[Target],
     tallies: &BTreeMap<mutation::FunctionKey, Tally>,
 ) -> (Tally, Vec<Survivor>) {

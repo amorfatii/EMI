@@ -351,6 +351,7 @@ dependencies = [
  "emi-ir",
  "emi-ledger",
  "emi-panel",
+ "emi-profile",
  "emi-scan",
  "rustix",
  "serde_json",

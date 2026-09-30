@@ -1493,3 +1493,230 @@ fn an_escalation_hold_is_a_structural_catch_naming_the_escalation() {
     assert!(pattern.is_empty(), "{d}");
     assert_eq!(kind, "structural", "{d}");
 }
+
+const SIGNAL_TESTS: &str =
+    "import app\n\ndef test_add():\n    assert app.add(1, 2) == 3\n\ntest_add()\n";
+
+/// A task over a buggy `add` whose contract sets `verification` (trusted
+/// tests plus `extra`), with `app` committed as the candidate.
+fn signal_task(name: &str, extra: Value, app: &str) -> (Dir, Dir, Store) {
+    let repo = scratch(&format!("{name}-repo"));
+    let authority = scratch(&format!("{name}-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(repo.0.join("tests/test_app.py"), SIGNAL_TESTS).unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "buggy"]);
+    let mut verification = json!({"trusted": ["tests/*"]});
+    if let (Some(v), Some(extra)) = (verification.as_object_mut(), extra.as_object()) {
+        v.extend(extra.clone());
+    }
+    let spec = json!({
+        "task_id": name, "repo": repo.0, "baseline": "HEAD", "objective": "make add() add",
+        "requirements": [{"id": "R1", "acceptance": "add adds", "checks": ["tests"]}],
+        "checks": {"tests": {"command": ["python3", "-c", "import runpy; runpy.run_path('tests/test_app.py')"],
+                             "success": {"exit_code": 0}, "timeout_s": 30}},
+        "envelope": {"permitted_paths": ["app.py", "tests/*"]},
+        "verification": verification,
+    });
+    create(&authority.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, name, &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(repo.0.join("app.py"), app).unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "candidate"]);
+    (repo, authority, store)
+}
+
+fn mutation_of(d: &Value) -> &Value {
+    &d["gates"]["verification"]["mutation"]
+}
+
+#[test]
+fn mutants_of_a_pinned_change_are_killed_through_the_checks() {
+    let (_repo, _a, store) = signal_task(
+        "mut-pinned",
+        json!({"mutation": {"max_mutants": 10}}),
+        FIXED,
+    );
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    let m = mutation_of(&d);
+    assert_eq!(m["state"], "measured", "{m}");
+    assert_eq!(m["affects_decision"], false, "{m}");
+    assert!(m["killed"].as_u64().is_some_and(|k| k > 0), "{m}");
+    assert_eq!(m["survivors"], json!([]), "{m}");
+    assert_eq!(m["isolation"], "bwrap", "{m}");
+    // every mutant run is evidence, naming the mutant
+    let runs = store.rows("check_run").unwrap_or_default();
+    let mutant_runs = runs.iter().filter(|r| r["mutant"].is_object()).count();
+    assert_eq!(Some(mutant_runs as u64), m["run"].as_u64(), "{m}");
+}
+
+#[test]
+fn a_new_line_no_test_pins_leaves_a_survivor() {
+    let app = "def add(a, b):\n    if a > 100:\n        return a * 2 - b\n    return a + b\n";
+    let (_repo, _a, store) =
+        signal_task("mut-loose", json!({"mutation": {"max_mutants": 20}}), app);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    let m = mutation_of(&d);
+    assert_eq!(m["state"], "measured", "{m}");
+    let survivors = m["survivors"].as_array().cloned().unwrap_or_default();
+    assert!(
+        survivors
+            .iter()
+            .any(|s| s["line"] == 3 && s["function"] == "add"),
+        "{m}"
+    );
+    assert_eq!(m["survived"].as_u64(), Some(survivors.len() as u64), "{m}");
+}
+
+#[test]
+fn mutation_is_not_run_when_the_unmutated_checks_fail() {
+    let app = "def add(a, b):\n    return b - a\n";
+    let (_repo, _a, store) = signal_task("mut-red", json!({"mutation": {"max_mutants": 5}}), app);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "rejected", "{d}");
+    let m = mutation_of(&d);
+    assert_eq!(m["state"], "not_run", "{m}");
+    assert!(
+        m["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("tests: failed")),
+        "{m}"
+    );
+    assert!(
+        m.get("killed").is_none() && m.get("survivors").is_none(),
+        "{m}"
+    );
+}
+
+#[test]
+fn mutation_and_drift_never_change_the_decision() {
+    // a trusted test edited and an unpinned line: needs review, with survivors
+    let app = "def add(a, b):\n    if a > 100:\n        return a * 2 - b\n    return a + b\n";
+    let edit = |repo: &Path| {
+        std::fs::write(
+            repo.join("tests/test_app.py"),
+            format!("{SIGNAL_TESTS}# edited\n"),
+        )
+        .unwrap_or_default();
+        git(repo, &["commit", "-q", "-am", "edit the test"]);
+    };
+    let (repo, _a, plain) = signal_task("inv-plain", json!({}), app);
+    edit(&repo.0);
+    let signals = json!({"mutation": {"max_mutants": 10}, "drift": {}});
+    let (repo2, _a2, measured) = signal_task("inv-signals", signals, app);
+    edit(&repo2.0);
+    let a = check(&plain, Candidate::Ref("HEAD".into()));
+    let b = check(&measured, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&a), "needs_review", "{a}");
+    for key in ["decision", "reasons", "review_items", "assurance"] {
+        assert_eq!(a[key], b[key], "{key}: {a} vs {b}");
+    }
+    assert!(a["gates"]["verification"].get("mutation").is_none(), "{a}");
+    assert_eq!(mutation_of(&b)["state"], "measured", "{b}");
+    assert_eq!(
+        b["gates"]["verification"]["drift"]["affects_decision"], false,
+        "{b}"
+    );
+}
+
+#[test]
+fn mutation_and_drift_options_are_validated_and_absent_by_default() {
+    let (repo, _a, store) = signal_task("sig-default", json!({}), FIXED);
+    let contract = store.contract().unwrap_or_default();
+    assert!(
+        contract["verification"].get("mutation").is_none(),
+        "{contract}"
+    );
+    assert!(
+        contract["verification"].get("drift").is_none(),
+        "{contract}"
+    );
+    let auth = scratch("sig-bad-authority");
+    for (bad, why) in [
+        (json!({"mutation": {"max_mutants": 0}}), "max_mutants"),
+        (json!({"mutation": {"max_mutants": 201}}), "max_mutants"),
+        (
+            json!({"mutation": {"max_mutants": 5, "seed": 1}}),
+            "unknown key seed",
+        ),
+        (json!({"mutation": 5}), "must be an object"),
+        (
+            json!({"drift": {"inputs": 3}}),
+            "verification.drift: unknown key inputs",
+        ),
+        (json!({"drift": true}), "must be an object"),
+    ] {
+        let spec = json!({
+            "task_id": "sig-bad", "repo": repo.0, "baseline": "HEAD", "objective": "o",
+            "requirements": [{"id": "R1", "acceptance": "a", "checks": ["c"]}],
+            "checks": {"c": {"command": ["true"], "success": {"exit_code": 0}}},
+            "envelope": {"permitted_paths": ["app.py"]},
+            "verification": bad,
+        });
+        let err = create(&auth.0, &spec).err().unwrap_or_default();
+        assert!(err.contains(why), "{bad}: {err}");
+    }
+}
+
+const CLAMP: &str = "def clamp(x):\n    if x < 0:\n        return 0\n    return x\n";
+
+/// A task whose checks call `clamp` with a negative input without pinning
+/// the answer, and a candidate committing `app`.
+fn drift_task(name: &str, app: &str) -> (Dir, Dir, Store) {
+    let repo = scratch(&format!("{name}-repo"));
+    let authority = scratch(&format!("{name}-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), CLAMP).unwrap_or_default();
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("tests/test_app.py"),
+        "import app\n\ndef test_clamp():\n    assert app.clamp(3) == 3\n    try:\n        app.clamp(-2)\n    except ValueError:\n        pass\n\ntest_clamp()\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "base"]);
+    let spec = json!({
+        "task_id": name, "repo": repo.0, "baseline": "HEAD", "objective": "tidy clamp",
+        "requirements": [{"id": "R1", "acceptance": "clamp clamps", "checks": ["tests"]}],
+        "checks": {"tests": {"command": ["python3", "-c", "import runpy; runpy.run_path('tests/test_app.py')"],
+                             "success": {"exit_code": 0}, "timeout_s": 30}},
+        "envelope": {"permitted_paths": ["app.py"]},
+        "verification": {"trusted": ["tests/*"], "drift": {}},
+    });
+    create(&authority.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, name, &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(repo.0.join("app.py"), app).unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "candidate"]);
+    (repo, authority, store)
+}
+
+#[test]
+fn tightened_validation_drifts_under_the_task() {
+    let app = "def clamp(x):\n    if x < 0:\n        raise ValueError(x)\n    return x\n";
+    let (_repo, _a, store) = drift_task("drift-tight", app);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    let g = &d["gates"]["verification"]["drift"];
+    assert_eq!(g["state"], "measured", "{g}");
+    assert_eq!(g["affects_decision"], false, "{g}");
+    assert_eq!(g["counts"]["with_drift"], 1, "{g}");
+    let drift = &g["functions"][0]["drifts"][0];
+    assert_eq!(drift["input"]["args"][0], -2, "{g}");
+    assert_eq!(drift["old"]["returned"], 0, "{g}");
+    assert_eq!(drift["new"]["raised"], "ValueError", "{g}");
+}
+
+#[test]
+fn a_pure_refactor_has_no_drift_under_the_task() {
+    let (_repo, _a, store) = drift_task("drift-same", "def clamp(x):\n    return max(x, 0)\n");
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    let g = &d["gates"]["verification"]["drift"];
+    assert_eq!(g["state"], "measured", "{g}");
+    assert_eq!(g["counts"]["compared"], 1, "{g}");
+    assert_eq!(g["counts"]["with_drift"], 0, "{g}");
+}
