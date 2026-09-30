@@ -44,3 +44,10 @@ renames) to every base component and sets `history_days: 90`, so the
 report's `exposure.after` and `exposure.matched` are populated. The window is
 anchored to the base commit rather than today, so the same diff always
 gives the same report. The oracle's `git_churn` helper used "90 days ago".
+
+## Missing co-changes: `emi places`
+
+`emi places` applies the same change coupling, with the same defaults, to
+one change: partners of the touched files that the change did not touch,
+read from the history up to the change's base commit. See
+[places.md](places.md).

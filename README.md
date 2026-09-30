@@ -22,6 +22,7 @@ well on human ones. It runs on Python, JavaScript/TypeScript, Rust and Go.
 | Know whether your tests would catch a wrong change | `emi profile` |
 | See which lines of a change the tests would not notice going wrong | `emi diff-mutate` |
 | See where a change now answers differently for inputs the tests pass | `emi drift` |
+| See what else a change may break: exported names, schema files, usual co-changes, importers | `emi places` |
 | Find out why a function is hard to maintain and how to fix it | `emi explain` |
 | Enforce your own code rules | `emi check` |
 
@@ -217,6 +218,7 @@ takes about 58 s on the same tree.
 | Test readiness profile | [docs/profile.md](docs/profile.md) |
 | Mutation on a change's lines | [docs/diff-mutate.md](docs/diff-mutate.md) |
 | Behavioural drift | [docs/drift.md](docs/drift.md) |
+| Places to look after a change | [docs/places.md](docs/places.md) |
 | History, hotspots, change coupling | [docs/history.md](docs/history.md) |
 | Rules | [docs/rules.md](docs/rules.md) |
 | Refactoring tasks and `emi explain` | [docs/refactoring.md](docs/refactoring.md) |
