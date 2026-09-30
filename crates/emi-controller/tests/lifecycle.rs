@@ -1665,8 +1665,9 @@ fn mutation_and_drift_options_are_validated_and_absent_by_default() {
 const CLAMP: &str = "def clamp(x):\n    if x < 0:\n        return 0\n    return x\n";
 
 /// A task whose checks call `clamp` with a negative input without pinning
-/// the answer, and a candidate committing `app`.
-fn drift_task(name: &str, app: &str) -> (Dir, Dir, Store) {
+/// the answer, drift (and `extra`) under `verification`, and a candidate
+/// committing `app`.
+fn drift_task(name: &str, app: &str, extra: Value) -> (Dir, Dir, Store) {
     let repo = scratch(&format!("{name}-repo"));
     let authority = scratch(&format!("{name}-authority"));
     git(&repo.0, &["init", "-q", "-b", "main"]);
@@ -1687,6 +1688,10 @@ fn drift_task(name: &str, app: &str) -> (Dir, Dir, Store) {
         "envelope": {"permitted_paths": ["app.py"]},
         "verification": {"trusted": ["tests/*"], "drift": {}},
     });
+    let mut spec = spec;
+    if let (Some(v), Some(extra)) = (spec["verification"].as_object_mut(), extra.as_object()) {
+        v.extend(extra.clone());
+    }
     create(&authority.0, &spec).unwrap_or_else(|e| panic!("{e}"));
     let store = Store::open(&authority.0, name, &repo.0).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(repo.0.join("app.py"), app).unwrap_or_default();
@@ -1697,7 +1702,7 @@ fn drift_task(name: &str, app: &str) -> (Dir, Dir, Store) {
 #[test]
 fn tightened_validation_drifts_under_the_task() {
     let app = "def clamp(x):\n    if x < 0:\n        raise ValueError(x)\n    return x\n";
-    let (_repo, _a, store) = drift_task("drift-tight", app);
+    let (_repo, _a, store) = drift_task("drift-tight", app, json!({}));
     let d = check(&store, Candidate::Ref("HEAD".into()));
     assert_eq!(decision(&d), "accepted", "{d}");
     let g = &d["gates"]["verification"]["drift"];
@@ -1712,11 +1717,211 @@ fn tightened_validation_drifts_under_the_task() {
 
 #[test]
 fn a_pure_refactor_has_no_drift_under_the_task() {
-    let (_repo, _a, store) = drift_task("drift-same", "def clamp(x):\n    return max(x, 0)\n");
+    let (_repo, _a, store) = drift_task(
+        "drift-same",
+        "def clamp(x):\n    return max(x, 0)\n",
+        json!({}),
+    );
     let d = check(&store, Candidate::Ref("HEAD".into()));
     assert_eq!(decision(&d), "accepted", "{d}");
     let g = &d["gates"]["verification"]["drift"];
     assert_eq!(g["state"], "measured", "{g}");
     assert_eq!(g["counts"]["compared"], 1, "{g}");
     assert_eq!(g["counts"]["with_drift"], 0, "{g}");
+}
+
+/// `text` with commit shas and digests replaced by placeholders, so a
+/// receipt reads the same on every run.
+fn normalized(text: &str) -> String {
+    let mut out = String::new();
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        match run.len() {
+            40 => out.push_str("<sha>"),
+            64 => out.push_str("<digest>"),
+            _ => out.push_str(run),
+        }
+        run.clear();
+    };
+    for c in text.chars() {
+        if c.is_ascii_hexdigit() && !c.is_ascii_uppercase() {
+            run.push(c);
+        } else if c.is_ascii_alphanumeric() || c == '_' {
+            // part of a longer word: not an id
+            out.push_str(&run);
+            run.clear();
+            out.push(c);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
+/// The receipt of the latest decision about HEAD, with its time fixed.
+fn receipt_of(store: &Store) -> Value {
+    let mut r = emi_controller::receipt(store, &Candidate::Ref("HEAD".into()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    r["decision"]["at"] = json!("<time>");
+    r
+}
+
+/// Compare the receipt's JSON and Markdown with the reviewed snapshots in
+/// `tests/receipts/` (`EMI_UPDATE_RECEIPTS=1` rewrites them).
+fn assert_snapshot(name: &str, r: &Value) -> String {
+    let md = normalized(&emi_controller::receipt::markdown(r));
+    let json = normalized(&emi_ledger::pyfmt::dumps_pretty(r)) + "\n";
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/receipts");
+    for (ext, text) in [("md", &md), ("json", &json)] {
+        let path = dir.join(format!("{name}.{ext}"));
+        if std::env::var_os("EMI_UPDATE_RECEIPTS").is_some() {
+            std::fs::create_dir_all(&dir).unwrap_or_default();
+            std::fs::write(&path, text).unwrap_or_default();
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            text,
+            &expected,
+            "{} differs from the snapshot",
+            path.display()
+        );
+    }
+    let headings: Vec<&str> = md.lines().filter(|l| l.starts_with("## ")).collect();
+    let wanted: Vec<String> = emi_controller::receipt::SECTIONS
+        .iter()
+        .map(|s| format!("## {s}"))
+        .collect();
+    assert_eq!(headings, wanted, "{md}");
+    md
+}
+
+#[test]
+fn a_receipt_needs_a_decision_first() {
+    let (repo, _a, store) = buggy_task("rc-none");
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix"]);
+    let err = emi_controller::receipt(&store, &Candidate::Ref("HEAD".into()))
+        .err()
+        .unwrap_or_default();
+    assert!(
+        err.contains("no decision under the current contract"),
+        "{err}"
+    );
+    // a receipt spends nothing and records nothing
+    assert_eq!(store.rows("decision").unwrap_or_default().len(), 0);
+}
+
+#[test]
+fn a_receipt_of_an_acceptance_lists_what_was_not_verified() {
+    let (repo, _a, store) = buggy_task("rc-accepted");
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix"]);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    let r = receipt_of(&store);
+    assert_eq!(r["decision"]["decision"], "accepted", "{r}");
+    assert_eq!(r["decision"]["candidate_id"], d["candidate_id"], "{r}");
+    let md = assert_snapshot("accepted", &r);
+    for line in [
+        "- Trusted files restored: not measured (the contract has no verification section)",
+        "not measured (the contract does not set verification.mutation)",
+        "- Public surfaces: not measured (not available in this version)",
+        "| mutation | not_required | not requested by the contract; the tests' strength on the changed lines is unknown |",
+        "| performance | not_measured |",
+    ] {
+        assert!(md.contains(line), "{line}\n{md}");
+    }
+}
+
+#[test]
+fn a_receipt_of_a_rejection_shows_the_runner_configuration_in_scope() {
+    let (repo, _a, store) = verification_task("rc-rejected", json!({}));
+    commit_fix_with(&repo.0, "conftest.py");
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "rejected", "{d}");
+    let r = receipt_of(&store);
+    assert_eq!(
+        r["scope"]["runner_config_added"],
+        json!(["conftest.py"]),
+        "{r}"
+    );
+    assert_eq!(r["scope"]["runner_config_policy"], "reject", "{r}");
+    assert_eq!(
+        r["verified"]["held_out_injected"],
+        json!(["tests/test_hidden.py"]),
+        "{r}"
+    );
+    let md = assert_snapshot("rejected", &r);
+    assert!(
+        md.contains("- Test-runner configuration added: `conftest.py` (policy: reject)"),
+        "{md}"
+    );
+    assert!(
+        !md.contains("assert app.add(2, 5)"),
+        "held-out contents never appear: {md}"
+    );
+}
+
+#[test]
+fn a_receipt_of_a_review_names_the_escalation_and_the_pattern_caveat() {
+    let (repo, _a, store) = guarded_task("rc-review", json!({}));
+    std::fs::write(
+        repo.0.join("app.py"),
+        "import sys\n\nUNDER_TEST = 'pytest' in sys.modules\n\n\ndef add(a, b):\n    return a + b\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix"]);
+    emi_controller::escalate(&store, None, "the objective says add, the name says sum")
+        .unwrap_or_else(|e| panic!("{e}"));
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    let r = receipt_of(&store);
+    assert_eq!(r["escalations"]["state"], "open", "{r}");
+    assert_eq!(
+        r["evidence_kind"]["pattern"],
+        json!(["gaming.test_sniff:app.py"]),
+        "{r}"
+    );
+    let md = assert_snapshot("needs_review", &r);
+    assert!(
+        md.contains("- Escalation 1: the objective says add, the name says sum"),
+        "{md}"
+    );
+    assert!(
+        md.contains("pattern findings are review hints; code written differently would pass them"),
+        "{md}"
+    );
+}
+
+#[test]
+fn a_receipt_shows_how_much_the_tests_pin_the_change() {
+    let app = "def clamp(x):\n    if x < 0:\n        raise ValueError(x)\n    return x * 1\n";
+    let (_repo, _a, store) =
+        drift_task("rc-signals", app, json!({"mutation": {"max_mutants": 10}}));
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    let r = receipt_of(&store);
+    let m = &r["pinning"]["mutation"];
+    assert_eq!(m["state"], "measured", "{r}");
+    assert!(
+        m["survivors"].as_array().is_some_and(|s| !s.is_empty()),
+        "{r}"
+    );
+    let drifts = &r["pinning"]["drift"]["drifts"];
+    assert_eq!(drifts[0]["old"], json!({"returned": 0}), "{r}");
+    assert_eq!(drifts[0]["new"], json!({"raised": "ValueError"}), "{r}");
+    let md = assert_snapshot("signals", &r);
+    assert!(
+        md.contains("`{\"returned\": 0}` → `{\"raised\": \"ValueError\"}`"),
+        "{md}"
+    );
+    let docs =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/tasks.md"))
+            .unwrap_or_default();
+    assert!(
+        docs.contains(&md),
+        "docs/tasks.md shows this receipt as its example"
+    );
 }

@@ -389,3 +389,60 @@ fn designed_variants_need_a_reference_outside_the_repository() {
     let held = std::fs::read_to_string(&out).unwrap_or_default();
     assert_eq!(held.matches("def test_emi_variant_").count(), 5, "{held}");
 }
+
+#[test]
+fn a_receipt_renders_the_latest_decision_as_markdown_or_json() {
+    let repo = scratch("receipt-repo");
+    let authority = scratch("receipt-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "base"]);
+    let spec = serde_json::json!({
+        "task_id": "rc", "repo": repo.0, "baseline": "HEAD", "objective": "make add() add",
+        "requirements": [{"id": "R1", "acceptance": "add adds", "checks": ["unit"]}],
+        "checks": {"unit": {"command": ["python3", "-c", "import app; assert app.add(1, 2) == 3"],
+                            "success": {"exit_code": 0}, "timeout_s": 30}},
+        "envelope": {"permitted_paths": ["app.py"]},
+    });
+    let spec_file = authority.0.join("spec.json");
+    std::fs::write(&spec_file, spec.to_string()).unwrap_or_default();
+    let auth = authority.0.join("store");
+    let auth = auth.to_string_lossy();
+    let (code, _) = emi(&[
+        "task",
+        "create",
+        "--authority",
+        &auth,
+        "--spec",
+        &spec_file.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0);
+    let receipt = |format: &str| {
+        emi_err(&[
+            "task",
+            "receipt",
+            "--authority",
+            &auth,
+            "--task",
+            "rc",
+            "--worktree",
+            "--format",
+            format,
+        ])
+    };
+    let (code, _, err) = receipt("md");
+    assert_ne!(code, 0, "no decision yet");
+    assert!(err.contains("no decision"), "{err}");
+    assert_eq!(verdict(&auth, "rc")["decision"], "rejected");
+    let (code, md, err) = receipt("md");
+    assert_eq!(code, 0, "{err}");
+    assert!(md.starts_with("# Verification receipt: rc\n"), "{md}");
+    assert!(md.contains("| Decision | **rejected** |"), "{md}");
+    assert!(md.contains("## Not verified"), "{md}");
+    let (code, json, _) = receipt("json");
+    assert_eq!(code, 0);
+    let r: Value = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}: {json}"));
+    assert_eq!(r["schema"], "emi-task-receipt-0.1", "{r}");
+    assert_eq!(r["decision"]["candidate_id"], "worktree", "{r}");
+}

@@ -19,6 +19,7 @@ well on human ones. It runs on Python, JavaScript/TypeScript, Rust and Go.
 | See where your codebase is costly and changes often | `emi report` → one HTML file |
 | Block a pull request that makes the code worse | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
 | Hand a task to an AI agent and verify its result | `emi task create` / `verify` / `complete` |
+| See what a task's decision rests on and what it did not verify | `emi task receipt` |
 | Know whether your tests would catch a wrong change | `emi profile` |
 | See which lines of a change the tests would not notice going wrong | `emi diff-mutate` |
 | See where a change now answers differently for inputs the tests pass | `emi drift` |
@@ -250,10 +251,10 @@ the code follows.
 | `emi-history` | History mining with rename tracking, churn, authorship, AI attribution, change coupling |
 | `emi-rules` | Declarative query rules, built-in catalog, suppressions, baselines |
 | `emi-guard` | Guardrails on a change |
-| `emi-controller` | Supervised tasks: frozen contracts, isolated check runs, gates, completion |
+| `emi-controller` | Supervised tasks: frozen contracts, isolated check runs, gates, completion, receipts |
 | `emi-exec` | Check execution: process groups, PID namespaces, verified cleanup |
 | `emi-git` | The one git runner, with repository config, hooks and replace refs switched off |
-| `emi-profile` | Coverage import, sampled mutation runs, per-function readiness |
+| `emi-profile` | Coverage import, sampled and diff-scoped mutation runs, behavioural drift, per-function readiness |
 | `emi-panel` | Classic function metrics (SLOC, cognitive complexity, Halstead volume) |
 | `emi-lsp` | Language server |
 | `emi-mcp` | Model Context Protocol server |
