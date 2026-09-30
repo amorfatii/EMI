@@ -24,6 +24,7 @@ mod report;
 mod sarif;
 mod specgen;
 mod taskcli;
+mod vary;
 
 #[derive(Parser)]
 #[command(

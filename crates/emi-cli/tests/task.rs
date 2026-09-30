@@ -175,3 +175,162 @@ fn drafts_carry_held_out_tests_and_warn_from_the_profile() {
     let (code, _, err) = emi_err(&["task", "create", "--authority", &auth, "--spec", &spec_arg]);
     assert_eq!(code, 0, "the drafted spec freezes: {err}");
 }
+
+const LCB_TEST: &str = "from solution import add\n\n\ndef check(candidate):\n    assert candidate(1, 2) == 3\n    assert candidate(2, 2) == 4\n    assert candidate(0, 0) == 0\n    assert candidate(5, 5) == 10\n    assert candidate(7, 1) == 8\n\n\ndef test_add():\n    check(add)\n\n\ntest_add()\n";
+
+fn verdict(authority: &str, task: &str) -> Value {
+    let (_, out, err) = emi_err(&[
+        "task",
+        "verify",
+        "--authority",
+        authority,
+        "--task",
+        task,
+        "--worktree",
+    ]);
+    serde_json::from_str(&out).unwrap_or_else(|_| panic!("verify: {out}{err}"))
+}
+
+#[test]
+fn held_out_asserts_reject_code_that_hard_codes_the_visible_cases() {
+    let (repo, authority) = (scratch("ho-repo"), scratch("ho-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("solution.py"),
+        "def add(a, b):\n    raise NotImplementedError\n",
+    )
+    .unwrap_or_default();
+    let test = repo.0.join("tests/test_add.py");
+    std::fs::write(&test, LCB_TEST).unwrap_or_default();
+    let (repo_arg, test_arg) = (
+        repo.0.to_string_lossy().into_owned(),
+        test.to_string_lossy().into_owned(),
+    );
+    let held = authority.0.join("held.py");
+    let held_arg = held.to_string_lossy().into_owned();
+    let (code, out, err) = emi_err(&[
+        "task", "holdout", "--file", &test_arg, "--out", &held_arg, "--unit", "asserts", "--share",
+        "0.4", "--seed", "4",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let split: Value = serde_json::from_str(&out).unwrap_or_default();
+    assert_eq!(split["unit"], "asserts", "{out}");
+    assert_eq!(strs(&split["held_out"]).len(), 2, "{out}");
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "baseline"]);
+
+    let run_both = "import runpy\nfor f in ('tests/test_add.py', 'tests/test_add_held_out.py'):\n    runpy.run_path(f)\n";
+    let flag = format!("tests/test_add_held_out.py={}", held.display());
+    let (code, spec, err) = emi_err(&[
+        "task",
+        "draft",
+        "--repo",
+        &repo_arg,
+        "--target",
+        "solution.py",
+        "--objective",
+        "add adds its arguments",
+        "--held-out",
+        &flag,
+        "--task-id",
+        "add",
+        "--",
+        "python3",
+        "-c",
+        run_both,
+    ]);
+    assert_eq!(code, 0, "{err}");
+    // the sandbox is not under test, and not every machine has one
+    let mut spec: Value = serde_json::from_str(&spec).unwrap_or_default();
+    spec["execution"]["isolation"] = "none".into();
+    let spec_path = authority.0.join("spec.json");
+    std::fs::write(&spec_path, spec.to_string()).unwrap_or_default();
+    let auth = authority.0.join("store").to_string_lossy().into_owned();
+    let spec_arg = spec_path.to_string_lossy().into_owned();
+    let (code, _, err) = emi_err(&["task", "create", "--authority", &auth, "--spec", &spec_arg]);
+    assert_eq!(code, 0, "{err}");
+
+    // hard-codes exactly the cases the agent can still see
+    let visible = std::fs::read_to_string(&test).unwrap_or_default();
+    let table: Vec<String> = visible
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("assert candidate("))
+        .filter_map(|l| l.split_once(") == "))
+        .map(|(args, want)| format!("({args}): {want}"))
+        .collect();
+    assert_eq!(table.len(), 3, "{visible}");
+    let lookup = format!(
+        "def add(a, b):\n    return {{{}}}[(a, b)]\n",
+        table.join(", ")
+    );
+    std::fs::write(repo.0.join("solution.py"), lookup).unwrap_or_default();
+    let d = verdict(&auth, "add");
+    assert_eq!(d["decision"], "rejected", "{d}");
+
+    std::fs::write(
+        repo.0.join("solution.py"),
+        "def add(a, b):\n    return a + b\n",
+    )
+    .unwrap_or_default();
+    let d = verdict(&auth, "add");
+    assert_eq!(d["decision"], "accepted", "{d}");
+}
+
+#[test]
+fn designed_variants_need_a_reference_outside_the_repository() {
+    let (repo, authority) = (scratch("vr-repo"), scratch("vr-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    let test = repo.0.join("test_add.py");
+    std::fs::write(&test, LCB_TEST).unwrap_or_default();
+    let (test_arg, out) = (
+        test.to_string_lossy().into_owned(),
+        authority.0.join("held.py").to_string_lossy().into_owned(),
+    );
+    let (code, _, err) = emi_err(&[
+        "task", "holdout", "--file", &test_arg, "--out", &out, "--vary",
+    ]);
+    assert_ne!(code, 0);
+    assert!(err.contains("pass --reference"), "{err}");
+    let inside = repo.0.join("reference.py");
+    std::fs::write(&inside, "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    let inside_arg = inside.to_string_lossy().into_owned();
+    let (code, _, err) = emi_err(&[
+        "task",
+        "holdout",
+        "--file",
+        &test_arg,
+        "--out",
+        &out,
+        "--vary",
+        "--reference",
+        &inside_arg,
+    ]);
+    assert_ne!(code, 0);
+    assert!(err.contains("is inside the repository"), "{err}");
+
+    // the visible file is unchanged by a run that writes variants
+    let reference = authority.0.join("reference.py");
+    std::fs::write(&reference, "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    let ref_arg = reference.to_string_lossy().into_owned();
+    let (code, stdout, err) = emi_err(&[
+        "task",
+        "holdout",
+        "--file",
+        &test_arg,
+        "--out",
+        &out,
+        "--vary",
+        "--reference",
+        &ref_arg,
+        "--count",
+        "5",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let r: Value = serde_json::from_str(&stdout).unwrap_or_default();
+    assert_eq!(r["variants_written"], 5, "{stdout}");
+    assert!(r["dropped"]["duplicate"].is_u64(), "{stdout}");
+    assert_eq!(std::fs::read_to_string(&test).unwrap_or_default(), LCB_TEST);
+    let held = std::fs::read_to_string(&out).unwrap_or_default();
+    assert_eq!(held.matches("def test_emi_variant_").count(), 5, "{held}");
+}
