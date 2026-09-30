@@ -529,6 +529,7 @@ dependencies = [
  "emi-exec",
  "emi-git",
  "emi-history",
+ "emi-ledger",
  "emi-panel",
  "emi-scan",
  "roxmltree",

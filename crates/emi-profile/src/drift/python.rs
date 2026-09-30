@@ -1,9 +1,9 @@
-//! The Python processes behind `emi drift`, all through the profile's
-//! sandbox runner (one copy of a commit per process group, the single
-//! executor underneath): classify the targets, run the tests on the base
-//! commit with the input recorder loaded, and replay the recorded inputs.
-//! The driver and the recorder are written into the copy they run in, so
-//! nothing outside the scratch copy is touched.
+//! The Python processes behind drift, all through a [`Side`] (one fresh
+//! tree per process group, the single executor underneath): classify the
+//! targets, run the tests on the base side with the input recorder loaded,
+//! and replay the recorded inputs. The driver and the recorder are written
+//! into the tree they run in, so nothing outside the scratch tree is
+//! touched.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,8 +11,10 @@ use std::time::Duration;
 
 use emi_exec::Status;
 use emi_ledger::pyfmt::{canonical, dumps_line};
-use emi_profile::sandbox::{Copy, Runner, tail};
 use serde_json::{Value, json};
+
+use super::{Side, Tree};
+use crate::sandbox::tail;
 
 const DRIVER: &str = include_str!("driver.py");
 const RECORDER: &str = include_str!("recorder.py");
@@ -43,8 +45,8 @@ fn failure(what: &str, o: &emi_exec::Outcome) -> String {
     format!("{what} {why}")
 }
 
-fn work_dir(copy: &Copy) -> Result<PathBuf, String> {
-    let dir = copy.dir.join(WORK);
+fn work_dir(tree: &Path) -> Result<PathBuf, String> {
+    let dir = tree.join(WORK);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     Ok(dir)
 }
@@ -53,16 +55,22 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
     std::fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-/// Run the driver in `copy` and read its result file.
-fn driver(
-    runner: &Runner,
-    copy: &Copy,
-    python: &str,
+/// How the driver runs: the interpreter, the environment, the bound.
+struct Invocation<'a> {
+    python: &'a str,
+    env: &'a [(String, String)],
+    timeout: Duration,
+}
+
+/// Run the driver in `tree` and read its result file.
+fn driver<S: Side>(
+    side: &S,
+    tree: &S::Tree,
+    how: &Invocation,
     mode: &str,
     request: &Value,
-    timeout: Duration,
 ) -> Result<Value, String> {
-    let work = work_dir(copy)?;
+    let work = work_dir(tree.dir())?;
     let (script, req, res) = (
         work.join("driver.py"),
         work.join(format!("{mode}-request.json")),
@@ -70,12 +78,12 @@ fn driver(
     );
     write(&script, DRIVER)?;
     write(&req, &dumps_line(request))?;
-    let argv: Vec<String> = [python, &script.to_string_lossy(), mode]
+    let argv: Vec<String> = [how.python, &script.to_string_lossy(), mode]
         .into_iter()
         .map(str::to_owned)
         .chain([req, res.clone()].map(|p| p.to_string_lossy().into_owned()))
         .collect();
-    let o = runner.run(copy, &argv, timeout);
+    let o = side.run(tree, &argv, how.env, how.timeout);
     if o.status != Status::Exited || o.exit_code != Some(0) {
         return Err(failure(&format!("the {mode} step"), &o));
     }
@@ -87,22 +95,20 @@ fn driver(
 /// What each target is, by (file, name, `def` line on the base side):
 /// `function`, `static`, `class`, `instance`, `nested`, `async` or
 /// `not_found`, with its qualified name.
-pub fn classify(
-    runner: &Runner,
-    copy: &Copy,
+pub fn classify<S: Side>(
+    side: &S,
+    tree: &S::Tree,
     targets: &[(String, String, u32)],
 ) -> Result<Vec<(String, Option<String>)>, String> {
     let request = json!({"targets": targets.iter().map(|(file, name, line)| {
         json!({"file": file, "name": name, "line": line})
     }).collect::<Vec<_>>()});
-    let out = driver(
-        runner,
-        copy,
-        "python3",
-        "classify",
-        &request,
-        CLASSIFY_TIMEOUT,
-    )?;
+    let how = Invocation {
+        python: "python3",
+        env: side.env(),
+        timeout: CLASSIFY_TIMEOUT,
+    };
+    let out = driver(side, tree, &how, "classify", &request)?;
     let items = out["targets"]
         .as_array()
         .filter(|a| a.len() == targets.len())
@@ -149,39 +155,37 @@ pub struct Harvest {
     pub incomplete: Option<String>,
 }
 
-fn harvest_env(runner: &Runner, copy: &Copy, work: &Path) -> Vec<(String, String)> {
+fn harvest_env(base: &[(String, String)], tree: &Path, work: &Path) -> Vec<(String, String)> {
     let recorder = work.join("recorder").to_string_lossy().into_owned();
-    let mut env: Vec<(String, String)> = runner
-        .env
+    let mut env: Vec<(String, String)> = base
         .iter()
         .filter(|(k, _)| k != "PYTHONPATH")
         .cloned()
         .collect();
     // the recorder goes first; a PYTHONPATH the caller set still applies
-    let path = runner
-        .env
+    let path = base
         .iter()
         .rfind(|(k, _)| k == "PYTHONPATH")
         .map_or(recorder.clone(), |(_, v)| format!("{recorder}:{v}"));
     env.push(("PYTHONPATH".into(), path));
     let at = |p: &str| work.join(p).to_string_lossy().into_owned();
-    env.push(("EMI_DRIFT_ROOT".into(), copy.dir.to_string_lossy().into()));
+    env.push(("EMI_DRIFT_ROOT".into(), tree.to_string_lossy().into()));
     env.push(("EMI_DRIFT_TARGETS".into(), at("targets.json")));
     env.push(("EMI_DRIFT_OUT".into(), at("records")));
     env
 }
 
-/// Run the test command on `copy` (of the base commit) with the recorder
-/// loaded. `Err` when nothing usable was recorded: the command did not
-/// start, timed out before any process wrote its records, or never started
-/// Python with the recorder.
-pub fn harvest(
-    runner: &Runner,
-    copy: &Copy,
-    command: &[String],
+/// Run the test commands in turn on `tree` (of the base side) with the
+/// recorder loaded. `Err` when nothing usable was recorded: a command did
+/// not start, the commands timed out before any process wrote its
+/// records, or none started Python with the recorder.
+pub fn harvest<S: Side>(
+    side: &S,
+    tree: &S::Tree,
+    commands: &[Vec<String>],
     targets: &[Target],
 ) -> Result<Harvest, String> {
-    let work = work_dir(copy)?;
+    let work = work_dir(tree.dir())?;
     let records = work.join("records");
     for dir in [work.join("recorder"), records.clone()] {
         std::fs::create_dir_all(&dir)
@@ -193,15 +197,23 @@ pub fn harvest(
         .map(|t| json!({"id": t.id, "file": t.file, "qualname": t.qualname, "kind": t.kind}))
         .collect();
     write(&work.join("targets.json"), &dumps_line(&Value::from(specs)))?;
-    let env = harvest_env(runner, copy, &work);
-    let recording = Runner {
-        env: &env,
-        ..*runner
-    };
-    let o = recording.run(copy, command, runner.timeout);
-    if o.status == Status::NotLaunched {
-        return Err(failure("the test command", &o));
+    let env = harvest_env(side.env(), tree.dir(), &work);
+    let mut outcomes = Vec::new();
+    for command in commands {
+        let o = side.run(tree, command, &env, side.timeout());
+        if o.status == Status::NotLaunched {
+            return Err(failure("the test command", &o));
+        }
+        outcomes.push(o);
     }
+    // the first run that did not finish normally says why, else the first
+    let Some(o) = outcomes
+        .iter()
+        .find(|o| o.status != Status::Exited || o.exit_code != Some(0))
+        .or(outcomes.first())
+    else {
+        return Err("no test command to run".into());
+    };
     let files = read_records(&records)?;
     if files.is_empty() {
         return Err(match o.status {
@@ -211,11 +223,11 @@ pub fn harvest(
                  honoured)",
                 o.exit_code
             ),
-            _ => failure("the test command", &o),
+            _ => failure("the test command", o),
         });
     }
     let incomplete = (o.status != Status::Exited || o.exit_code != Some(0))
-        .then(|| failure("the test command on the base commit", &o));
+        .then(|| failure("the test command on the base commit", o));
     merge(&files, incomplete)
 }
 
@@ -309,20 +321,20 @@ fn merge(files: &[Value], incomplete: Option<String>) -> Result<Harvest, String>
     })
 }
 
-/// The interpreter for a replay in `copy`: the harvest's, moved into
-/// `copy` when it lived inside the base copy (a linked virtualenv).
-pub fn interpreter(harvest: &Harvest, base: &Copy, copy: &Copy) -> String {
+/// The interpreter for a replay in `tree`: the harvest's, moved into
+/// `tree` when it lived inside the harvested tree (a linked virtualenv).
+pub fn interpreter(harvest: &Harvest, base: &Path, tree: &Path) -> String {
     let Some(exe) = harvest.executable.as_deref() else {
         return "python3".into();
     };
-    let roots = [Some(base.dir.clone()), base.dir.canonicalize().ok()];
+    let roots = [Some(base.to_path_buf()), base.canonicalize().ok()];
     roots
         .iter()
         .flatten()
         .find_map(|r| Path::new(exe).strip_prefix(r).ok())
         .map_or_else(
             || exe.to_owned(),
-            |rel| copy.dir.join(rel).to_string_lossy().into_owned(),
+            |rel| tree.join(rel).to_string_lossy().into_owned(),
         )
 }
 
@@ -345,13 +357,13 @@ pub struct ReplaySettings<'a> {
 
 /// Per target id: `{"outcomes": [[outcome; repeat]; inputs]}` or
 /// `{"import_error": "..."}`.
-pub fn replay(
-    runner: &Runner,
-    copy: &Copy,
+pub fn replay<S: Side>(
+    side: &S,
+    tree: &S::Tree,
     items: &[Replay],
     s: &ReplaySettings,
 ) -> Result<BTreeMap<usize, Value>, String> {
-    let timeout = runner.timeout;
+    let timeout = side.timeout();
     // the driver stops calling in time to write what it has
     let own = timeout.as_secs_f64() - (timeout.as_secs_f64() / 10.0).clamp(1.0, 30.0);
     let request = json!({
@@ -364,14 +376,15 @@ pub fn replay(
         "total_timeout": own.max(1.0),
         "repeat": s.repeat,
     });
-    let mut env = runner.env.to_vec();
+    let mut env = side.env().to_vec();
     // dicts and sets of strings must come out in the same order on each side
     env.push(("PYTHONHASHSEED".into(), "0".into()));
-    let replaying = Runner {
+    let how = Invocation {
+        python: s.python,
         env: &env,
-        ..*runner
+        timeout,
     };
-    let out = driver(&replaying, copy, s.python, "replay", &request, timeout)?;
+    let out = driver(side, tree, &how, "replay", &request)?;
     let results = out["results"]
         .as_object()
         .ok_or("the replay step's result lacks `results`")?;
