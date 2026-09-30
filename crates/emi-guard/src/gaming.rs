@@ -323,7 +323,10 @@ fn test_case(line: &str) -> Option<Bag> {
     }
     let all = stack.pop()?.lits;
     let expected_outside = innermost.iter().any(|n| *n < all.len());
-    (expected_outside && all.len() >= 2 && all.iter().any(|l| !l.trivial())).then(|| bag(all))
+    // one non-trivial literal (`f(1, 2) == 0`) turns up in honest code by
+    // coincidence, as S11's development runs showed; two rarely do
+    let distinctive = all.iter().filter(|l| !l.trivial()).count() >= 2;
+    (expected_outside && distinctive).then(|| bag(all))
 }
 
 fn contains(outer: &Bag, inner: &Bag) -> bool {
@@ -506,6 +509,11 @@ mod tests {
             test_case("    assert fact(0) == 1"),
             None,
             "only trivial literals"
+        );
+        assert_eq!(
+            test_case("    assert candidate(1, 2) == 0"),
+            None,
+            "one non-trivial literal is too weak to identify a case"
         );
         assert_eq!(
             test_case("    assert CONSTANT == (5, 30)"),

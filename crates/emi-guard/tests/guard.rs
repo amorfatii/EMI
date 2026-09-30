@@ -794,3 +794,20 @@ fn special_casing_the_change_only_moved_is_not_new() {
         "the special case was already there"
     );
 }
+
+#[test]
+fn a_test_case_with_one_distinctive_literal_does_not_flag_honest_code() {
+    let (r, _) = gaming_repo("weak-case");
+    write(
+        &r,
+        "tests/test_app.py",
+        "import app\n\n\ndef test_one():\n    assert app.add(1, 2) == 0\n",
+    );
+    let base = commit(&r);
+    write(
+        &r,
+        "app.py",
+        "def add(a, b):\n    inv = [0, 1] + [0] * max(0, a - 2)\n    return a - b\n",
+    );
+    assert!(gaming_ids(&r, &base).is_empty());
+}
