@@ -422,8 +422,21 @@ fn inventory_ids(
         .collect())
 }
 
+/// Test-runner configuration the candidate added: restoring only undoes
+/// changes to files the baseline had, and a new conftest.py's hooks run in
+/// every check.
+fn added_runner_config(changed: &[(String, &'static str)]) -> Vec<String> {
+    changed
+        .iter()
+        .filter(|(p, kind)| *kind == "add" && crate::runner_config::matches(p))
+        .map(|(p, _)| p.clone())
+        .collect()
+}
+
 /// The verification gate: trusted files restored, held-out files injected
-/// (both before the checks run), and the test inventory compared.
+/// (both before the checks run), and the test inventory compared. Without
+/// a verification section only added runner configuration is looked for,
+/// since it changes what every check means whatever the contract asks.
 fn verification_gate(
     setup: &RunSetup,
     restored: Vec<String>,
@@ -433,18 +446,15 @@ fn verification_gate(
 ) -> Value {
     let contract = setup.contract;
     let spec = &contract["verification"];
+    let added_config = added_runner_config(setup.changed);
     if spec.is_null() {
-        return json!({"state": "not_required"});
+        return if added_config.is_empty() {
+            json!({"state": "not_required"})
+        } else {
+            json!({"state": "needs_review", "added_runner_config": added_config})
+        };
     }
-    // runner configuration the candidate added: restoring only undoes
-    // changes to files the baseline had, and a new conftest.py's hooks run
-    // in every check
-    let added_config: Vec<&String> = setup
-        .changed
-        .iter()
-        .filter(|(p, kind)| *kind == "add" && crate::runner_config::matches(p))
-        .map(|(p, _)| p)
-        .collect();
+    let policy = spec["runner_config"].as_str().unwrap_or("reject");
     // test files the contract does not trust: an edit to one is verified
     // as the candidate left it, so a narrow `trusted` list must not turn a
     // weakened test into a silent pass
@@ -458,15 +468,17 @@ fn verification_gate(
         })
         .map(|(p, _)| p)
         .collect();
-    let mut gate = json!({"restored": restored, "held_out": held_out,
-                          "added_runner_config": added_config,
-                          "untrusted_test_changes": untrusted,
-                          "inventory": {"state": "not_required"}});
-    let mut state = if restored.is_empty() && added_config.is_empty() && untrusted.is_empty() {
+    let mut state = if !added_config.is_empty() && policy == "reject" {
+        "fail"
+    } else if restored.is_empty() && added_config.is_empty() && untrusted.is_empty() {
         "pass"
     } else {
         "needs_review"
     };
+    let mut gate = json!({"restored": restored, "held_out": held_out,
+                          "added_runner_config": added_config, "runner_config": policy,
+                          "untrusted_test_changes": untrusted,
+                          "inventory": {"state": "not_required"}});
     if let Some(candidate_ids) = candidate_ids {
         let base_ws = scratch.0.join("baseline");
         let base_ids = setup.prepare_baseline(&base_ws).and_then(|mounts| {
@@ -663,6 +675,29 @@ fn ids_in(ledger: &[Value], state: &str) -> Vec<String> {
         .collect()
 }
 
+/// Why the verification gate rejects the candidate: tests missing from
+/// the inventory, runner configuration added under the `reject` policy.
+fn verification_rejections(v: &Value) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if v["state"] != "fail" {
+        return reasons;
+    }
+    if v["inventory"]["state"] == "fail" {
+        reasons.push(format!(
+            "{} test(s) of the baseline are missing from the candidate's inventory",
+            v["inventory"]["missing"].as_array().map_or(0, Vec::len)
+        ));
+    }
+    let added = globs(&v["added_runner_config"]);
+    if v["runner_config"] == "reject" && !added.is_empty() {
+        reasons.push(format!(
+            "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
+            added.join(", ")
+        ));
+    }
+    reasons
+}
+
 /// Why the candidate is rejected (empty: it is not).
 fn rejections(ledger: &[Value], g: &Gates) -> Vec<String> {
     let mut reasons = Vec::new();
@@ -692,14 +727,7 @@ fn rejections(ledger: &[Value], g: &Gates) -> Vec<String> {
             guard_ids(g.guardrails, "block")
         ));
     }
-    if g.verification["state"] == "fail" {
-        reasons.push(format!(
-            "{} test(s) of the baseline are missing from the candidate's inventory",
-            g.verification["inventory"]["missing"]
-                .as_array()
-                .map_or(0, Vec::len)
-        ));
-    }
+    reasons.extend(verification_rejections(g.verification));
     if g.structural["state"] == "fail" {
         reasons.push(format!(
             "structural gate: {}",
@@ -960,7 +988,9 @@ fn run_verified(
     let (statuses, runs) = run_checks(store, &setup, &scratch.0, &subject.candidate_id)?;
     let shaken = shake::gate(store, &setup, &scratch.0, &statuses, &subject.candidate_id)?;
     let mut gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
-    merge_shake(&mut gate, shaken);
+    if !vspec.is_null() {
+        merge_shake(&mut gate, shaken);
+    }
     Ok(Verified {
         statuses,
         runs,

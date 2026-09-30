@@ -1,9 +1,9 @@
 //! Files that decide how tests run rather than what they test: a
 //! `conftest.py` can rewrite every test's outcome, a `pytest.ini` can load
 //! a plugin or deselect tests, `sitecustomize.py` runs at interpreter
-//! start. Task specs trust and protect them; a candidate that adds one
-//! needs review, since restoring trusted files only undoes changes to
-//! files the baseline had.
+//! start. Task specs trust and protect them; a candidate that adds one is
+//! rejected (or needs review, when the contract says so), since restoring
+//! trusted files only undoes changes to files the baseline had.
 
 /// File names (fnmatch patterns on the last path component).
 pub const NAMES: &[&str] = &[
