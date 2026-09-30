@@ -5,6 +5,7 @@ pub mod change;
 pub mod functions;
 pub mod hunks;
 pub mod snapshot;
+pub mod surface;
 pub mod trajectory;
 
 pub use change::{Request, build_change};

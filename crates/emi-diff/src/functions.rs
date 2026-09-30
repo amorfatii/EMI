@@ -59,7 +59,7 @@ pub struct ChangedFunctions {
     pub unsupported: Vec<String>,
 }
 
-fn lang_name(lang: Lang) -> &'static str {
+pub(crate) fn lang_name(lang: Lang) -> &'static str {
     match lang {
         Lang::Python => "python",
         Lang::JavaScript => "javascript",
