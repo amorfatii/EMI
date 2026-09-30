@@ -17,6 +17,7 @@ well on human ones. It runs on Python, JavaScript/TypeScript, Rust and Go.
 | You want to… | Run |
 |---|---|
 | See where your codebase is costly and changes often | `emi report` → one HTML file |
+| See whether the codebase is getting harder to maintain over time, and whether from more code or denser code | `emi trend` |
 | Block a pull request that makes the code worse | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
 | Hand a task to an AI agent and verify its result | `emi task create` / `verify` / `complete` |
 | Know whether your tests would catch a wrong change | `emi profile` |
@@ -218,6 +219,7 @@ takes about 58 s on the same tree.
 | Mutation on a change's lines | [docs/diff-mutate.md](docs/diff-mutate.md) |
 | Behavioural drift | [docs/drift.md](docs/drift.md) |
 | History, hotspots, change coupling | [docs/history.md](docs/history.md) |
+| Burden over time | [docs/trend.md](docs/trend.md) |
 | Rules | [docs/rules.md](docs/rules.md) |
 | Refactoring tasks and `emi explain` | [docs/refactoring.md](docs/refactoring.md) |
 | Editor integration | [docs/editor.md](docs/editor.md) |
