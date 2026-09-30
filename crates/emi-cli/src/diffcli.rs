@@ -256,3 +256,57 @@ pub fn backtest(args: &BacktestArgs) -> anyhow::Result<u8> {
     }
     Ok(0)
 }
+
+#[derive(Args)]
+pub struct ChangedFunctionsArgs {
+    /// Git repository.
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+    /// Base ref (commit, branch, tag).
+    #[arg(long)]
+    base: String,
+    /// Changed ref (commit, branch, tag).
+    #[arg(long)]
+    head: String,
+    #[arg(long, default_value = "json", value_parser = ["json", "text"])]
+    format: String,
+}
+
+fn span_text(s: Option<(u32, u32)>) -> String {
+    s.map_or("-".into(), |(a, b)| format!("{a}-{b}"))
+}
+
+fn changed_functions_text(found: &emi_diff::functions::ChangedFunctions) -> String {
+    let mut out = String::new();
+    for f in &found.functions {
+        out.push_str(&format!(
+            "{} {}:{} old {} new {}\n",
+            f.kind.as_str(),
+            f.file,
+            f.name,
+            span_text(f.old),
+            span_text(f.new)
+        ));
+    }
+    for (label, files) in [
+        ("unparsed", &found.unparsed),
+        ("unsupported", &found.unsupported),
+    ] {
+        for file in files {
+            out.push_str(&format!("{label} {file}\n"));
+        }
+    }
+    out
+}
+
+pub fn changed_functions(args: &ChangedFunctionsArgs) -> anyhow::Result<u8> {
+    let found = emi_diff::functions::changed_functions(&args.repo, &args.base, &args.head)
+        .map_err(anyhow::Error::msg)?;
+    let text = if args.format == "json" {
+        emi_ledger::pyfmt::dumps_pretty(&found.to_json()) + "\n"
+    } else {
+        changed_functions_text(&found)
+    };
+    write!(std::io::stdout().lock(), "{text}")?;
+    Ok(0)
+}
