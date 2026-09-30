@@ -426,6 +426,7 @@ dependencies = [
 name = "emi-lang-go"
 version = "0.1.0"
 dependencies = [
+ "emi-ir",
  "emi-lang-common",
  "tree-sitter",
  "tree-sitter-go",

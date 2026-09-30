@@ -4,6 +4,7 @@
 
 pub mod classify;
 mod coupling;
+pub mod exports;
 mod go;
 mod graded;
 mod js;
