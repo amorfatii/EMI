@@ -199,8 +199,9 @@ pub fn attach_coverage(records: &mut [Record], report: &Resolved, tree: &Path) {
     }
 }
 
-/// Up to `k` of `all`, spread evenly over them.
-fn spread(all: Vec<Mutant>, k: usize) -> Vec<Mutant> {
+/// Up to `k` of `all`, spread evenly over them (keeps order; the first is
+/// always taken).
+pub fn spread(all: Vec<Mutant>, k: usize) -> Vec<Mutant> {
     if all.len() <= k {
         return all;
     }

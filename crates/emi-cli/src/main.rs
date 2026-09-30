@@ -11,6 +11,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 
 mod checkcli;
 mod diffcli;
+mod diffmutcli;
 mod explaincli;
 mod gatecli;
 mod guardcli;
@@ -136,6 +137,10 @@ enum Command {
     /// List the functions a change adds, modifies or removes, with their
     /// line spans on each side.
     ChangedFunctions(diffcli::ChangedFunctionsArgs),
+    /// Run the tests against mutants of the lines a change added, to show
+    /// what the tests would not notice going wrong there. A report; gates
+    /// nothing.
+    DiffMutate(diffmutcli::DiffMutateArgs),
     /// Gate consecutive first-parent commit pairs and report the verdict
     /// curve (calibrate allowances before enforcing).
     Backtest(diffcli::BacktestArgs),
@@ -316,6 +321,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Review { input, gate } => review(&input, &gate),
         Command::Diff(args) => diffcli::run(&args),
         Command::ChangedFunctions(args) => diffcli::changed_functions(&args),
+        Command::DiffMutate(args) => diffmutcli::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
         Command::Hotspots(args) => historycli::run(&args),
         Command::Check(args) => checkcli::run(&args),

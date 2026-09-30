@@ -77,7 +77,7 @@ pub struct ProfileArgs {
     command: Vec<String>,
 }
 
-fn env_pairs(env: &[String]) -> anyhow::Result<Vec<(String, String)>> {
+pub(crate) fn env_pairs(env: &[String]) -> anyhow::Result<Vec<(String, String)>> {
     env.iter()
         .map(|kv| {
             kv.split_once('=')
