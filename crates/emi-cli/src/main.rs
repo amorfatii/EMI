@@ -26,6 +26,7 @@ mod report;
 mod sarif;
 mod specgen;
 mod taskcli;
+mod trend;
 mod vary;
 
 #[derive(Parser)]
@@ -149,6 +150,10 @@ enum Command {
     /// Gate consecutive first-parent commit pairs and report the verdict
     /// curve (calibrate allowances before enforcing).
     Backtest(diffcli::BacktestArgs),
+    /// Burden totals over first-parent history, one row per measured
+    /// commit, with the burden change split into more code and denser code.
+    /// Descriptive; gates nothing.
+    Trend(trend::TrendArgs),
     /// Rank files by measured burden × change frequency; report change
     /// coupling, authorship and AI attribution over a history window.
     Hotspots(historycli::HotspotsArgs),
@@ -329,6 +334,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::DiffMutate(args) => diffmutcli::run(&args),
         Command::Drift(args) => drift::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
+        Command::Trend(args) => trend::run(&args),
         Command::Hotspots(args) => historycli::run(&args),
         Command::Check(args) => checkcli::run(&args),
         Command::SarifMerge(args) => mergecli::run(&args),

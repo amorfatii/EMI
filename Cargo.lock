@@ -336,6 +336,7 @@ dependencies = [
  "emi-profile",
  "emi-rules",
  "emi-scan",
+ "rayon",
  "serde_json",
  "shlex",
 ]

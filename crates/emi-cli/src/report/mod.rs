@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 use crate::{Language, ProfileArg};
 use page::{SCRIPT, STYLE, esc};
+pub(crate) use sections::bounds;
 
 #[derive(Args)]
 pub struct ReportArgs {
