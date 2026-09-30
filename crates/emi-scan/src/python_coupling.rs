@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use emi_ir::UnresolvedCall;
 
-use crate::coupling::RegionEvidence;
+use crate::coupling::{RegionEvidence, file_edges};
 use emi_lang_python::coupling::{self, Project};
 use emi_lang_python::{FileCoupling, FileMeasure};
 use rayon::prelude::*;
@@ -41,6 +41,8 @@ pub struct Coupled {
     pub files: Vec<FileCoupling>,
     pub cycles: Vec<Vec<String>>,
     pub cycle_modules: HashSet<String>,
+    /// The import graph between files.
+    pub edges: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Dotted package path of `root` when it (and possibly its parents) are
@@ -92,10 +94,19 @@ pub fn couple_all(products: &mut [Product], precise: bool) -> Result<Coupled, Sc
     }
     let cycles = coupling::strongly_connected(&graph);
     let cycle_modules = cycles.iter().flatten().cloned().collect();
+    let modules: Vec<String> = products.iter().map(Product::module).collect();
+    let edges = file_edges(
+        products
+            .iter()
+            .zip(&modules)
+            .zip(&files)
+            .map(|((p, m), fc)| (p.rel.as_str(), m.as_str(), &fc.import_deps)),
+    );
     Ok(Coupled {
         files,
         cycles,
         cycle_modules,
+        edges,
     })
 }
 

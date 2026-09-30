@@ -11,7 +11,7 @@ use emi_ir::{Burden, Component, Evidence, FileError, InventoryEntry, Measurement
 use emi_lang_common::FileMeasure;
 use rayon::prelude::*;
 
-use crate::coupling::{RegionEvidence, apply};
+use crate::coupling::{RegionEvidence, apply, file_edges};
 use crate::walk::{self, ScopeFile};
 use crate::{OnSyntaxError, Options, ScanError, truncate};
 
@@ -240,14 +240,28 @@ pub fn scan<A: Adapter>(a: &A, root: &Path, options: &Options) -> Result<Measure
     let scope = a.scope(&units);
     let couplings: Vec<Option<Vec<RegionDeps>>> =
         units.par_iter().map(|u| a.couple(u, &scope)).collect();
+    let unit_deps: Vec<BTreeSet<String>> = units
+        .iter()
+        .zip(&couplings)
+        .map(|(u, c)| {
+            let deps = c.iter().flatten().flat_map(|(deps, _)| deps);
+            deps.filter(|d| **d != u.module).cloned().collect()
+        })
+        .collect();
     let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (u, c) in units.iter().zip(&couplings) {
-        let edges = graph.entry(u.module.clone()).or_default();
-        for (deps, _) in c.iter().flatten() {
-            edges.extend(deps.iter().filter(|d| **d != u.module).cloned());
-        }
+    for (u, deps) in units.iter().zip(&unit_deps) {
+        graph
+            .entry(u.module.clone())
+            .or_default()
+            .extend(deps.iter().cloned());
     }
     out.static_dependency_cycles = strongly_connected(&graph);
+    out.import_edges = file_edges(
+        units
+            .iter()
+            .zip(&unit_deps)
+            .map(|(u, d)| (u.rel.as_str(), u.module.as_str(), d)),
+    );
     let in_cycle: HashSet<String> = out
         .static_dependency_cycles
         .iter()

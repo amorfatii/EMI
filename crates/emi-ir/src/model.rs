@@ -1,7 +1,7 @@
 //! Measurement records. Field names and JSON shapes follow the v0.5 probe
 //! output so the golden corpus can be compared field by field.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
@@ -213,4 +213,9 @@ pub struct Measurement {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_complete: Option<bool>,
+    /// The import graph at file level (scope-relative importer to the
+    /// first-party files it imports), for callers asking what depends on a
+    /// file. It is context, not a measurement: never serialized.
+    #[serde(skip)]
+    pub import_edges: BTreeMap<String, BTreeSet<String>>,
 }

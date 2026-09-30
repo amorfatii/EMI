@@ -502,6 +502,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Measurement, ScanError> {
         scan.component(&p.rel, measure, c);
     }
     scan.out.static_dependency_cycles = coupled.cycles;
+    scan.out.import_edges = coupled.edges;
     // The oracle orders test-value findings by file name (string order).
     tests.sort_by(|a, b| a.0.cmp(&b.0));
     scan.out.test_value_findings = Some(tests.into_iter().flat_map(|(_, f)| f).collect());
