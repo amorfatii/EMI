@@ -36,6 +36,53 @@ pub use policy::{Policy, Tier};
 
 pub const SCHEMA: &str = "emi-guard-0.1";
 
+/// What a guardrail's finding is evidence of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// An observation of what the diff did (a path left the scope, a test
+    /// was deleted, a suppression was added): any change doing it is found.
+    Structural,
+    /// A recognised shape of test gaming: a useful review hint, but code
+    /// written differently passes it.
+    Pattern,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Structural => "structural",
+            Kind::Pattern => "pattern",
+        }
+    }
+}
+
+/// The kind of every guardrail id, by exact id or by family prefix
+/// (ending in `.`). An id with no entry has no kind, never a default.
+pub const KINDS: &[(&str, Kind)] = &[
+    ("scope.", Kind::Structural),
+    ("prohibited.", Kind::Structural),
+    ("tests.", Kind::Structural),
+    ("suppress.added", Kind::Structural),
+    ("growth.", Kind::Structural),
+    ("dup.", Kind::Structural),
+    ("gaming.", Kind::Pattern),
+    ("code.early_exit", Kind::Pattern),
+];
+
+/// The kind of guardrail `id` (None: unclassified).
+pub fn kind(id: &str) -> Option<Kind> {
+    KINDS
+        .iter()
+        .find(|(key, _)| {
+            if key.ends_with('.') {
+                id.starts_with(key)
+            } else {
+                id == *key
+            }
+        })
+        .map(|(_, k)| *k)
+}
+
 /// A finding with its enforcement tier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Violation {
@@ -170,5 +217,53 @@ pub fn evaluate(
         head: head.map(str::to_owned),
         files: files.len(),
         violations,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every guardrail id written in this crate's source: a quoted
+    /// `family.name`, leaving out file names (`conftest.py`, `tox.ini`).
+    fn ids_in_source() -> Vec<String> {
+        const FILE_SUFFIXES: &[&str] = &["py", "ini", "cfg", "toml", "go", "rs", "json", "js"];
+        let sources = [
+            include_str!("lib.rs"),
+            include_str!("checks.rs"),
+            include_str!("dup.rs"),
+            include_str!("gaming.rs"),
+            include_str!("patterns.rs"),
+            include_str!("policy.rs"),
+        ];
+        let mut ids: Vec<String> = sources
+            .iter()
+            .flat_map(|src| src.split('"').skip(1).step_by(2))
+            .filter(|lit| {
+                lit.split_once('.').is_some_and(|(family, name)| {
+                    !family.is_empty()
+                        && family.chars().all(|c| c.is_ascii_lowercase())
+                        && !name.is_empty()
+                        && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                        && !FILE_SUFFIXES.contains(&name)
+                })
+            })
+            .map(str::to_owned)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    #[test]
+    fn every_guardrail_id_is_classified() {
+        let ids = ids_in_source();
+        assert!(ids.len() >= 25, "the id scan found too few: {ids:?}");
+        let unclassified: Vec<&String> = ids.iter().filter(|id| kind(id).is_none()).collect();
+        assert!(unclassified.is_empty(), "unclassified: {unclassified:?}");
+        assert_eq!(kind("gaming.test_sniff"), Some(Kind::Pattern));
+        assert_eq!(kind("code.early_exit"), Some(Kind::Pattern));
+        assert_eq!(kind("tests.skip_added"), Some(Kind::Structural));
+        assert_eq!(kind("code.other"), None);
     }
 }
