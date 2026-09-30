@@ -184,6 +184,7 @@ optional `verification` section does this the way benchmarks grade:
 - **Why it helps:** the agent never sees the held-out cases, so code fitted to the visible cases meets inputs it has not seen.
 - **Repeatability:** the same `--seed` gives the same split.
 - **Limit:** it only helps as far as the file has cases worth hiding. A file with one test cannot be split.
+- **What it splits:** top-level test functions and test methods inside classes. The split works line by line, so both halves must parse as Python (checked with `python3`) before either file is written. A file it cannot split cleanly is refused and left unchanged.
 
 This mirrors ImpossibleBench's finding: agents facing contradictory tests
 cheated about half the time, mostly by editing tests, and read-only tests

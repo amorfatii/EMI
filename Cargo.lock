@@ -324,6 +324,7 @@ dependencies = [
  "clap",
  "emi-controller",
  "emi-diff",
+ "emi-exec",
  "emi-git",
  "emi-guard",
  "emi-history",
