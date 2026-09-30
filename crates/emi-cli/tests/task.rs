@@ -176,6 +176,61 @@ fn drafts_carry_held_out_tests_and_warn_from_the_profile() {
     assert_eq!(code, 0, "the drafted spec freezes: {err}");
 }
 
+#[test]
+fn every_kind_of_generated_spec_freezes() {
+    // the contract refuses unknown keys, so whatever the generators write
+    // must be something it reads
+    let (repo, authority) = (scratch("kinds-repo"), scratch("kinds-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def f(x):\n    return x\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "init"]);
+    let hidden = authority.0.join("hidden_test.py");
+    std::fs::write(&hidden, "import app\n").unwrap_or_default();
+    let repo_arg = repo.0.to_string_lossy().into_owned();
+    let held = format!("tests/test_hidden.py={}", hidden.display());
+    let pytest = ["--", "python3", "-m", "pytest", "-q"];
+    let draft = [
+        &["task", "draft", "--repo", &repo_arg, "--target", "app.py"][..],
+        &[
+            "--objective",
+            "f doubles",
+            "--held-out",
+            &held,
+            "--task-id",
+            "d",
+        ],
+        &pytest,
+    ]
+    .concat();
+    let refactor = [
+        &[
+            "task",
+            "refactor-spec",
+            "--repo",
+            &repo_arg,
+            "--target",
+            "app.py",
+        ][..],
+        &["--task-id", "r"],
+        &pytest,
+    ]
+    .concat();
+    let auth = authority.0.join("store").to_string_lossy().into_owned();
+    for (n, args) in [draft, refactor].iter().enumerate() {
+        let (code, out, err) = emi_err(args);
+        assert_eq!(code, 0, "{err}");
+        let spec: Value = serde_json::from_str(&out).unwrap_or_default();
+        assert!(spec["verification"]["inventory"].is_object(), "{out}");
+        let spec_path = authority.0.join(format!("spec-{n}.json"));
+        std::fs::write(&spec_path, &out).unwrap_or_default();
+        let spec_arg = spec_path.to_string_lossy().into_owned();
+        let (code, _, err) =
+            emi_err(&["task", "create", "--authority", &auth, "--spec", &spec_arg]);
+        assert_eq!(code, 0, "{args:?} freezes: {err}");
+    }
+}
+
 const LCB_TEST: &str = "from solution import add\n\n\ndef check(candidate):\n    assert candidate(1, 2) == 3\n    assert candidate(2, 2) == 4\n    assert candidate(0, 0) == 0\n    assert candidate(5, 5) == 10\n    assert candidate(7, 1) == 8\n\n\ndef test_add():\n    check(add)\n\n\ntest_add()\n";
 
 fn verdict(authority: &str, task: &str) -> Value {

@@ -109,10 +109,70 @@ pub fn execution(v: Option<&Value>) -> Result<Value> {
     Ok(v.clone())
 }
 
+/// The keys each part of a task spec may hold: everything else is refused,
+/// so a misspelt key (`helt_out`) cannot silently switch a protection off.
+/// Each list is what the controller and the spec generators read.
+const KNOWN_KEYS: &[(&str, &[&str])] = &[
+    (
+        "spec",
+        &[
+            "task_id",
+            "repo",
+            "baseline",
+            "objective",
+            "requirements",
+            "exclusions",
+            "checks",
+            "envelope",
+            "guardrails",
+            "execution",
+            "structural",
+            "budgets",
+            "warning_policy",
+            "completion_policy",
+            "verification",
+            "refactor",
+        ],
+    ),
+    (
+        "envelope",
+        &[
+            "permitted_paths",
+            "excluded_paths",
+            "protected_paths",
+            "change_kinds",
+        ],
+    ),
+    ("requirement", &["id", "acceptance", "checks"]),
+    (
+        "verification",
+        &["trusted", "held_out", "inventory", "shake", "runner_config"],
+    ),
+    ("verification.held_out", &["content", "file"]),
+    (
+        "verification.inventory",
+        &["command", "format", "timeout_s"],
+    ),
+];
+
+/// Refuse a key of `obj` that [`KNOWN_KEYS`] does not list for `part`;
+/// `at` names the object in the error.
+fn known_keys(part: &str, obj: &Map<String, Value>, at: &str) -> Result<()> {
+    let known = KNOWN_KEYS
+        .iter()
+        .find(|(p, _)| *p == part)
+        .map_or(&[][..], |(_, keys)| *keys);
+    match obj.keys().find(|k| !known.contains(&k.as_str())) {
+        Some(k) => Err(format!("{at}: unknown key {k}")),
+        None => Ok(()),
+    }
+}
+
 fn envelope(v: Option<&Value>) -> Result<Value> {
     let Some(e) = v.and_then(Value::as_object) else {
         return Err("envelope must be an object".into());
     };
+    known_keys("envelope", e, "envelope")?;
     let permitted = string_list(e.get("permitted_paths"), "envelope.permitted_paths", true)?;
     let kinds = match e.get("change_kinds") {
         None => vec!["add".to_owned(), "modify".into(), "delete".into()],
@@ -142,6 +202,10 @@ fn requirements(v: Option<&Value>, checks: &Map<String, Value>) -> Result<Value>
         if id.trim().is_empty() || !seen.insert(id.to_owned()) {
             return Err("requirement ids must be unique nonempty strings".into());
         }
+        let Some(fields) = r.as_object() else {
+            return Err(format!("requirement {id} must be an object"));
+        };
+        known_keys("requirement", fields, &format!("requirement {id}"))?;
         if !nonempty_str(r.get("acceptance")) {
             return Err(format!("requirement {id} needs acceptance condition"));
         }
@@ -244,6 +308,8 @@ fn safe_relative(path: &str) -> bool {
 /// - `shake`: `{"rounds": 1..=3}` reruns every passing check with the
 ///   trusted tests renamed, at another path and hash seed; a check that
 ///   stops passing needs review.
+/// - `runner_config`: what added test-runner configuration does to the
+///   decision, `reject` (the default) or `review`.
 pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     let Some(v) = v.filter(|v| !v.is_null()) else {
         return Ok(None);
@@ -251,29 +317,49 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     let Some(obj) = v.as_object() else {
         return Err("verification must be an object".into());
     };
-    if let Some(k) = obj
-        .keys()
-        .find(|k| !matches!(k.as_str(), "trusted" | "held_out" | "inventory" | "shake"))
-    {
-        return Err(format!("verification: unknown key {k}"));
-    }
+    known_keys("verification", obj, "verification")?;
     let trusted = string_list(obj.get("trusted"), "verification.trusted", false)?;
+    let mut out = json!({"trusted": trusted, "held_out": held_out(obj.get("held_out"))?,
+                         "inventory": inventory(obj.get("inventory"))?});
+    // absent unless asked for, so contracts frozen without them keep their identity
+    if let Some(rounds) = shake(obj.get("shake"))? {
+        out["shake"] = json!({"rounds": rounds});
+    }
+    if let Some(policy) = runner_config_policy(obj.get("runner_config"))? {
+        out["runner_config"] = json!(policy);
+    }
+    Ok(Some(out))
+}
+
+/// The held-out files, read and frozen with their digests.
+fn held_out(v: Option<&Value>) -> Result<Map<String, Value>> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(Map::new());
+    };
+    let Some(files) = v.as_object() else {
+        return Err("verification.held_out must be an object of destination paths".into());
+    };
     let mut held_out = Map::new();
     let mut total = 0;
-    for (dest, src) in obj
-        .get("held_out")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-    {
+    for (dest, src) in files {
         if !safe_relative(dest) {
             return Err(format!(
                 "verification.held_out: {dest:?} must be a relative path inside the workspace"
             ));
         }
+        let Some(fields) = src.as_object() else {
+            return Err(format!(
+                "verification.held_out {dest}: must be an object with content or file"
+            ));
+        };
+        known_keys(
+            "verification.held_out",
+            fields,
+            &format!("verification.held_out {dest}"),
+        )?;
         let content = match (
-            src.get("content").and_then(Value::as_str),
-            src.get("file").and_then(Value::as_str),
+            fields.get("content").and_then(Value::as_str),
+            fields.get("file").and_then(Value::as_str),
         ) {
             (Some(c), _) => c.to_owned(),
             (None, Some(f)) => std::fs::read_to_string(f)
@@ -295,29 +381,40 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
             "verification.held_out: {total} bytes exceeds {MAX_HELD_OUT_BYTES}"
         ));
     }
-    let inventory = match obj.get("inventory") {
-        None | Some(Value::Null) => Value::Null,
-        Some(inv) => {
-            let command = string_list(inv.get("command"), "verification.inventory.command", true)?;
-            let format = inv.get("format").and_then(Value::as_str).unwrap_or("lines");
-            if !valid_timeout(inv.get("timeout_s")) {
-                return Err(format!(
-                    "verification.inventory.timeout_s must be a number of seconds in (0, {MAX_TIMEOUT_S}]"
-                ));
-            }
-            if !matches!(format, "lines" | "pytest") {
-                return Err("verification.inventory.format must be lines or pytest".into());
-            }
-            json!({"command": command, "format": format,
-                   "timeout_s": inv.get("timeout_s").and_then(Value::as_f64).unwrap_or(300.0)})
-        }
+    Ok(held_out)
+}
+
+/// The test inventory command (`null` when absent).
+fn inventory(v: Option<&Value>) -> Result<Value> {
+    let Some(inv) = v.filter(|v| !v.is_null()) else {
+        return Ok(Value::Null);
     };
-    let mut out = json!({"trusted": trusted, "held_out": held_out, "inventory": inventory});
-    // absent unless asked for, so contracts frozen without it keep their identity
-    if let Some(rounds) = shake(obj.get("shake"))? {
-        out["shake"] = json!({"rounds": rounds});
+    let Some(fields) = inv.as_object() else {
+        return Err("verification.inventory must be an object".into());
+    };
+    known_keys("verification.inventory", fields, "verification.inventory")?;
+    let command = string_list(inv.get("command"), "verification.inventory.command", true)?;
+    let format = inv.get("format").and_then(Value::as_str).unwrap_or("lines");
+    if !valid_timeout(inv.get("timeout_s")) {
+        return Err(format!(
+            "verification.inventory.timeout_s must be a number of seconds in (0, {MAX_TIMEOUT_S}]"
+        ));
     }
-    Ok(Some(out))
+    if !matches!(format, "lines" | "pytest") {
+        return Err("verification.inventory.format must be lines or pytest".into());
+    }
+    Ok(json!({"command": command, "format": format,
+               "timeout_s": inv.get("timeout_s").and_then(Value::as_f64).unwrap_or(300.0)}))
+}
+
+/// What added test-runner configuration does (`verification.runner_config`):
+/// `reject`, the default, or `review`.
+fn runner_config_policy(v: Option<&Value>) -> Result<Option<&str>> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if matches!(s.as_str(), "reject" | "review") => Ok(Some(s)),
+        Some(_) => Err("verification.runner_config must be reject or review".into()),
+    }
 }
 
 /// The number of shaken rerun rounds (`verification.shake.rounds`).
@@ -412,6 +509,10 @@ pub struct Frozen {
 
 /// Validate a task spec and assemble the frozen contract (revision 1).
 pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Frozen> {
+    let Some(fields) = spec.as_object() else {
+        return Err("the task spec must be an object".into());
+    };
+    known_keys("spec", fields, "spec")?;
     let task_id = spec.get("task_id").and_then(Value::as_str).unwrap_or("");
     if !valid_task_id(task_id) {
         return Err(format!(

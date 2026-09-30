@@ -837,18 +837,63 @@ fn an_edited_test_file_outside_the_trusted_set_needs_review() {
     );
 }
 
-#[test]
-fn added_test_runner_configuration_needs_review() {
-    let (repo, _authority, store) = verification_task("vconf", json!({}));
-    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();
-    // restoring trusted files cannot undo a file the baseline never had
+/// Commit `path` with a conftest-like body next to a fixed `app.py`.
+fn commit_fix_with(repo: &Path, path: &str) {
+    std::fs::write(repo.join("app.py"), FIXED).unwrap_or_default();
+    if let Some(dir) = Path::new(path).parent() {
+        std::fs::create_dir_all(repo.join(dir)).unwrap_or_default();
+    }
     std::fs::write(
-        repo.0.join("tests/conftest.py"),
+        repo.join(path),
         "def pytest_runtest_makereport(item, call):\n    pass\n",
     )
     .unwrap_or_default();
-    git(&repo.0, &["add", "-A"]);
-    git(&repo.0, &["commit", "-q", "-m", "fix, plus a conftest"]);
+    git(repo, &["add", "-A"]);
+    git(
+        repo,
+        &["commit", "-q", "-m", "fix, plus runner configuration"],
+    );
+}
+
+const RUNNER_CONFIG_REJECTED: &str =
+    "test-runner configuration added (it runs in every check, and restoring cannot undo it): ";
+
+#[test]
+fn added_test_runner_configuration_is_rejected_by_default() {
+    for (name, path) in [("vrej1", "conftest.py"), ("vrej2", "tests/conftest.py")] {
+        let (repo, _authority, store) = verification_task(name, json!({}));
+        commit_fix_with(&repo.0, path);
+        let d = check(&store, Candidate::Ref("HEAD".into()));
+        assert_eq!(decision(&d), "rejected", "{d}");
+        assert_eq!(d["gates"]["verification"]["state"], "fail", "{d}");
+        assert_eq!(
+            d["gates"]["verification"]["added_runner_config"],
+            json!([path]),
+            "{d}"
+        );
+        let reason = format!("{RUNNER_CONFIG_REJECTED}{path}");
+        assert!(
+            d["reasons"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|r| r == reason.as_str()),
+            "{d}"
+        );
+        assert!(
+            store
+                .contract()
+                .is_ok_and(|c| c["verification"].get("runner_config").is_none()),
+            "the default is not written into the contract"
+        );
+    }
+}
+
+#[test]
+fn added_test_runner_configuration_needs_review() {
+    let (repo, _authority, store) = verification_task("vconf", json!({"runner_config": "review"}));
+    // restoring trusted files cannot undo a file the baseline never had
+    commit_fix_with(&repo.0, "tests/conftest.py");
     let d = check(&store, Candidate::Ref("HEAD".into()));
     assert_eq!(decision(&d), "needs_review", "{d}");
     assert_eq!(
@@ -867,6 +912,181 @@ fn added_test_runner_configuration_needs_review() {
     assert!(
         d.get("limits").is_some(),
         "no inventory: the limit is recorded"
+    );
+    assert_eq!(
+        store.contract().unwrap_or_default()["verification"]["runner_config"],
+        "review"
+    );
+}
+
+#[test]
+fn reviewed_runner_configuration_completes_once_approved_by_name() {
+    let (repo, _authority, store) =
+        verification_task("vconf-ok", json!({"runner_config": "review"}));
+    commit_fix_with(&repo.0, "tests/conftest.py");
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    let approve = |items: &[String]| {
+        emi_controller::approve(&store, "HEAD", "lead", "the hook only adds timing", items)
+    };
+    let items = items_of(&d);
+    assert!(
+        items.contains(&"runner_config:tests/conftest.py".to_owned()),
+        "{items:?}"
+    );
+    let others: Vec<String> = items
+        .iter()
+        .filter(|i| !i.starts_with("runner_config:"))
+        .cloned()
+        .collect();
+    assert!(approve(&others).is_err(), "the configuration must be named");
+    approve(&items).unwrap_or_else(|e| panic!("{e}"));
+    let (done, record) = complete(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));
+    assert!(done, "{record}");
+}
+
+/// A task without a verification section whose envelope allows `extra`.
+fn unverified_task(name: &str, extra: &str) -> (Dir, Dir, Store) {
+    let repo = scratch(&format!("{name}-repo"));
+    let authority = scratch(&format!("{name}-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "buggy"]);
+    let mut s = spec(&repo.0, name);
+    s["envelope"]["permitted_paths"] = json!(["app.py", extra]);
+    create(&authority.0, &s).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, name, &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    (repo, authority, store)
+}
+
+#[test]
+fn runner_configuration_needs_review_without_a_verification_section() {
+    let (repo, _authority, store) = unverified_task("nover", "pytest.ini");
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix"]);
+    let clean = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&clean), "accepted", "{clean}");
+    assert_eq!(
+        clean["gates"]["verification"],
+        json!({"state": "not_required"}),
+        "{clean}"
+    );
+
+    std::fs::write(repo.0.join("pytest.ini"), "[pytest]\naddopts = -p app\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "runner configuration"]);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    assert_eq!(
+        d["gates"]["verification"],
+        json!({"state": "needs_review", "added_runner_config": ["pytest.ini"]}),
+        "{d}"
+    );
+    assert_eq!(items_of(&d), ["runner_config:pytest.ini"], "{d}");
+    assert!(
+        d["reasons"][0]
+            .as_str()
+            .is_some_and(|r| r.contains("test-runner configuration added")),
+        "{d}"
+    );
+}
+
+#[test]
+fn the_runner_config_policy_is_validated_and_absent_by_default() {
+    let repo = scratch("rcp-repo");
+    let authority = scratch("rcp-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "c"]);
+    let mut s = spec(&repo.0, "rcp");
+    for bad in [json!("allow"), json!(true), json!(["review"])] {
+        s["verification"] = json!({"trusted": ["tests/*"], "runner_config": bad});
+        let err = create(&authority.0, &s).err().unwrap_or_default();
+        assert!(
+            err.contains("runner_config must be reject or review"),
+            "{err}"
+        );
+    }
+    s["verification"] = json!({"trusted": ["tests/*"]});
+    let c = create(&authority.0, &s).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        c["verification"],
+        json!({"trusted": ["tests/*"], "held_out": {}, "inventory": null}),
+        "contracts that do not set it keep their shape, so their ids"
+    );
+}
+
+#[test]
+fn unknown_keys_and_malformed_sections_are_refused_at_create() {
+    let repo = scratch("uk-repo");
+    let authority = scratch("uk-authority");
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "c"]);
+    // (where, how to break the spec, the error expected)
+    type Patch = fn(&mut Value);
+    let cases: [(&str, Patch, &str); 9] = [
+        (
+            "top level",
+            |s| s["helt_out"] = json!({}),
+            "spec: unknown key helt_out",
+        ),
+        (
+            "envelope",
+            |s| s["envelope"]["permited_paths"] = json!(["x"]),
+            "envelope: unknown key permited_paths",
+        ),
+        (
+            "requirement",
+            |s| s["requirements"][0]["check"] = json!(["unit"]),
+            "requirement R1: unknown key check",
+        ),
+        (
+            "verification",
+            |s| s["verification"] = json!({"helt_out": {}}),
+            "verification: unknown key helt_out",
+        ),
+        (
+            "held-out entry",
+            |s| {
+                s["verification"] =
+                    json!({"held_out": {"tests/test_h.py": {"content": "x", "digest": "y"}}})
+            },
+            "verification.held_out tests/test_h.py: unknown key digest",
+        ),
+        (
+            "inventory",
+            |s| s["verification"] = json!({"inventory": {"command": ["true"], "fromat": "pytest"}}),
+            "verification.inventory: unknown key fromat",
+        ),
+        (
+            "held_out not an object",
+            |s| s["verification"] = json!({"held_out": ["tests/test_h.py"]}),
+            "verification.held_out must be an object",
+        ),
+        (
+            "held-out entry not an object",
+            |s| s["verification"] = json!({"held_out": {"tests/test_h.py": "x"}}),
+            "verification.held_out tests/test_h.py: must be an object",
+        ),
+        (
+            "inventory not an object",
+            |s| s["verification"] = json!({"inventory": ["true"]}),
+            "verification.inventory must be an object",
+        ),
+    ];
+    for (place, patch, expected) in cases {
+        let mut s = spec(&repo.0, "uk");
+        patch(&mut s);
+        let err = create(&authority.0, &s).err().unwrap_or_default();
+        assert!(err.contains(expected), "{place}: {err}");
+    }
+    assert!(
+        create(&authority.0, &spec(&repo.0, "uk")).is_ok(),
+        "the unbroken spec freezes"
     );
 }
 

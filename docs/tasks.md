@@ -69,6 +69,14 @@ simplification.
   seconds. `execution` accepts only `isolation` (`best`, `bwrap`, `none`),
   `network` (a boolean), `link` (relative paths) and `env` (strings);
   anything else is refused rather than read as the default.
+- **Unknown keys.** A key the controller does not read is refused at
+  creation, naming where it is (`envelope: unknown key permited_paths`):
+  at the top level of the spec, in `envelope`, in each requirement
+  (`id`, `acceptance`, `checks`), in `verification`, in each
+  `verification.held_out` entry (`content`, `file`) and in
+  `verification.inventory`. A `held_out` that is not an object, or an
+  entry of it that is not one, is refused too. A misspelt key would
+  otherwise switch a protection off without a word.
 - **Checks.** Commands are argv lists, never a shell. They run through
   `emi-exec` in a fresh snapshot of the candidate (a commit's raw blobs, or
   the working tree as a commit would contain it). By default they run under
@@ -148,9 +156,25 @@ optional `verification` section does this the way benchmarks grade:
   - Restoring cannot undo a file the baseline did not have. A candidate
     that **adds** test-runner configuration (`conftest.py`, `pytest.ini`,
     `sitecustomize.py`, jest/vitest configs, … anywhere in the tree) is
-    `needs_review`: a new `conftest.py` can rewrite every test's outcome.
+    `rejected` by default, since a new `conftest.py` runs in every check
+    and can rewrite every test's outcome (see `runner_config`).
   - Changing what a trusted test expects takes a contract revision.
   - A candidate that modifies or deletes a test file the `trusted` globs miss (EMI's test conventions: test directories, `test_*.py`, `*_test.go`, `*.test.*` and the like) is `needs_review`. Such a file runs as the candidate left it, so a narrow list must not turn a weakened test into a silent acceptance.
+- **`runner_config`:** what added test-runner configuration does:
+  `"reject"` (the default when absent) rejects the candidate with
+  `test-runner configuration added (it runs in every check, and restoring
+  cannot undo it): <paths>`; `"review"` makes it `needs_review` with a
+  review item `runner_config:<path>` per file, for tasks that may
+  legitimately add one. Either way the gate lists the files as
+  `added_runner_config` and the policy in effect as `runner_config`. The
+  key is written into the contract only when the spec sets it, so
+  existing contracts keep their ids. `task draft` and `task refactor-spec`
+  already trust the runner configuration and put it in
+  `envelope.protected_paths`, so a drafted task also refuses edits to it.
+- **Without a `verification` section** added runner configuration is
+  still looked for: the gate is `{"state": "needs_review",
+  "added_runner_config": [...]}` with the same review reason and items.
+  A candidate that adds none keeps `{"state": "not_required"}`.
 - **`held_out`:** files frozen into the contract (outside the repository)
   and written into the workspace before the checks run. They catch code
   that special-cases the visible tests. Keep the authority directory out of
@@ -211,9 +235,9 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 
 | Decision | When |
 |---|---|
-| `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, the structural gate blocked, or the budget is exhausted |
+| `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, test-runner configuration was added (`runner_config` absent or `reject`), the structural gate blocked, or the budget is exhausted |
 | `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
-| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, a test file outside the trusted set was changed, or an escalation is open; completes only with an approval of its `review_items` |
+| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, a test file outside the trusted set was changed, test-runner configuration was added under `runner_config: review` or in a contract without a `verification` section, or an escalation is open; completes only with an approval of its `review_items` |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 
 Every verification charges the budget and appends its check runs (with
