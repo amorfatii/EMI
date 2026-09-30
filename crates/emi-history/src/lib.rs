@@ -28,6 +28,15 @@ pub enum Origin {
 /// author and every `Co-authored-by` trailer.
 pub const DEFAULT_AI_PATTERN: &str = r"(?i)\b(claude|anthropic|copilot|codex|openai|chatgpt|gpt-[0-9]|gemini|cursor(agent)?|devin|aider|sweep|tabnine|codewhisperer|amazon q|jules|opencode)\b";
 
+/// History window read by default: days before the head commit's time.
+pub const DEFAULT_DAYS: u32 = 365;
+/// Change coupling by default: at least this many shared commits...
+pub const DEFAULT_MIN_SHARED: u32 = 5;
+/// ...with at least this degree (percent of the pair's mean revisions)...
+pub const DEFAULT_MIN_DEGREE: f64 = 30.0;
+/// ...counting only commits that touch at most this many files.
+pub const DEFAULT_MAX_CHANGESET: usize = 30;
+
 #[derive(Clone, Debug)]
 pub struct Commit {
     pub sha: String,

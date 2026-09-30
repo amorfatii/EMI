@@ -28,7 +28,7 @@ pub struct HotspotsArgs {
     #[arg(long, default_value = "HEAD")]
     head: String,
     /// History window in days before HEAD's commit time (0: all history).
-    #[arg(long, default_value_t = 365)]
+    #[arg(long, default_value_t = emi_history::DEFAULT_DAYS)]
     days: u32,
     /// Regex (case-insensitive by default) marking AI-attributed commits,
     /// matched against author and Co-authored-by trailers.
@@ -38,13 +38,13 @@ pub struct HotspotsArgs {
     #[arg(long, default_value_t = 20)]
     top: usize,
     /// Change coupling: minimum shared commits.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = emi_history::DEFAULT_MIN_SHARED)]
     min_shared: u32,
     /// Change coupling: minimum degree (percent of mean revisions).
-    #[arg(long, default_value_t = 30.0)]
+    #[arg(long, default_value_t = emi_history::DEFAULT_MIN_DEGREE)]
     min_degree: f64,
     /// Ignore commits touching more scope files than this.
-    #[arg(long, default_value_t = 30)]
+    #[arg(long, default_value_t = emi_history::DEFAULT_MAX_CHANGESET)]
     max_changeset: usize,
     /// Record unparseable files under errors instead of aborting.
     #[arg(long)]

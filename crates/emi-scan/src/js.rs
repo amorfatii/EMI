@@ -11,7 +11,7 @@ use emi_ir::{Burden, Component, Evidence, FileError, Measurement, UnresolvedCall
 use emi_lang_js::FileMeasure;
 use emi_lang_js::resolve::{self, Scope};
 
-use crate::coupling::{RegionEvidence, apply};
+use crate::coupling::{RegionEvidence, apply, file_edges};
 use rayon::prelude::*;
 
 use crate::walk::{self, ScopeFile};
@@ -263,6 +263,17 @@ fn assemble(out: &mut Measurement, parsed: Vec<Parsed>, scope: &Scope) -> Result
         .map(|(p, c)| (emi_lang_js::module_name(&p.rel), c.graph.clone()))
         .collect();
     out.static_dependency_cycles = strongly_connected(&graph);
+    let modules: Vec<String> = parsed
+        .iter()
+        .map(|p| emi_lang_js::module_name(&p.rel))
+        .collect();
+    out.import_edges = file_edges(
+        parsed
+            .iter()
+            .zip(&modules)
+            .zip(&couplings)
+            .map(|((p, m), c)| (p.rel.as_str(), m.as_str(), &c.graph)),
+    );
     let cycle_modules: HashSet<&String> = out.static_dependency_cycles.iter().flatten().collect();
     let cycle_modules: HashSet<String> = cycle_modules.into_iter().cloned().collect();
     let (mut exact, mut normalized) = (Grouper::default(), Grouper::default());

@@ -13,6 +13,7 @@
 //! - **Coupling**: see [`coupling`].
 
 pub mod coupling;
+pub mod exports;
 mod names;
 
 use std::collections::BTreeSet;

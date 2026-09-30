@@ -20,6 +20,7 @@ mod historycli;
 mod holdout;
 mod markdown;
 mod mergecli;
+mod placescli;
 mod profilecli;
 mod readiness;
 mod report;
@@ -143,6 +144,10 @@ enum Command {
     /// what the tests would not notice going wrong there. A report; gates
     /// nothing.
     DiffMutate(diffmutcli::DiffMutateArgs),
+    /// Where else a change may need a look: exported names and schema
+    /// boundaries it changes, files that usually change with the touched
+    /// ones, and modules importing them. A list; gates nothing.
+    Places(placescli::PlacesArgs),
     /// For the Python functions a change modifies: replay the inputs the base
     /// commit's tests pass them against the old and the new code, and report
     /// every input where the answers differ. A report; exits 0 when measured.
@@ -332,6 +337,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Diff(args) => diffcli::run(&args),
         Command::ChangedFunctions(args) => diffcli::changed_functions(&args),
         Command::DiffMutate(args) => diffmutcli::run(&args),
+        Command::Places(args) => placescli::run(&args),
         Command::Drift(args) => drift::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
         Command::Trend(args) => trend::run(&args),

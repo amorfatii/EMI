@@ -57,21 +57,21 @@ fn default_name(path: &str) -> String {
     name.replace(['-', '.'], "_")
 }
 
-/// Exported (capitalized) top-level names of a file.
-pub fn exported(source: &str) -> HashSet<String> {
-    let Some(tree) = crate::parse(source) else {
-        return HashSet::new();
-    };
-    let src = source.as_bytes();
-    let mut out = HashSet::new();
-    let mut stack = children(tree.root_node());
+fn is_exported(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase)
+}
+
+/// Exported top-level declarations of a file with their names.
+fn exported_nodes<'t>(root: Node<'t>, src: &[u8]) -> Vec<(Node<'t>, String)> {
+    let mut out = Vec::new();
+    let mut stack = children(root);
     while let Some(n) = stack.pop() {
         match n.kind() {
             "function_declaration" | "type_spec" | "const_spec" | "var_spec" | "type_alias" => {
                 if let Some(name) = n.child_by_field_name("name") {
                     let t = text(name, src);
-                    if t.chars().next().is_some_and(char::is_uppercase) {
-                        out.insert(t.to_owned());
+                    if is_exported(t) {
+                        out.push((n, t.to_owned()));
                     }
                 }
             }
@@ -82,6 +82,63 @@ pub fn exported(source: &str) -> HashSet<String> {
         }
     }
     out
+}
+
+/// Exported (capitalized) top-level names of a file.
+pub fn exported(source: &str) -> HashSet<String> {
+    let Some(tree) = crate::parse(source) else {
+        return HashSet::new();
+    };
+    exported_nodes(tree.root_node(), source.as_bytes())
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Parameter and result text of a function or method.
+fn function_signature(n: Node, src: &[u8]) -> Option<String> {
+    let params = n.child_by_field_name("parameters")?;
+    let mut raw = text(params, src).to_owned();
+    if let Some(result) = n.child_by_field_name("result") {
+        raw.push(' ');
+        raw.push_str(text(result, src));
+    }
+    Some(emi_ir::exports::signature(&raw))
+}
+
+/// `Type.Method` of an exported method on an exported receiver type.
+fn method_name(n: Node, src: &[u8]) -> Option<String> {
+    let name = text(n.child_by_field_name("name")?, src);
+    let receiver = n.child_by_field_name("receiver")?;
+    let ty = children(receiver)
+        .into_iter()
+        .find(|c| c.kind() == "parameter_declaration")?
+        .child_by_field_name("type")?;
+    let ty = text(ty, src).trim_start_matches('*');
+    let ty = ty.split('[').next().unwrap_or(ty).trim();
+    (is_exported(name) && is_exported(ty)).then(|| format!("{ty}.{name}"))
+}
+
+/// The exported names of [`exported`] plus exported methods of exported
+/// types, in source order, with each function's parameter and result text.
+/// `None` when the file does not parse cleanly.
+pub fn exports(source: &str) -> Option<Vec<emi_ir::exports::Export>> {
+    let tree = crate::parse(source).filter(|t| !t.root_node().has_error())?;
+    let (root, src) = (tree.root_node(), source.as_bytes());
+    let mut found = exported_nodes(root, src);
+    found.extend(
+        children(root)
+            .into_iter()
+            .filter(|n| n.kind() == "method_declaration")
+            .filter_map(|n| method_name(n, src).map(|name| (n, name))),
+    );
+    found.sort_by_key(|(n, _)| n.start_byte());
+    Some(
+        found
+            .into_iter()
+            .map(|(n, name)| emi_ir::exports::Export::new(name, function_signature(n, src)))
+            .collect(),
+    )
 }
 
 fn string_value(node: Node, src: &[u8]) -> String {

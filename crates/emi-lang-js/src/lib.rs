@@ -5,6 +5,7 @@
 mod clones;
 pub mod coupling;
 mod eligible;
+pub mod exports;
 mod names;
 mod parse;
 mod paths;

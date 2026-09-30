@@ -4,7 +4,9 @@ pub mod backtest;
 pub mod change;
 pub mod functions;
 pub mod hunks;
+pub mod impact;
 pub mod snapshot;
+pub mod surface;
 pub mod trajectory;
 
 pub use change::{Request, build_change};

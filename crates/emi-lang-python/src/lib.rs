@@ -7,6 +7,7 @@ mod collect;
 mod comments;
 pub mod coupling;
 pub mod dump;
+pub mod exports;
 mod lines;
 pub mod pyast;
 pub mod rules;

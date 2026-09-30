@@ -1,5 +1,7 @@
 //! Coupling evidence (C) attached to measured records, shared by adapters.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use emi_ir::{CouplingRecord, Evidence, FunctionRecord, RegionRecord, UnresolvedCall, burden};
 
 /// One region's coupling facts in adapter-neutral form.
@@ -7,6 +9,27 @@ pub struct RegionEvidence {
     pub deps: Vec<String>,
     pub unresolved: Vec<UnresolvedCall>,
     pub local_callees: Vec<String>,
+}
+
+/// The module graph restated between files: every `(file, module, imported
+/// modules)` becomes edges to the files of those modules. Imports of
+/// modules outside the scope have no file and no edge.
+pub fn file_edges<'a>(
+    files: impl IntoIterator<Item = (&'a str, &'a str, &'a BTreeSet<String>)> + Clone,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut files_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (rel, module, _) in files.clone() {
+        files_of.entry(module).or_default().push(rel);
+    }
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (rel, _, deps) in files {
+        let edges = out.entry(rel.to_owned()).or_default();
+        for dep in deps {
+            let targets = files_of.get(dep.as_str()).into_iter().flatten();
+            edges.extend(targets.filter(|t| **t != rel).map(|t| (*t).to_owned()));
+        }
+    }
+    out
 }
 
 fn count(n: usize) -> u32 {
