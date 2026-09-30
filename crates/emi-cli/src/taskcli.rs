@@ -10,7 +10,7 @@ use emi_diff::{Request, build_change, snapshot};
 use emi_ledger::pyfmt::{digest, dumps_pretty};
 use serde_json::{Map, Value, json};
 
-use crate::{Language, ProfileArg, gatecli, specgen};
+use crate::{Language, ProfileArg, gatecli, holdout, specgen};
 
 const RECORD_VERSION: &str = "emi-task-0.1";
 
@@ -44,6 +44,10 @@ pub enum TaskCommand {
     /// runner configuration, envelope, held-out tests), with warnings from
     /// a saved profile where the targets' tests are weak or missing.
     Draft(specgen::DraftArgs),
+    /// Hold out a seeded share of a Python test file's tests: the file keeps
+    /// the rest, and the held-out tests go outside the repository for
+    /// `task draft --held-out`.
+    Holdout(holdout::HoldoutArgs),
 }
 
 #[derive(Args)]
@@ -444,7 +448,8 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
         TaskCommand::Init(_)
         | TaskCommand::Gate(_)
         | TaskCommand::RefactorSpec(_)
-        | TaskCommand::Draft(_) => Ok(0),
+        | TaskCommand::Draft(_)
+        | TaskCommand::Holdout(_) => Ok(0),
     }
 }
 
@@ -491,6 +496,7 @@ pub fn run(cmd: &TaskCommand) -> anyhow::Result<u8> {
         TaskCommand::Gate(a) => gate(a),
         TaskCommand::RefactorSpec(a) => specgen::refactor_spec(a),
         TaskCommand::Draft(a) => specgen::draft(a),
+        TaskCommand::Holdout(a) => holdout::run(a),
         other => supervised(other),
     }
 }

@@ -175,6 +175,16 @@ optional `verification` section does this the way benchmarks grade:
   - **If a rerun cannot complete:** the decision is `incomplete`, never an acceptance.
   - **Not covered:** code that special-cases the visible inputs. Held-out tests with other inputs are the answer to that.
 
+**Making held-out tests.** `emi task holdout --file tests/test_x.py --out /secure/held.py --share 0.3` splits a Python test file:
+- **What moves:** a seeded share of its top-level test functions goes to `--out`. `--out` must be outside the repository, and decorators travel with their tests.
+- **What stays:** the rest remain in the file. Imports, helpers and fixtures stay in both files.
+- **Next steps:**
+  1. Commit the shortened file as the task baseline.
+  2. Pass the printed `--held-out` flag to `task draft`.
+- **Why it helps:** the agent never sees the held-out cases, so code fitted to the visible cases meets inputs it has not seen.
+- **Repeatability:** the same `--seed` gives the same split.
+- **Limit:** it only helps as far as the file has cases worth hiding. A file with one test cannot be split.
+
 This mirrors ImpossibleBench's finding: agents facing contradictory tests
 cheated about half the time, mostly by editing tests, and read-only tests
 restored at scoring stopped that without hurting legitimate performance

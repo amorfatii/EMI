@@ -15,6 +15,7 @@ mod explaincli;
 mod gatecli;
 mod guardcli;
 mod historycli;
+mod holdout;
 mod markdown;
 mod mergecli;
 mod profilecli;
