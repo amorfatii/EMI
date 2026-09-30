@@ -43,15 +43,16 @@ fn occurrences(text: &str, name: &str) -> usize {
         .count()
 }
 
-/// `text` with each test defined once and named nowhere else (in the file
-/// or the check command) renamed to a name derived from `tag`; the number
-/// renamed. A name used elsewhere keeps its name, so nothing breaks.
-pub(super) fn rename(text: &str, tag: &str, command: &str) -> (String, usize) {
+/// `text` with each test defined once and named nowhere else (in the file,
+/// in `elsewhere`: the other trusted files and the check command) renamed
+/// to a name derived from `tag`; the number renamed. A name used anywhere
+/// else keeps its name, so nothing that imports or selects it breaks.
+pub(super) fn rename(text: &str, tag: &str, elsewhere: &str) -> (String, usize) {
     let names: Vec<&str> = text.lines().filter_map(defined_name).collect();
     let mut out = text.to_owned();
     let mut n = 0;
     for name in names {
-        if occurrences(text, name) != 1 || occurrences(command, name) != 0 {
+        if occurrences(text, name) != 1 || occurrences(elsewhere, name) != 0 {
             continue;
         }
         let fresh = if name.starts_with("Test") {
@@ -65,18 +66,42 @@ pub(super) fn rename(text: &str, tag: &str, command: &str) -> (String, usize) {
     (out, n)
 }
 
-/// Rename the tests in the workspace's trusted Python test files.
+/// A test module by name (`test_x.py`, `x_test.py`, `tests.py`): helpers,
+/// models and URL modules beside the tests keep every name.
+fn test_module(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == "tests.py"
+        || (name.ends_with(".py") && (name.starts_with("test_") || name.ends_with("_test.py")))
+}
+
+/// Rename the tests in the workspace's trusted Python test modules, keeping
+/// any name another trusted Python file or the command mentions.
 fn rename_in(workspace: &Path, files: &[String], tag: &str, command: &str) -> usize {
-    files
+    let texts: Vec<(&String, String)> = files
         .iter()
-        .filter(|f| f.ends_with(".py") && emi_scan::classify::is_test(f))
-        .filter_map(|f| {
-            let path = workspace.join(f);
-            let text = std::fs::read_to_string(&path).ok()?;
-            let (renamed, n) = rename(&text, tag, command);
-            (n > 0 && std::fs::write(&path, renamed).is_ok()).then_some(n)
-        })
-        .sum()
+        .filter(|f| f.ends_with(".py"))
+        .filter_map(|f| Some((f, std::fs::read_to_string(workspace.join(f)).ok()?)))
+        .collect();
+    let mut renamed = 0;
+    for (i, (f, text)) in texts.iter().enumerate() {
+        if !test_module(f) {
+            continue;
+        }
+        let others = texts
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, (_, t))| t.as_str());
+        let elsewhere: String = std::iter::once(command)
+            .chain(others)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (out, n) = rename(text, tag, &elsewhere);
+        if n > 0 && std::fs::write(workspace.join(f), out).is_ok() {
+            renamed += n;
+        }
+    }
+    renamed
 }
 
 /// The execution policy with a hash seed of its own, unless the contract
@@ -195,6 +220,26 @@ mod tests {
             "[\"pytest\",\"t.py::test_a\"]",
         );
         assert_eq!((n, out.as_str()), (0, "def test_a():\n    pass\n"));
+    }
+
+    #[test]
+    fn a_name_another_file_imports_keeps_its_name_and_helper_modules_are_left_alone() {
+        let dir = std::env::temp_dir().join(format!("emi-shake-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tests")).unwrap_or_default();
+        let models = "class TestModel:\n    pass\n";
+        let tests = "from .models import TestModel\n\ndef test_a():\n    assert TestModel\n";
+        std::fs::write(dir.join("tests/models.py"), models).unwrap_or_default();
+        std::fs::write(dir.join("tests/test_x.py"), tests).unwrap_or_default();
+        let files = vec!["tests/models.py".to_owned(), "tests/test_x.py".to_owned()];
+        let n = rename_in(&dir, &files, "abc", "[]");
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+        assert_eq!((n, read("tests/models.py")), (1, models.to_owned()));
+        assert!(
+            read("tests/test_x.py").contains("def test_sabc0()")
+                && read("tests/test_x.py").contains("TestModel")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

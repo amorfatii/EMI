@@ -170,7 +170,7 @@ optional `verification` section does this the way benchmarks grade:
   - `PYTHONHASHSEED` changes, unless the contract fixes it.
 
   Honest code cannot tell these runs apart. Code that depends on which test calls it, or where it runs, can.
-  - **Names that stay:** a test named anywhere else in its file, or in the check command, keeps its name, so the rename breaks nothing.
+  - **Names that stay:** tests are renamed only in test modules (`test_*.py`, `*_test.py`, `tests.py`). A name used anywhere else keeps it: elsewhere in its file, in another trusted Python file (which may import it), or in the check command. So the rename breaks nothing. Helpers, models and URL modules beside the tests are never renamed.
   - **Cost:** each round repeats every passing check.
   - **If a rerun cannot complete:** the decision is `incomplete`, never an acceptance.
   - **Not covered:** code that special-cases the visible inputs. Held-out tests with other inputs are the answer to that.
