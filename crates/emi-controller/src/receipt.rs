@@ -9,7 +9,7 @@
 
 mod markdown;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use emi_diff::snapshot;
 use serde_json::{Map, Value, json};
@@ -47,12 +47,14 @@ pub fn receipt(store: &Store, candidate: &Candidate) -> Result<Value> {
             contract["revision"]
         ));
     };
-    Ok(build(&contract, &decision, &at))
+    let places = places_to_look(&repo, &contract, &decision);
+    Ok(build(&contract, &decision, &at, places))
 }
 
-/// The receipt of `decision` (recorded at `at`) under `contract`: every
-/// section always present, in reading order.
-pub fn build(contract: &Value, decision: &Value, at: &str) -> Value {
+/// The receipt of `decision` (recorded at `at`) under `contract`, with the
+/// places to look read from the repository: every section always present,
+/// in reading order.
+pub fn build(contract: &Value, decision: &Value, at: &str, places: Value) -> Value {
     json!({
         "schema": SCHEMA,
         "task_id": contract["task_id"],
@@ -62,7 +64,7 @@ pub fn build(contract: &Value, decision: &Value, at: &str) -> Value {
         "escalations": escalation_section(decision),
         "scope": scope_section(decision),
         "pinning": pinning_section(contract, decision),
-        "places_to_look": places_to_look(decision),
+        "places_to_look": places,
         "not_verified": not_verified(contract, decision),
     })
 }
@@ -290,11 +292,39 @@ fn pinning_section(contract: &Value, d: &Value) -> Value {
     json!({"mutation": mutation, "drift": drift})
 }
 
-/// Public surfaces the change touches and the files that usually change
-/// with the ones it touched. Neither is measured in this version.
-fn places_to_look(_decision: &Value) -> Value {
-    let absent = not_measured("not available in this version");
-    json!({"public_surfaces": absent, "co_change_partners": absent})
+/// Where a reviewer should look beyond the tests, read from the repository
+/// between the contract's baseline and the decided commit: exported names
+/// and schema files the change touches, files that usually change with the
+/// ones it touched but did not, and files importing what it changed. It
+/// reads git history and source; it runs nothing. A working-tree decision
+/// has no commit to read, so it is not measured.
+fn places_to_look(repo: &Path, contract: &Value, decision: &Value) -> Value {
+    let (Some(base), Some(head)) = (
+        contract["baseline"]["sha"].as_str(),
+        decision["candidate_id"].as_str().filter(|c| *c != WORKTREE),
+    ) else {
+        let absent = not_measured(
+            "the decision is of a working tree; verify a commit to see places to look",
+        );
+        return json!({"public_surfaces": absent, "co_change_partners": absent, "importers": absent});
+    };
+    let surfaces = match emi_diff::surface::surface_changes(repo, base, head) {
+        Ok(s) => s.to_json(),
+        Err(e) => json!({"state": "unverified", "reason": e}),
+    };
+    let opts = emi_diff::impact::ImpactOptions::default();
+    let (co_change, importers) = match emi_diff::impact::co_change_missing(repo, base, head, &opts)
+    {
+        Ok(i) => {
+            let j = i.to_json(&opts);
+            (j["co_change"].clone(), j["dependants"].clone())
+        }
+        Err(e) => {
+            let failed = json!({"status": "unverified", "reason": e});
+            (failed.clone(), failed)
+        }
+    };
+    json!({"public_surfaces": surfaces, "co_change_partners": co_change, "importers": importers})
 }
 
 /// States that mean a gate or signal did not verify anything.

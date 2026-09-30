@@ -104,12 +104,30 @@
   },
   "places_to_look": {
     "public_surfaces": {
-      "state": "not_measured",
-      "reason": "not available in this version"
+      "changes": [],
+      "boundaries": [],
+      "unparsed": [],
+      "unsupported": []
     },
     "co_change_partners": {
-      "state": "not_measured",
-      "reason": "not available in this version"
+      "status": "unverified",
+      "reason": "1 commit(s) up to the base in the window; change coupling needs at least 5",
+      "thresholds": {
+        "window_days": 365,
+        "min_shared": 5,
+        "min_degree": 30.0,
+        "max_changeset": 30
+      }
+    },
+    "importers": {
+      "status": "verified",
+      "dependants": [],
+      "total": 0,
+      "resolved": [
+        "python"
+      ],
+      "unresolved": [],
+      "unparsed": []
     }
   },
   "not_verified": [

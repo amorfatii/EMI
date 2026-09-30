@@ -69,8 +69,10 @@ Note: inputs come from the test run on the base commit; drift on inputs the test
 
 ## Places to look
 
-- Public surfaces: not measured (not available in this version)
-- Co-change partners: not measured (not available in this version)
+- Public surfaces: none
+- Schema boundaries: none
+- Usually changed together, not touched: could not be read (1 commit(s) up to the base in the window; change coupling needs at least 5)
+- Importers of what changed: none
 
 ## Not verified
 

@@ -58,8 +58,10 @@ not measured (the contract does not set verification.drift)
 
 ## Places to look
 
-- Public surfaces: not measured (not available in this version)
-- Co-change partners: not measured (not available in this version)
+- Public surfaces: `UNDER_TEST` in `app.py` (added)
+- Schema boundaries: none
+- Usually changed together, not touched: could not be read (1 commit(s) up to the base in the window; change coupling needs at least 5)
+- Importers of what changed: none
 
 ## Not verified
 

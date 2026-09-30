@@ -1827,7 +1827,8 @@ fn a_receipt_of_an_acceptance_lists_what_was_not_verified() {
     for line in [
         "- Trusted files restored: not measured (the contract has no verification section)",
         "not measured (the contract does not set verification.mutation)",
-        "- Public surfaces: not measured (not available in this version)",
+        "- Public surfaces: none",
+        "- Importers of what changed: none",
         "| mutation | not_required | not requested by the contract; the tests' strength on the changed lines is unknown |",
         "| performance | not_measured |",
     ] {
@@ -1923,5 +1924,34 @@ fn a_receipt_shows_how_much_the_tests_pin_the_change() {
     assert!(
         docs.contains(&md),
         "docs/tasks.md shows this receipt as its example"
+    );
+}
+
+#[test]
+fn a_receipt_names_a_public_function_the_change_removed() {
+    let (repo, _a, store) = verification_task("rc-surface", json!({}));
+    let app = std::fs::read_to_string(repo.0.join("app.py")).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("app.py"),
+        format!("{FIXED}\n\ndef helper_added_for_review(x):\n    return x\n"),
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix and add"]);
+    check(&store, Candidate::Ref("HEAD".into()));
+    let r = emi_controller::receipt(&store, &Candidate::Ref("HEAD".into()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let changes = &r["places_to_look"]["public_surfaces"]["changes"];
+    assert!(
+        changes
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|c| c["name"] == "helper_added_for_review" && c["kind"] == "added"),
+        "{r}\n{app}"
+    );
+    let md = emi_controller::receipt::markdown(&r);
+    assert!(
+        md.contains("`helper_added_for_review` in `app.py` (added)"),
+        "{md}"
     );
 }

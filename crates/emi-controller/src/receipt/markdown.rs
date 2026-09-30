@@ -385,16 +385,87 @@ fn pinning(r: &Value, out: &mut Vec<String>) {
     drift(&r["pinning"]["drift"], out);
 }
 
+/// Items of `v[key]` rendered by `one`, `none` when empty.
+fn items(v: &Value, key: &str, one: fn(&Value) -> String) -> String {
+    let all: Vec<String> = v[key].as_array().into_iter().flatten().map(one).collect();
+    if all.is_empty() {
+        "none".into()
+    } else {
+        all.join("; ")
+    }
+}
+
+/// Why a places signal could not be read, if it could not.
+fn unread(v: &Value) -> Option<String> {
+    if unmeasured(v) {
+        return Some(why_not(v));
+    }
+    (v["state"] == "unverified" || v["status"] == "unverified").then(|| {
+        format!(
+            "could not be read ({})",
+            v["reason"].as_str().unwrap_or("no reason recorded")
+        )
+    })
+}
+
+fn surfaces(v: &Value) -> Vec<String> {
+    if let Some(why) = unread(v) {
+        return vec![format!("- Public surfaces: {why}")];
+    }
+    vec![
+        format!(
+            "- Public surfaces: {}",
+            items(v, "changes", |c| format!(
+                "`{}` in `{}` ({})",
+                text(&c["name"]),
+                text(&c["file"]),
+                text(&c["kind"])
+            ))
+        ),
+        format!(
+            "- Schema boundaries: {}",
+            items(v, "boundaries", |b| format!(
+                "`{}` ({})",
+                text(&b["file"]),
+                text(&b["label"])
+            ))
+        ),
+    ]
+}
+
+fn co_changes(v: &Value) -> String {
+    let shown = unread(v).unwrap_or_else(|| {
+        items(v, "missing", |m| {
+            format!(
+                "`{}` (changed with `{}` in {} commits)",
+                text(&m["partner"]),
+                text(&m["touched"]),
+                text(&m["shared_commits"])
+            )
+        })
+    });
+    format!("- Usually changed together, not touched: {shown}")
+}
+
+fn importers(v: &Value) -> String {
+    let shown = unread(v).unwrap_or_else(|| {
+        let listed = items(v, "dependants", |d| {
+            format!("`{}` imports `{}`", text(&d["file"]), text(&d["imports"]))
+        });
+        if v["status"] == "partial" {
+            format!("{listed} (some import graphs could not be read)")
+        } else {
+            listed
+        }
+    });
+    format!("- Importers of what changed: {shown}")
+}
+
 fn places(r: &Value, out: &mut Vec<String>) {
     let p = &r["places_to_look"];
-    for (label, key) in [
-        ("Public surfaces", "public_surfaces"),
-        ("Co-change partners", "co_change_partners"),
-    ] {
-        let v = &p[key];
-        let shown = if unmeasured(v) { why_not(v) } else { text(v) };
-        out.push(format!("- {label}: {shown}"));
-    }
+    out.extend(surfaces(&p["public_surfaces"]));
+    out.push(co_changes(&p["co_change_partners"]));
+    out.push(importers(&p["importers"]));
 }
 
 fn not_verified(r: &Value, out: &mut Vec<String>) {

@@ -385,8 +385,14 @@ always present. Anything not measured is `{"state": "not_measured",
 6. **How much the tests pin the change** (`pinning`): mutation (killed,
    survived, survivors) and drift (functions compared, each drift with its
    input and old → new answer), when the contract asks for them.
-7. **Places to look** (`places_to_look`): public surfaces and co-change
-   partners; not measured in this version.
+7. **Places to look** (`places_to_look`):
+   - exported names and schema files the change touches;
+   - files that usually change with the touched ones but were not touched;
+   - files importing what changed.
+
+   These are read from the repository between the baseline and the decided
+   commit, as `emi places` reads them ([places.md](places.md)). They are not
+   measured for a working-tree decision.
 8. **Not verified** (`not_verified`): every gate or signal whose state is
    `not_required`, `not_run`, `unverified`, `nothing_to_mutate` or
    `nothing_to_compare`, or that the decision does not have, and every
@@ -469,8 +475,10 @@ Note: inputs come from the test run on the base commit; drift on inputs the test
 
 ## Places to look
 
-- Public surfaces: not measured (not available in this version)
-- Co-change partners: not measured (not available in this version)
+- Public surfaces: none
+- Schema boundaries: none
+- Usually changed together, not touched: could not be read (1 commit(s) up to the base in the window; change coupling needs at least 5)
+- Importers of what changed: none
 
 ## Not verified
 
