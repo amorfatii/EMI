@@ -149,6 +149,7 @@ optional `verification` section does this the way benchmarks grade:
     `sitecustomize.py`, jest/vitest configs, … anywhere in the tree) is
     `needs_review`: a new `conftest.py` can rewrite every test's outcome.
   - Changing what a trusted test expects takes a contract revision.
+  - A candidate that modifies or deletes a test file the `trusted` globs miss (EMI's test conventions: test directories, `test_*.py`, `*_test.go`, `*.test.*` and the like) is `needs_review`. Such a file runs as the candidate left it, so a narrow list must not turn a weakened test into a silent acceptance.
 - **`held_out`:** files frozen into the contract (outside the repository)
   and written into the workspace before the checks run. They catch code
   that special-cases the visible tests. Keep the authority directory out of
@@ -182,7 +183,7 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 |---|---|
 | `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, the structural gate blocked, or the budget is exhausted |
 | `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
-| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, or a trusted file was changed; completes only with an approval of its `review_items` |
+| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, or a test file outside the trusted set was changed; completes only with an approval of its `review_items` |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 
 Every verification charges the budget and appends its check runs (with

@@ -804,6 +804,40 @@ fn a_committed_entry_cannot_stand_in_for_a_linked_dependency() {
 }
 
 #[test]
+fn an_edited_test_file_outside_the_trusted_set_needs_review() {
+    // a contract whose trusted globs miss the test layout (a hand-written
+    // list, say) must not turn a weakened test into a silent acceptance
+    let (repo, _authority, store) =
+        verification_task("vuntrusted", json!({"trusted": ["nothing/*"]}));
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    std::fs::write(
+        repo.0.join("tests/test_app.py"),
+        "import app\n\ndef test_one():\n    assert app.add(1, 2) == 3\n\ndef test_two():\n    pass\n\ntest_one()\ntest_two()\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(
+        &repo.0,
+        &["commit", "-q", "-m", "fix, and drop an assertion"],
+    );
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    assert_eq!(
+        d["gates"]["verification"]["untrusted_test_changes"],
+        json!(["tests/test_app.py"]),
+        "{d}"
+    );
+    assert!(
+        d["review_items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|i| i == "untrusted_test:tests/test_app.py"),
+        "{d}"
+    );
+}
+
+#[test]
 fn added_test_runner_configuration_needs_review() {
     let (repo, _authority, store) = verification_task("vconf", json!({}));
     std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();

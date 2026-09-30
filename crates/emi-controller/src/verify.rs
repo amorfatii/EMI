@@ -443,10 +443,24 @@ fn verification_gate(
         .filter(|(p, kind)| *kind == "add" && crate::runner_config::matches(p))
         .map(|(p, _)| p)
         .collect();
+    // test files the contract does not trust: an edit to one is verified
+    // as the candidate left it, so a narrow `trusted` list must not turn a
+    // weakened test into a silent pass
+    let untrusted: Vec<&String> = setup
+        .changed
+        .iter()
+        .filter(|(p, kind)| {
+            matches!(*kind, "modify" | "delete")
+                && emi_scan::classify::is_test(p)
+                && !restored.contains(p)
+        })
+        .map(|(p, _)| p)
+        .collect();
     let mut gate = json!({"restored": restored, "held_out": held_out,
                           "added_runner_config": added_config,
+                          "untrusted_test_changes": untrusted,
                           "inventory": {"state": "not_required"}});
-    let mut state = if restored.is_empty() && added_config.is_empty() {
+    let mut state = if restored.is_empty() && added_config.is_empty() && untrusted.is_empty() {
         "pass"
     } else {
         "needs_review"
@@ -734,6 +748,13 @@ fn reviews(g: &Gates) -> Vec<String> {
         reasons.push(format!(
             "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
             added.join(", ")
+        ));
+    }
+    let untrusted = globs(&g.verification["untrusted_test_changes"]);
+    if g.verification["state"] == "needs_review" && !untrusted.is_empty() {
+        reasons.push(format!(
+            "test files outside the trusted set changed (verified as the candidate left them): {}",
+            untrusted.join(", ")
         ));
     }
     reasons
