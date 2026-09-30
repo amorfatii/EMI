@@ -10,9 +10,9 @@ two kinds of test evidence and keeps three kinds of statement apart:
 
 It is not a bug prediction. emi-lab found no static score, EMI's included,
 that predicts defects better than code size (G2, S1). The profile describes
-how verifiable a change would be, and gates nothing. Whether diff coverage
-and mutation results should gate `emi task verify` is what emi-lab S9
-decides.
+how verifiable a change would be, and gates nothing. emi-lab S9 found that
+diff coverage does not predict later fixes beyond ordinary change risk. The
+profile therefore stays a report and does not gate `emi task verify`.
 
 ```sh
 emi profile --repo . --source src                       # structure and history only

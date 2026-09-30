@@ -1,23 +1,38 @@
 # EMI
 
-**EMI tells you whether a code change made your codebase harder to maintain,
-and proves it before it merges.**
+**EMI verifies code changes, especially those made by AI coding agents.**
+It checks a change against a frozen task contract and says exactly what was
+verified and what was not. It also points a reviewer at the places the tests
+do not pin down.
 
-It measures the structural *burden* of your code: how big and branchy it is,
-how much of it is repeated, and how tangled its files are. Then it compares
-two versions of your code and blocks a change only when it can prove the
-burden grew. Where evidence is missing, EMI says so and shows the range of
-possible values. It never fills in a guess.
+**How verification works:**
+- The trusted tests are restored and run as the contract fixed them. When the
+  contract has held-out tests, which the agent never saw, they run alongside.
+- No test the baseline had may go missing, and no test-runner configuration
+  may be added.
+- An agent that finds the tests contradicting the task can report it instead
+  of bending them.
+- Every decision says whether it rests on these structural checks or only on
+  a recognised pattern of test gaming. Where evidence is missing, EMI says so;
+  it never fills in a guess.
 
-EMI is built for checking changes made by AI coding agents, and works just as
-well on human ones. It runs on Python, JavaScript/TypeScript, Rust and Go.
+**EMI also measures the structural *burden* of code:** how big and branchy
+it is, how much of it is repeated, and how tangled its files are.
+- **What burden is for:** explaining where code is costly to change and where
+  to look first, not a quality score or a per-file verdict.
+- **Burden is size-weighted.** In EMI's own validation (emi-lab G2), plain
+  lines of code rank buggy functions almost as well.
+- **When a change is blocked:** the change gate (`emi diff --guardrail`)
+  blocks a change only when it can prove that burden grew.
+
+EMI runs on Python, JavaScript/TypeScript, Rust and Go.
 
 ## What you can do with it
 
 | You want to… | Run |
 |---|---|
 | See where your codebase is costly and changes often | `emi report` → one HTML file |
-| Block a pull request that makes the code worse | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
+| Block a pull request whose burden growth EMI can prove | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
 | Hand a task to an AI agent and verify its result | `emi task create` / `verify` / `complete` |
 | Know whether your tests would catch a wrong change | `emi profile` |
 | See which lines of a change the tests would not notice going wrong | `emi diff-mutate` |

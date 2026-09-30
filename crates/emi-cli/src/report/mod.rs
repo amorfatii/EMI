@@ -136,7 +136,7 @@ fn header(data: &Value) -> String {
     )
 }
 
-const FOOTER: &str = r#"<footer><p><b>Burden</b> is EMI's estimate of maintenance cost in line-equivalents: erosion (size and branching), redundancy (repeated code) and coupling (dependencies between files). Where evidence is missing, EMI shows the range it allows instead of guessing.</p><p><b>Hotspot score</b> is changes in the window × burden. <b>Test evidence</b> comes from <code>emi profile --top 0 --format json -o profile.json</code>, passed as <code>--profile-json profile.json</code>.</p>"#;
+const FOOTER: &str = r#"<footer><p><b>Burden</b> measures structure in line-equivalents: erosion (size and branching), redundancy (repeated code) and coupling (dependencies between files). It is size-weighted, so it explains where code is costly to change and where to look first; it is not a quality score. Where evidence is missing, EMI shows the range it allows instead of guessing.</p><p><b>Hotspot score</b> is changes in the window × burden. <b>Test evidence</b> comes from <code>emi profile --top 0 --format json -o profile.json</code>, passed as <code>--profile-json profile.json</code>.</p>"#;
 
 fn render(data: &Value) -> String {
     let rows = sections::files(data);
