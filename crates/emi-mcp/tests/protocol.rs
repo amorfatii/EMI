@@ -41,6 +41,7 @@ fn handshake_lists_tools_and_rejects_unknowns() {
             "emi_accept_rewrite",
             "emi_task_verify",
             "emi_task_status",
+            "emi_task_escalate",
             "emi_guard",
             "emi_profile",
             "emi_scan"
@@ -218,4 +219,50 @@ fn profile_marks_functions_no_test_runs() {
     };
     assert_eq!(level("unused"), Some(json!("unexecuted")), "{p}");
     assert_eq!(level("used"), Some(json!("executed")), "{p}");
+}
+
+#[test]
+fn an_escalation_shows_in_the_task_status() {
+    let r = Repo(std::env::temp_dir().join(format!("emi-mcp-esc-repo-{}", std::process::id())));
+    let auth = Repo(std::env::temp_dir().join(format!("emi-mcp-esc-auth-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&r.0);
+    let _ = std::fs::remove_dir_all(&auth.0);
+    std::fs::create_dir_all(&r.0).unwrap_or_default();
+    git(&r.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(r.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    git(&r.0, &["add", "-A"]);
+    git(&r.0, &["commit", "-q", "-m", "base"]);
+    let spec = json!({
+        "task_id": "t1", "repo": r.0, "baseline": "HEAD", "objective": "make add() add",
+        "requirements": [{"id": "R1", "acceptance": "add adds", "checks": ["unit"]}],
+        "checks": {"unit": {"command": ["python3", "-c", "import app; assert app.add(1, 2) == 3"],
+                            "success": {"exit_code": 0}, "timeout_s": 30}},
+        "envelope": {"permitted_paths": ["app.py"]},
+    });
+    emi_controller::create(&auth.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let tool = |name: &str, args: Value| {
+        let out = call(1, "tools/call", json!({"name": name, "arguments": args}));
+        let text = out["result"]["content"][0]["text"].as_str().unwrap_or("{}");
+        (
+            out["result"]["isError"] == true,
+            serde_json::from_str::<Value>(text).unwrap_or_else(|_| json!(text)),
+        )
+    };
+    let base = json!({"authority": auth.0, "task": "t1"});
+    let (_, before) = tool("emi_task_status", base.clone());
+    assert_eq!(before["escalations"], json!([]), "{before}");
+    let mut args = base.clone();
+    args["reason"] = json!("  ");
+    assert!(tool("emi_task_escalate", args).0, "a reason is required");
+    args = base.clone();
+    args["reason"] = json!("the check asserts the opposite of the objective");
+    let (failed, row) = tool("emi_task_escalate", args);
+    assert!(!failed, "{row}");
+    assert_eq!(row["index"], 1, "{row}");
+    let (_, after) = tool("emi_task_status", base);
+    assert_eq!(after["escalations"][0]["index"], 1, "{after}");
+    assert_eq!(
+        after["escalations"][0]["reason"], "the check asserts the opposite of the objective",
+        "{after}"
+    );
 }

@@ -59,6 +59,12 @@ pub fn list() -> Vec<Value> {
                "inputSchema": {"type": "object", "required": ["authority", "task"], "properties": {
                    "authority": {"type": "string"}, "task": {"type": "string"},
                    "candidate": {"type": "string", "description": "Commit/ref; omit for the working tree."}}}}),
+        json!({"name": "emi_task_escalate",
+               "description": "Report that the task's tests or contract contradict its objective instead of changing them. A person reviews the conflict; use this rather than editing, skipping or special-casing tests.",
+               "inputSchema": {"type": "object", "required": ["authority", "task", "reason"], "properties": {
+                   "authority": {"type": "string"}, "task": {"type": "string"},
+                   "reason": {"type": "string", "description": "What contradicts what: the test or check, and the objective it conflicts with."},
+                   "candidate": {"type": "string", "description": "Commit/ref that showed the conflict, if any."}}}}),
         json!({"name": "emi_guard",
                "description": "Check your change against verifiable guardrails before finishing: edits outside the permitted scope, deleted/skipped/weakened tests (fewer test cases or assertions, skip or xfail markers), changed test or coverage config, lockfile/CI/secret/vendored edits, newly added lint or type suppressions, and growth beyond budget. Each violation has a stable id, file and line, and a tier: block (fix it) or review (justify it). Deterministic; no scores.",
                "inputSchema": {"type": "object", "properties": {
@@ -90,6 +96,7 @@ pub fn call(name: &str, args: &Value) -> Option<Out> {
         "emi_profile" => profile(args),
         "emi_task_verify" => task_verify(args),
         "emi_task_status" => task_status(args),
+        "emi_task_escalate" => task_escalate(args),
         "emi_guard" => guard(args),
         _ => return None,
     })
@@ -439,12 +446,27 @@ fn task_status(args: &Value) -> Out {
         emi_controller::Candidate::Worktree => emi_controller::verify::WORKTREE.to_owned(),
         emi_controller::Candidate::Ref(r) => emi_diff::snapshot::resolve_ref(&repo, &r)?,
     };
-    let latest = store.latest_decision(&id, contract["contract_id"].as_str().unwrap_or(""))?;
+    let cid = contract["contract_id"].as_str().unwrap_or("");
+    let latest = store.latest_decision(&id, cid)?;
+    let escalations = emi_controller::open_escalations(&store, cid)?;
     let state = store.state()?;
     Ok(
         json!({"task_id": contract["task_id"], "objective": contract["objective"], "revision": contract["revision"],
               "requirements": contract["requirements"], "envelope": contract["envelope"],
               "budgets": contract["budgets"], "retries_used": state["cumulative"]["retries"],
-              "candidate_id": id, "latest_decision": latest}),
+              "candidate_id": id, "latest_decision": latest, "escalations": escalations}),
+    )
+}
+
+fn task_escalate(args: &Value) -> Out {
+    let (store, _) = task_store(args)?;
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .ok_or("reason is required")?;
+    emi_controller::escalate(
+        &store,
+        args.get("candidate").and_then(Value::as_str),
+        reason,
     )
 }

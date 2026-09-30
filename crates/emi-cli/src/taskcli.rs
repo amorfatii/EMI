@@ -33,6 +33,9 @@ pub enum TaskCommand {
     /// Approve the review items of a commit's needs_review decision, so it
     /// can complete (actor, reason and every item required).
     Approve(ApproveArgs),
+    /// Report that the task's contract or tests contradict its objective;
+    /// while open, no candidate is accepted without a person's approval.
+    Escalate(EscalateArgs),
     /// Pre-push check: exit 0 only for a completed commit.
     HookCheck(VerifyArgs),
     /// Install a pre-push hook that runs hook-check.
@@ -108,6 +111,22 @@ pub struct ApproveArgs {
     items: Vec<String>,
     #[arg(long)]
     actor: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct EscalateArgs {
+    #[arg(long)]
+    authority: PathBuf,
+    #[arg(long)]
+    task: String,
+    /// The commit that showed the conflict, if any.
+    #[arg(long)]
+    candidate: Option<String>,
+    /// What contradicts what.
     #[arg(long)]
     reason: String,
     #[arg(long)]
@@ -372,6 +391,26 @@ fn create(a: &CreateArgs) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// `emi task status`: the latest decision for the candidate, with the
+/// contract's open escalations.
+fn status(a: &VerifyArgs) -> anyhow::Result<u8> {
+    let err = anyhow::Error::msg;
+    let s = store(&a.authority, &a.task, a.repo.as_ref())?;
+    let c = s.contract().map_err(err)?;
+    let repo = PathBuf::from(c["repo"]["path"].as_str().unwrap_or("."));
+    let id = if a.worktree {
+        emi_controller::verify::WORKTREE.to_owned()
+    } else {
+        snapshot::resolve_ref(&repo, &a.candidate).map_err(err)?
+    };
+    let cid = c["contract_id"].as_str().unwrap_or("");
+    let d = s.latest_decision(&id, cid).map_err(err)?;
+    let mut out = d.unwrap_or_else(|| json!({"candidate_id": id, "decision": null, "reasons": ["not verified under the current contract"]}));
+    out["escalations"] = Value::Array(emi_controller::open_escalations(&s, cid).map_err(err)?);
+    print(&out);
+    Ok(0)
+}
+
 fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
     let err = anyhow::Error::msg;
     match cmd {
@@ -389,21 +428,7 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
                 EXIT_DENIED
             })
         }
-        TaskCommand::Status(a) => {
-            let s = store(&a.authority, &a.task, a.repo.as_ref())?;
-            let c = s.contract().map_err(err)?;
-            let repo = PathBuf::from(c["repo"]["path"].as_str().unwrap_or("."));
-            let id = if a.worktree {
-                emi_controller::verify::WORKTREE.to_owned()
-            } else {
-                snapshot::resolve_ref(&repo, &a.candidate).map_err(err)?
-            };
-            let d = s
-                .latest_decision(&id, c["contract_id"].as_str().unwrap_or(""))
-                .map_err(err)?;
-            print(&d.unwrap_or_else(|| json!({"candidate_id": id, "decision": null, "reasons": ["not verified under the current contract"]})));
-            Ok(0)
-        }
+        TaskCommand::Status(a) => status(a),
         TaskCommand::Complete(a) => {
             let (done, record) = emi_controller::complete(
                 &store(&a.authority, &a.task, a.repo.as_ref())?,
@@ -439,6 +464,17 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
                     &a.actor,
                     &a.reason,
                     &a.items,
+                )
+                .map_err(err)?,
+            );
+            Ok(0)
+        }
+        TaskCommand::Escalate(a) => {
+            print(
+                &emi_controller::escalate(
+                    &store(&a.authority, &a.task, a.repo.as_ref())?,
+                    a.candidate.as_deref(),
+                    &a.reason,
                 )
                 .map_err(err)?,
             );

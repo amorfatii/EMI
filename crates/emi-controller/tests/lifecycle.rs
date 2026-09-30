@@ -1067,3 +1067,116 @@ fn code_that_depends_on_the_calling_test_needs_review() {
         "{d}"
     );
 }
+
+/// A verification task whose `app.py` is fixed in a commit, with the
+/// reporting agent's escalation already open.
+fn escalated_task(name: &str) -> (Dir, Dir, Store) {
+    let (repo, authority, store) = verification_task(name, json!({}));
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix"]);
+    let row = emi_controller::escalate(&store, Some("HEAD"), "test_two contradicts the spec")
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(row["index"], 1, "{row}");
+    assert!(row["candidate_id"].is_string(), "{row}");
+    (repo, authority, store)
+}
+
+fn items_of(d: &Value) -> Vec<String> {
+    d["review_items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| i.as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn an_open_escalation_holds_a_passing_candidate_for_review() {
+    let (_repo, _a, store) = escalated_task("esc1");
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    assert_eq!(d["gates"]["escalation"]["state"], "open", "{d}");
+    assert_eq!(items_of(&d), ["escalation:1"], "{d}");
+    assert!(
+        d["reasons"][0]
+            .as_str()
+            .is_some_and(|r| r.contains("escalation 1") && r.contains("test_two contradicts")),
+        "{d}"
+    );
+    // reporting a conflict spends nothing
+    assert_eq!(d["budget"]["retries_used"], 1, "{d}");
+}
+
+#[test]
+fn an_escalation_is_approved_by_name_and_then_completes() {
+    let (_repo, _a, store) = escalated_task("esc2");
+    check(&store, Candidate::Ref("HEAD".into()));
+    let approve = |items: &[String]| {
+        emi_controller::approve(
+            &store,
+            "HEAD",
+            "lead",
+            "spec is wrong, test is stale",
+            items,
+        )
+    };
+    assert!(approve(&[]).is_err(), "the escalation must be named");
+    approve(&["escalation:1".into()]).unwrap_or_else(|e| panic!("{e}"));
+    let (done, record) = complete(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));
+    assert!(done, "{record}");
+    assert_eq!(record["approval"]["actor"], "lead");
+}
+
+#[test]
+fn a_revision_resolves_an_escalation() {
+    let (_repo, _a, store) = escalated_task("esc3");
+    let held = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&held), "needs_review", "{held}");
+    store
+        .revise(
+            &json!({"budgets": {"max_retries": 9}}),
+            "lead",
+            "fixed the test",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let after = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&after), "accepted", "{after}");
+    assert_eq!(after["gates"]["escalation"]["state"], "none", "{after}");
+}
+
+#[test]
+fn an_empty_reason_or_unknown_candidate_records_nothing() {
+    let (_repo, _a, store) = verification_task("esc4", json!({}));
+    for reason in ["", "  \n"] {
+        let err = emi_controller::escalate(&store, None, reason).err();
+        assert!(err.is_some_and(|e| e.contains("reason")));
+    }
+    assert!(emi_controller::escalate(&store, Some("no-such-ref"), "why").is_err());
+    assert!(store.rows("escalation").is_ok_and(|r| r.is_empty()));
+}
+
+#[test]
+fn an_escalation_does_not_soften_a_rejection() {
+    let (repo, _a, store) = verification_task("esc5", json!({}));
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    std::fs::write(repo.0.join("outside.txt"), "x\n").unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "fix, and stray file"]);
+    emi_controller::escalate(&store, None, "tests look wrong").unwrap_or_else(|e| panic!("{e}"));
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "rejected", "{d}");
+    assert_eq!(d["gates"]["escalation"]["state"], "open", "{d}");
+}
+
+#[test]
+fn status_lists_open_escalations_and_the_hook_mentions_them() {
+    let (_repo, _a, store) = escalated_task("esc6");
+    let c = store.contract().unwrap_or_else(|e| panic!("{e}"));
+    let cid = c["contract_id"].as_str().unwrap_or("");
+    let open = emi_controller::open_escalations(&store, cid).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["index"], 1);
+    assert_eq!(open[0]["reason"], "test_two contradicts the spec");
+    let (ok, msg) = hook_check(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));
+    assert!(!ok && msg.contains("1 open escalation(s)"), "{msg}");
+}

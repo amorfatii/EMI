@@ -16,6 +16,7 @@ emi task status   --authority ~/.emi-authority --task fix-add
 emi task complete --authority ~/.emi-authority --task fix-add --candidate HEAD
 emi task revise   --authority ~/.emi-authority --task fix-add --changes '{"objective": "..."}' --actor lead --reason "scope grew"
 emi task approve  --authority ~/.emi-authority --task fix-add --candidate HEAD --item 'guard:ci.edited:.github/workflows/test.yml' --actor lead --reason "pin bump requested in the issue"
+emi task escalate --authority ~/.emi-authority --task fix-add --candidate HEAD --reason "test_two asserts the opposite of the objective"
 emi task install-hook --authority ~/.emi-authority --task fix-add --repo .    # pre-push: completed commits only
 ```
 
@@ -205,7 +206,7 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 |---|---|
 | `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, the structural gate blocked, or the budget is exhausted |
 | `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
-| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, or a test file outside the trusted set was changed; completes only with an approval of its `review_items` |
+| `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, a test file outside the trusted set was changed, or an escalation is open; completes only with an approval of its `review_items` |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 
 Every verification charges the budget and appends its check runs (with
@@ -219,13 +220,38 @@ under the current contract is `accepted`, or `needs_review` with an
 approval of exactly that decision; verifying the working tree never
 completes a task.
 
+## Reporting a contract conflict
+
+Agents under test pressure sometimes "pass" a task by bending the tests or
+the check setup. `emi task escalate` (MCP `emi_task_escalate`) is the
+sanctioned alternative: it records that the tests or the contract
+contradict the objective, with a required reason and, optionally, the
+candidate that showed it. The row is appended to `evidence.jsonl` and gets
+a 1-based index among the escalations of the current contract.
+
+- It never charges the budget and runs no checks.
+- While it is open, every candidate verified under that contract, whichever
+  one the escalation named, is held at `needs_review`
+  (`gates.escalation.state` is `open`), so nothing is `accepted` without a
+  person. Rejections and gaps are not softened: a rejected or incomplete
+  candidate stays so.
+- It is resolved by a person either approving the decision naming
+  `escalation:<n>` for each open escalation, or revising the contract
+  (a new contract id, so earlier escalations no longer apply).
+- If the escalations cannot be read, the gate is `unverified` and the
+  decision is `incomplete`, never "none".
+
+`emi task status` lists the open escalations as `escalations`, and
+`hook-check` mentions them when it blocks.
+
 ## Approving a review
 
 Review-tier findings are real events that are usually fine: emi-lab GV2
 found CI edits detected 30 of 30 times but warranting intervention once.
 A `needs_review` decision lists them as `review_items`, one per finding:
-`guard:<id>:<path>`, `trusted:<path>`, `structural:warn`,
-`refactor:erosion_rose`. `emi task approve` records that a named person
+`guard:<id>:<path>`, `trusted:<path>`, `runner_config:<path>`,
+`untrusted_test:<path>`, `shake:disagree`, `structural:warn`,
+`refactor:erosion_rose`, `escalation:<n>`. `emi task approve` records that a named person
 looked at them:
 
 - the actor, a reason, and **every** item by name are required; an item

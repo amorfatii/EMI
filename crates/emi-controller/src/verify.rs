@@ -651,6 +651,7 @@ struct Gates<'a> {
     verification: &'a Value,
     refactor: &'a Value,
     dependencies: &'a Value,
+    escalation: &'a Value,
 }
 
 /// Ids of the requirements in `state`.
@@ -736,6 +737,9 @@ fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
     if g.refactor["state"] == "unverified" {
         reasons.push("the refactor targets could not be measured".into());
     }
+    if g.escalation["state"] == "unverified" {
+        reasons.push("escalations could not be read".into());
+    }
     if g.dependencies["state"] == "unverified" {
         reasons.push(format!(
             "linked dependency directories differ from the frozen contract (revise the execution policy to re-pin them): {}",
@@ -785,6 +789,21 @@ fn reviews(g: &Gates) -> Vec<String> {
             "checks passed as written but failed with the tests renamed, moved and reseeded: {}",
             ids.join(", ")
         ));
+    }
+    if g.escalation["state"] == "open" {
+        reasons.extend(
+            g.escalation["escalations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| {
+                    format!(
+                        "the agent reported a contract conflict (escalation {}): {}",
+                        e["index"],
+                        e["reason"].as_str().unwrap_or("")
+                    )
+                }),
+        );
     }
     let untrusted = globs(&g.verification["untrusted_test_changes"]);
     if g.verification["state"] == "needs_review" && !untrusted.is_empty() {
@@ -978,7 +997,8 @@ fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evalua
         ledger: ledger(contract, &verified.statuses),
         gates: json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
                       "verification": verified.gate, "refactor": refactor,
-                      "dependencies": dependencies}),
+                      "dependencies": dependencies,
+                      "escalation": crate::escalate::gate(store, contract["contract_id"].as_str().unwrap_or(""))}),
         runs: verified.runs,
     })
 }
@@ -1045,6 +1065,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         verification: &g["verification"],
         refactor: &g["refactor"],
         dependencies: &g["dependencies"],
+        escalation: &g["escalation"],
     };
     let (decision, reasons) = reduce(&eval.ledger, &gates, require_all);
     let state = store.charge(started.elapsed().as_secs_f64())?;
@@ -1116,10 +1137,16 @@ pub fn hook_check(store: &Store, reference: &str) -> Result<(bool, String)> {
         c["candidate_id"] == sha.as_str() && c["contract_id"] == cid && c["completed"] == true
     });
     let task = contract["task_id"].as_str().unwrap_or("");
-    let msg = if done {
+    let mut msg = if done {
         format!("{sha} completed task {task}")
     } else {
         format!("{sha} has not completed task {task} under its current contract")
     };
+    let open = crate::escalate::open_escalations(store, cid)?.len();
+    if !done && open > 0 {
+        msg.push_str(&format!(
+            "; {open} open escalation(s); a person must review and approve, or revise the contract"
+        ));
+    }
     Ok((done, msg))
 }

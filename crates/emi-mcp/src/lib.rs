@@ -34,7 +34,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "emi", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": "EMI measures structural maintenance burden (E erosion, V redundancy, C coupling) and gates changes on burden growth it can prove. Call emi_gate after editing code: it measures your working tree against a base ref and returns block/warn/pass with the files responsible. Use emi_explain on those files and emi_hotspots to find where burden concentrates."
+        "instructions": "EMI measures structural maintenance burden (E erosion, V redundancy, C coupling) and gates changes on burden growth it can prove. Call emi_gate after editing code: it measures your working tree against a base ref and returns block/warn/pass with the files responsible. Use emi_explain on those files and emi_hotspots to find where burden concentrates. If a supervised task's tests or checks contradict its objective, call emi_task_escalate instead of editing, skipping or special-casing tests."
     })
 }
 
