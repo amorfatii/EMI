@@ -1128,6 +1128,27 @@ fn an_escalation_is_approved_by_name_and_then_completes() {
 }
 
 #[test]
+fn an_escalation_after_acceptance_blocks_completion_until_verified_again() {
+    let (repo, _a, store) = verification_task("esc7", json!({}));
+    std::fs::write(repo.0.join("app.py"), FIXED).unwrap_or_default();
+    git(&repo.0, &["commit", "-q", "-am", "fix"]);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    emi_controller::escalate(&store, None, "test_two contradicts the spec")
+        .unwrap_or_else(|e| panic!("{e}"));
+    let (done, record) = complete(&store, "HEAD").unwrap_or_else(|e| panic!("{e}"));
+    assert!(!done, "{record}");
+    assert!(
+        record["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("filed after the latest verification")),
+        "{record}"
+    );
+    let again = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&again), "needs_review", "{again}");
+}
+
+#[test]
 fn a_revision_resolves_an_escalation() {
     let (_repo, _a, store) = escalated_task("esc3");
     let held = check(&store, Candidate::Ref("HEAD".into()));

@@ -1096,6 +1096,16 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
 /// Completion: only a commit whose latest decision under the current
 /// contract is `accepted`, or `needs_review` with an approval of exactly
 /// that decision.
+/// Escalations filed under the contract that the decision did not see: a
+/// conflict reported after a candidate was accepted still needs a person.
+fn unseen_escalations(store: &Store, contract_id: &str, decision: Option<&Value>) -> Result<usize> {
+    let open = crate::escalate::open_escalations(store, contract_id)?.len();
+    let seen = decision
+        .and_then(|d| d["gates"]["escalation"]["escalations"].as_array())
+        .map_or(0, Vec::len);
+    Ok(open.saturating_sub(seen))
+}
+
 pub fn complete(store: &Store, reference: &str) -> Result<(bool, Value)> {
     let contract = store.contract()?;
     let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
@@ -1106,9 +1116,14 @@ pub fn complete(store: &Store, reference: &str) -> Result<(bool, Value)> {
         Some(d) => crate::approve::approval_for(store, d)?,
         None => None,
     };
-    let accepted = latest.as_ref().is_some_and(|d| d["decision"] == "accepted");
+    let unseen = unseen_escalations(store, cid, latest.as_ref())?;
+    let accepted = unseen == 0 && latest.as_ref().is_some_and(|d| d["decision"] == "accepted");
+    let approval = approval.filter(|_| unseen == 0);
     let reason = match (&latest, &approval) {
         (None, _) => "no verification of this commit under the current contract".to_owned(),
+        (Some(_), _) if unseen > 0 => format!(
+            "{unseen} escalation(s) filed after the latest verification; verify again so a person reviews them"
+        ),
         (Some(_), Some(a)) => format!(
             "needs_review approved by {}: {}",
             a["actor"].as_str().unwrap_or(""),
