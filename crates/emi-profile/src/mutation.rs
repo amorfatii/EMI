@@ -39,7 +39,7 @@ pub struct Tally {
     pub timed_out: u32,
     pub errors: u32,
     /// Mutants the tests did not notice.
-    pub survivors: Vec<String>,
+    pub survivors: Vec<Mutant>,
 }
 
 impl Tally {
@@ -57,7 +57,8 @@ impl Tally {
 
     pub fn to_json(&self) -> Value {
         json!({"killed": self.killed, "survived": self.survived, "timed_out": self.timed_out,
-               "errors": self.errors, "score": self.score(), "survivors": self.survivors})
+               "errors": self.errors, "score": self.score(),
+               "survivors": self.survivors.iter().map(Mutant::describe).collect::<Vec<_>>()})
     }
 }
 
@@ -156,7 +157,7 @@ pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
                 Verdict::Error => tally.errors += 1,
                 Verdict::Survived => {
                     tally.survived += 1;
-                    tally.survivors.push(m.describe());
+                    tally.survivors.push(m.clone());
                 }
             }
             n += 1;
