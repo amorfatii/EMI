@@ -26,11 +26,11 @@ pub struct Window {
 impl Default for Window {
     fn default() -> Self {
         Window {
-            days: Some(365),
+            days: Some(emi_history::DEFAULT_DAYS),
             ai_pattern: DEFAULT_AI_PATTERN.into(),
-            min_shared: 5,
-            min_degree: 30.0,
-            max_changeset: 30,
+            min_shared: emi_history::DEFAULT_MIN_SHARED,
+            min_degree: emi_history::DEFAULT_MIN_DEGREE,
+            max_changeset: emi_history::DEFAULT_MAX_CHANGESET,
         }
     }
 }
