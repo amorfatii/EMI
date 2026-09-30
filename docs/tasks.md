@@ -73,8 +73,9 @@ simplification.
   creation, naming where it is (`envelope: unknown key permited_paths`):
   at the top level of the spec, in `envelope`, in each requirement
   (`id`, `acceptance`, `checks`), in `verification`, in each
-  `verification.held_out` entry (`content`, `file`) and in
-  `verification.inventory`. A `held_out` that is not an object, or an
+  `verification.held_out` entry (`content`, `file`), in
+  `verification.inventory`, in `verification.mutation` (`max_mutants`)
+  and in `verification.drift` (no keys yet). A `held_out` that is not an object, or an
   entry of it that is not one, is refused too. A misspelt key would
   otherwise switch a protection off without a word.
 - **Checks.** Commands are argv lists, never a shell. They run through
@@ -199,6 +200,57 @@ optional `verification` section does this the way benchmarks grade:
   - **Cost:** each round repeats every passing check.
   - **If a rerun cannot complete:** the decision is `incomplete`, never an acceptance.
   - **Not covered:** code that special-cases the visible inputs. Held-out tests with other inputs are the answer to that.
+
+### How much the tests pin the change (`mutation`, `drift`)
+
+Two optional entries of `verification` measure what a passing run is
+worth. They are **review signals**: they appear in the decision under
+`gates.verification.mutation` and `gates.verification.drift`, each with
+`"affects_decision": false`, and never change the decision, its reasons,
+its review items or `assurance`. Both are written into the contract only
+when the spec sets them, so contracts without them keep their ids.
+
+```json
+"verification": {"trusted": ["tests/*"], "mutation": {"max_mutants": 20}, "drift": {}}
+```
+
+- **`mutation`:** `{"max_mutants": N}`, N from 1 to 200. The mutants of
+  `emi diff-mutate` (docs/diff-mutate.md): tokens on the lines the
+  candidate added inside functions, sampled the same way. Each runs through
+  the task's own machinery: a workspace prepared exactly like a check's
+  (trusted files restored, held-out files injected, the contract's
+  execution policy and isolation), the mutant applied, and the checks the
+  requirements bind run against it. A mutant is **killed** when one of them
+  fails, stopping at the first. Every run is appended to `evidence.jsonl`
+  as a `check_run` with a `mutant` field. The gate is the report
+  `emi diff-mutate --format json` prints, with two differences: the
+  unmutated run is the requirement checks' (`baseline: {"passed": true,
+  "checks": {...}}`), and `not_mutated.excluded` lists files no mutant is
+  drawn from here, test files and files the checks see in another version
+  (restored trusted files, held-out files).
+  - `not_run` (with `reason`) when the unmutated checks did not all pass:
+    a failing check would kill every mutant.
+  - `unverified` (with `detail`) when a mutant could not be run to a
+    verdict, or a step failed; its counts stay as observed, never read as
+    zero survivors.
+  - Survivors are places to look, not defects: a surviving mutant may be
+    **equivalent** to the original (`x * 1` against `x / 1` for the
+    integers the tests use), which no test can kill.
+- **`drift`:** `{}` (its keys are reserved for options). The comparison
+  of `emi drift` (docs/drift.md): the checks the requirements bind run on
+  the baseline with the input recorder, in a workspace prepared like the
+  inventory's baseline run; the recorded inputs are replayed against the
+  baseline and against the candidate as its checks see it, under the
+  contract's execution policy. The bound for each test run and each side's
+  replay is the longest of those checks' `timeout_s`; one call gets 2
+  seconds. Its limits are `emi drift`'s: Python only, instance methods,
+  nested and async functions counted rather than replayed, and nothing is
+  said about inputs the tests never pass. A baseline whose checks fail (the
+  usual bug fix) gives partial inputs, so the gate is `unverified`.
+- **Cost.** Each mutant costs one run of the checks, and drift one run of
+  them plus two replays. The time is real verification work, so it is
+  charged to the task's `max_time_s` budget like the checks'. Keep
+  `max_mutants` small, and the checks fast, on tasks with a tight budget.
 
 **Making held-out tests.** Three ways to get cases the agent never sees. All write the held-out file to `--out`, which must be outside the repository.
 
