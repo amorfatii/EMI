@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 use crate::contract::Result;
 use crate::store::Store;
 
+mod shake;
+
 /// What a contract without a test inventory cannot rule out.
 pub const NO_INVENTORY: &str = "no test inventory: each check passes on its exit code alone, so code \
      that ends the test process with status 0 before the tests run would pass; configure \
@@ -491,6 +493,24 @@ fn verification_gate(
     gate
 }
 
+/// Fold the shaken reruns into the verification gate: a check that failed
+/// when shaken needs review, one that could not rerun is unverified; a
+/// failed gate stays failed.
+fn merge_shake(gate: &mut Value, shaken: Value) {
+    let state = match (gate["state"].as_str(), shaken["state"].as_str()) {
+        (Some("fail"), _) | (_, Some("pass" | "not_required")) => None,
+        (Some("unverified"), _) | (_, Some("unverified")) => Some("unverified"),
+        (_, Some("disagree")) => Some("needs_review"),
+        _ => None,
+    };
+    if gate.is_object() && gate["state"] != "not_required" {
+        gate["shake"] = shaken;
+        if let Some(state) = state {
+            gate["state"] = json!(state);
+        }
+    }
+}
+
 fn isolation(execution: &Value) -> Isolation {
     let network = execution["network"].as_bool().unwrap_or(false);
     match execution["isolation"].as_str().unwrap_or("best") {
@@ -707,7 +727,11 @@ fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
         reasons.push("guardrails could not be checked".into());
     }
     if g.verification["state"] == "unverified" {
-        reasons.push("the test inventory could not be taken".into());
+        reasons.push(if g.verification["shake"]["state"] == "unverified" {
+            "a shaken rerun of a passing check could not complete".into()
+        } else {
+            "the test inventory could not be taken".into()
+        });
     }
     if g.refactor["state"] == "unverified" {
         reasons.push("the refactor targets could not be measured".into());
@@ -748,6 +772,18 @@ fn reviews(g: &Gates) -> Vec<String> {
         reasons.push(format!(
             "test-runner configuration added (it runs in every check, and restoring cannot undo it): {}",
             added.join(", ")
+        ));
+    }
+    if g.verification["state"] == "needs_review" && g.verification["shake"]["state"] == "disagree" {
+        let ids: Vec<&str> = g.verification["shake"]["changed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c["check"].as_str())
+            .collect();
+        reasons.push(format!(
+            "checks passed as written but failed with the tests renamed, moved and reseeded: {}",
+            ids.join(", ")
         ));
     }
     let untrusted = globs(&g.verification["untrusted_test_changes"]);
@@ -903,7 +939,9 @@ fn run_verified(
         ))
     };
     let (statuses, runs) = run_checks(store, &setup, &scratch.0, &subject.candidate_id)?;
-    let gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
+    let shaken = shake::gate(store, &setup, &scratch.0, &statuses, &subject.candidate_id)?;
+    let mut gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
+    merge_shake(&mut gate, shaken);
     Ok(Verified {
         statuses,
         runs,

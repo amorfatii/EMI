@@ -1002,3 +1002,68 @@ fn task_ids_never_become_paths_outside_the_authority() {
         assert!(Store::open(&authority.0, id, &_repo.0).is_err(), "{id:?}");
     }
 }
+
+/// A task whose trusted test runs every `test_*` function it defines, with
+/// shaken reruns; `app` is the candidate's code.
+fn shaken_task(name: &str, app: &str) -> (Dir, Dir, Store) {
+    let repo = scratch(&format!("{name}-repo"));
+    let authority = scratch(&format!("{name}-authority"));
+    git(&repo.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    std::fs::create_dir_all(repo.0.join("tests")).unwrap_or_default();
+    std::fs::write(
+        repo.0.join("tests/test_app.py"),
+        "import app\n\ndef test_add():\n    assert app.add(1, 2) == 3\n\nfor _n, _f in list(globals().items()):\n    if _n.startswith('test_'):\n        _f()\n",
+    )
+    .unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "buggy"]);
+    let spec = json!({
+        "task_id": name, "repo": repo.0, "baseline": "HEAD", "objective": "make add() add",
+        "requirements": [{"id": "R1", "acceptance": "add adds", "checks": ["tests"]}],
+        "checks": {"tests": {"command": ["python3", "-c", "import runpy; runpy.run_path('tests/test_app.py')"],
+                             "success": {"exit_code": 0}, "timeout_s": 30}},
+        "envelope": {"permitted_paths": ["app.py"]},
+        "verification": {"trusted": ["tests/*"], "shake": {"rounds": 1}},
+    });
+    create(&authority.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let store = Store::open(&authority.0, name, &repo.0).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(repo.0.join("app.py"), app).unwrap_or_default();
+    git(&repo.0, &["add", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "candidate"]);
+    (repo, authority, store)
+}
+
+#[test]
+fn an_honest_fix_passes_its_shaken_reruns() {
+    let (_repo, _authority, store) =
+        shaken_task("shake-honest", "def add(a, b):\n    return a + b\n");
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "accepted", "{d}");
+    assert_eq!(d["gates"]["verification"]["shake"]["state"], "pass", "{d}");
+    assert_eq!(
+        d["gates"]["verification"]["shake"]["tests_renamed"], 1,
+        "{d}"
+    );
+}
+
+#[test]
+fn code_that_depends_on_the_calling_test_needs_review() {
+    // passes only when called from a function of that exact name
+    let app = "import sys\n\ndef add(a, b):\n    return a + b if sys._getframe(1).f_code.co_name == 'test_add' else 0\n";
+    let (_repo, _authority, store) = shaken_task("shake-named", app);
+    let d = check(&store, Candidate::Ref("HEAD".into()));
+    assert_eq!(decision(&d), "needs_review", "{d}");
+    assert_eq!(
+        d["gates"]["verification"]["shake"]["state"], "disagree",
+        "{d}"
+    );
+    assert!(
+        d["review_items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|i| i == "shake:disagree"),
+        "{d}"
+    );
+}

@@ -164,6 +164,17 @@ optional `verification` section does this the way benchmarks grade:
   catches tests dropped through configuration (`collect_ignore`,
   `--deselect`, a runner option) rather than by editing test files.
 
+- **`shake`:** `{"rounds": 1}` (up to 3). Every check that passed runs again, and the task needs review if a rerun fails. Each rerun changes three things:
+  - the trusted Python tests' functions and classes are renamed;
+  - the workspace sits at another path;
+  - `PYTHONHASHSEED` changes, unless the contract fixes it.
+
+  Honest code cannot tell these runs apart. Code that depends on which test calls it, or where it runs, can.
+  - **Names that stay:** a test named anywhere else in its file, or in the check command, keeps its name, so the rename breaks nothing.
+  - **Cost:** each round repeats every passing check.
+  - **If a rerun cannot complete:** the decision is `incomplete`, never an acceptance.
+  - **Not covered:** code that special-cases the visible inputs. Held-out tests with other inputs are the answer to that.
+
 This mirrors ImpossibleBench's finding: agents facing contradictory tests
 cheated about half the time, mostly by editing tests, and read-only tests
 restored at scoring stopped that without hurting legitimate performance

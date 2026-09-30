@@ -241,6 +241,9 @@ fn safe_relative(path: &str) -> bool {
 /// - `inventory`: a command listing test ids (one per line; `format`
 ///   `pytest` keeps `path::name` lines); an id the baseline has and the
 ///   candidate lacks rejects the candidate.
+/// - `shake`: `{"rounds": 1..=3}` reruns every passing check with the
+///   trusted tests renamed, at another path and hash seed; a check that
+///   stops passing needs review.
 pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     let Some(v) = v.filter(|v| !v.is_null()) else {
         return Ok(None);
@@ -250,7 +253,7 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     };
     if let Some(k) = obj
         .keys()
-        .find(|k| !matches!(k.as_str(), "trusted" | "held_out" | "inventory"))
+        .find(|k| !matches!(k.as_str(), "trusted" | "held_out" | "inventory" | "shake"))
     {
         return Err(format!("verification: unknown key {k}"));
     }
@@ -309,9 +312,23 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
                    "timeout_s": inv.get("timeout_s").and_then(Value::as_f64).unwrap_or(300.0)})
         }
     };
-    Ok(Some(
-        json!({"trusted": trusted, "held_out": held_out, "inventory": inventory}),
-    ))
+    let mut out = json!({"trusted": trusted, "held_out": held_out, "inventory": inventory});
+    // absent unless asked for, so contracts frozen without it keep their identity
+    if let Some(rounds) = shake(obj.get("shake"))? {
+        out["shake"] = json!({"rounds": rounds});
+    }
+    Ok(Some(out))
+}
+
+/// The number of shaken rerun rounds (`verification.shake.rounds`).
+fn shake(v: Option<&Value>) -> Result<Option<u64>> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    match v.get("rounds").and_then(Value::as_u64) {
+        Some(n @ 1..=3) if v.as_object().is_some_and(|o| o.len() == 1) => Ok(Some(n)),
+        _ => Err("verification.shake must be {\"rounds\": 1, 2 or 3}".into()),
+    }
 }
 
 fn warning_policy(v: Option<&Value>) -> Result<Value> {

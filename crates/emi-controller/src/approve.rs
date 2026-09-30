@@ -21,7 +21,8 @@ fn strs(v: &Value) -> impl Iterator<Item = &str> {
 
 /// The items a person must look at before a `needs_review` decision can
 /// complete, one per finding: `guard:<id>:<path>`, `trusted:<path>`,
-/// `runner_config:<path>`, `untrusted_test:<path>`, `structural:warn`, `refactor:erosion_rose`.
+/// `runner_config:<path>`, `untrusted_test:<path>`,
+/// `shake:disagree`, `structural:warn`, `refactor:erosion_rose`.
 pub fn review_items(decision: &Value) -> Vec<String> {
     let g = &decision["gates"];
     let mut items: Vec<String> = g["guardrails"]["violations"]
@@ -43,6 +44,9 @@ pub fn review_items(decision: &Value) -> Vec<String> {
             strs(&g["verification"]["untrusted_test_changes"])
                 .map(|p| format!("untrusted_test:{p}")),
         );
+        if g["verification"]["shake"]["state"] == "disagree" {
+            items.push("shake:disagree".into());
+        }
     }
     if g["structural"]["state"] == "needs_review" {
         items.push("structural:warn".into());
