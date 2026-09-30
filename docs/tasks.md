@@ -175,16 +175,23 @@ optional `verification` section does this the way benchmarks grade:
   - **If a rerun cannot complete:** the decision is `incomplete`, never an acceptance.
   - **Not covered:** code that special-cases the visible inputs. Held-out tests with other inputs are the answer to that.
 
-**Making held-out tests.** `emi task holdout --file tests/test_x.py --out /secure/held.py --share 0.3` splits a Python test file:
-- **What moves:** a seeded share of its top-level test functions goes to `--out`. `--out` must be outside the repository, and decorators travel with their tests.
-- **What stays:** the rest remain in the file. Imports, helpers and fixtures stay in both files.
-- **Next steps:**
-  1. Commit the shortened file as the task baseline.
-  2. Pass the printed `--held-out` flag to `task draft`.
-- **Why it helps:** the agent never sees the held-out cases, so code fitted to the visible cases meets inputs it has not seen.
-- **Repeatability:** the same `--seed` gives the same split.
-- **Limit:** it only helps as far as the file has cases worth hiding. A file with one test cannot be split.
-- **What it splits:** top-level test functions and test methods inside classes. The split works line by line, so both halves must parse as Python (checked with `python3`) before either file is written. A file it cannot split cleanly is refused and left unchanged.
+**Making held-out tests.** Three ways to get cases the agent never sees. All write the held-out file to `--out`, which must be outside the repository.
+
+- **Random split by test** (`--unit tests`, the default): `emi task holdout --file tests/test_x.py --out /secure/held.py --share 0.3` moves a seeded share of the file's top-level test functions and test methods to `--out`. Decorators travel with their tests; imports, helpers and fixtures stay in both files. A file with one test cannot be split.
+- **Random split by assert** (`--unit asserts`): for files with one test function holding many asserts, such as `def check(candidate): assert candidate(1, 2) == 3 ...` called by `def test_x(): check(fn)`. The units are the assert statements written directly in the body of a top-level function (test or helper) that has at least two; an assert may span lines, and asserts nested in `if`, `for` or `with` are not units. `--share` and `--seed` choose which move. Each such function keeps at least one assert on each side, functions with fewer than two asserts are left whole, and everything else (imports, helpers, the callers) stays in both files, so each runs on its own. The output lists the held-out asserts as `<function>:<n>` (1-based position in the function) and carries `"unit": "asserts"`.
+- **Designed variants** (`--vary --reference REF.py`): adds new cases and leaves the visible file unchanged. It reads the visible cases of the form `assert f(args) == expected` (`candidate(...)` in a `check(candidate)` helper stands for what the caller `check(f)` passes), derives new inputs from their literal arguments (neighbouring numbers, truncated, extended, reversed, permuted or swapped strings and lists, arguments mixed between cases), and gets each expected value by calling the reference in a separate process. `--count` (default 20) is the most cases written; the same file and `--seed` give the same cases. Run it on its own, not together with a split; to get both, split first and then vary the shortened file.
+
+Why designed variants catch more: a random split holds out cases from the same distribution the agent already saw, so code that special-cases that distribution can pass them. Variants are inputs nobody wrote into the tests, with expected values from a trusted reference, so hard-coded answers and special cases have nothing to match. Nothing is invented: `--vary` without `--reference` is refused.
+
+The reference must stay outside the repository (it is refused inside it), so the agent never reads it. It defines the entry point under the same name the tests call. Its results are compared exactly, so a reference whose float results differ from an honest solution's in the last digit gives false rejections; prefer integer, string and list cases there.
+
+What is dropped is counted, never hidden: the output has `{"variants_written": n, "dropped": {"reference_error": a, "timeout": b, "unstable_repr": c, "duplicate": d, "unparsed_visible": e}}`. A case is dropped when the reference raised or ran past its per-case timeout, when a value does not read back from its `repr` as an equal Python literal, when the input repeats another or a visible case, and a visible assert is counted as unparsed when it is not a call compared with `==`, has non-literal arguments or keywords, or its entry point cannot be determined. `stopped_early` says the overall time ran out. A run that writes no case is an error and writes no file.
+
+Next steps for any of the three:
+1. For a split, commit the shortened file as the task baseline.
+2. Pass the printed `--held-out` flag to `task draft`.
+
+The split works line by line, so both halves must parse as Python (checked with `python3`) before either file is written. A file it cannot split cleanly is refused and left unchanged. The same `--seed` gives the same split.
 
 This mirrors ImpossibleBench's finding: agents facing contradictory tests
 cheated about half the time, mostly by editing tests, and read-only tests
