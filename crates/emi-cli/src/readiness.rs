@@ -3,25 +3,9 @@
 //! tests would notice going wrong. Advisory; it gates nothing (whether it
 //! should is emi-lab S9's question).
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::{Value, json};
-
-/// Added lines per file, read between two commits through a clean view.
-fn added_lines(
-    repo: &Path,
-    before: &str,
-    after: &str,
-) -> Result<BTreeMap<String, Vec<u32>>, String> {
-    let view = emi_git::CleanView::of(repo)?;
-    let files = emi_diff::hunks::changes(view.path(), before, Some(after))?;
-    Ok(files
-        .into_iter()
-        .filter(|f| !f.added.is_empty())
-        .map(|f| (f.path, f.added.into_iter().map(|(l, _)| l).collect()))
-        .collect())
-}
 
 /// Order rows by how much they need attention.
 fn rank(readiness: &str) -> u8 {
@@ -41,7 +25,7 @@ pub fn changed(profile: &Value, repo: &Path, before: &str, after: &str) -> Value
         return json!({"state": "unverified",
                       "detail": format!("the profile is of {}, not of the change's head {after}", profile["head"])});
     }
-    let lines = match added_lines(repo, before, after) {
+    let lines = match emi_diff::functions::added_lines(repo, before, after) {
         Ok(l) => l,
         Err(e) => return json!({"state": "unverified", "detail": e}),
     };

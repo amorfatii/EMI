@@ -364,6 +364,7 @@ dependencies = [
  "emi-history",
  "emi-ir",
  "emi-ledger",
+ "emi-panel",
  "emi-scan",
  "rayon",
  "serde_json",

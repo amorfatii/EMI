@@ -2,6 +2,7 @@
 
 pub mod backtest;
 pub mod change;
+pub mod functions;
 pub mod hunks;
 pub mod snapshot;
 pub mod trajectory;

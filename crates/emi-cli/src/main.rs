@@ -132,6 +132,9 @@ enum Command {
     /// Measure a change between two git refs; with --guardrail, review
     /// and gate it.
     Diff(diffcli::DiffArgs),
+    /// List the functions a change adds, modifies or removes, with their
+    /// line spans on each side.
+    ChangedFunctions(diffcli::ChangedFunctionsArgs),
     /// Gate consecutive first-parent commit pairs and report the verdict
     /// curve (calibrate allowances before enforcing).
     Backtest(diffcli::BacktestArgs),
@@ -311,6 +314,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         }
         Command::Review { input, gate } => review(&input, &gate),
         Command::Diff(args) => diffcli::run(&args),
+        Command::ChangedFunctions(args) => diffcli::changed_functions(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
         Command::Hotspots(args) => historycli::run(&args),
         Command::Check(args) => checkcli::run(&args),
