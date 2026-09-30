@@ -1,82 +1,109 @@
-//! `emi drift`: for the Python functions a change modifies, the inputs the
-//! base commit's tests pass them, replayed against the old and the new
-//! code. A drift is an input where the two answer differently (another
-//! return value, another exception type, or a return where there was a
-//! raise). Passing tests do not show this; the report does, input by input
-//! (docs/drift.md).
+//! Behavioural drift: for the Python functions a change modifies, the
+//! inputs the base commit's tests pass them, replayed against the old and
+//! the new code. A drift is an input where the two answer differently
+//! (another return value, another exception type, or a return where there
+//! was a raise). Passing tests do not show this; the report does, input by
+//! input (docs/drift.md).
 //!
 //! Every target, input and call that could not be followed through is
 //! counted by reason, and a run that did not happen, or only partly, is
 //! `unverified`, never "no drift".
+//!
+//! Where the commands run is the caller's: `emi drift` runs them in copies
+//! of the two commits, a supervised task in workspaces prepared like its
+//! checks'. Both go through a [`Side`].
 
 mod compare;
 mod python;
 
 use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Context;
-use clap::Args;
 use emi_diff::functions::{ChangeKind, ChangedFn, changed_functions};
-use emi_diff::snapshot::resolve_ref;
+use emi_exec::Outcome;
 use emi_panel::Lang;
-use emi_profile::Execution;
-use emi_profile::sandbox::{Copy, Runner};
 use serde_json::{Value, json};
 
 use self::compare::Tally;
 use self::python::{Harvest, Recorded, Replay, ReplaySettings, Target};
+use crate::Result;
+use crate::sandbox::{Copy, Runner};
 
-const NOTE: &str = "inputs come from the test run on the base commit; drift on inputs the tests never pass is not seen";
+pub const NOTE: &str = "inputs come from the test run on the base commit; drift on inputs the tests never pass is not seen";
 const LIMITS: &str = "Python only; module-level functions, static methods and class methods are replayed; instance methods, nested and async functions are counted, not replayed; pinned is not measured yet";
 
-#[derive(Args)]
-pub struct DriftArgs {
-    /// Git repository.
-    #[arg(long, default_value = ".")]
-    repo: PathBuf,
-    /// The revision before the change; its tests supply the inputs.
-    #[arg(long)]
-    base: String,
-    /// The revision after the change.
-    #[arg(long, default_value = "HEAD")]
-    head: String,
-    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
-    format: String,
-    /// Ignored dependency directory linked into each copy (repeatable).
-    #[arg(long)]
-    link: Vec<String>,
-    /// KEY=VALUE for the environment of the test run and the replays
-    /// (repeatable).
-    #[arg(long = "env")]
-    env: Vec<String>,
-    /// Upper bound for the test run and for each side's replay, in seconds.
-    #[arg(long, default_value_t = 600)]
-    timeout_s: u64,
-    /// Upper bound for one replayed call, in seconds.
-    #[arg(long, default_value_t = 2.0)]
-    call_timeout_s: f64,
-    /// Let the test run and the replays use the network.
-    #[arg(long)]
-    network: bool,
-    /// Write here instead of stdout.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-    /// Test command (argv, no shell) run on the base commit, after `--`.
-    #[arg(last = true, required = true)]
-    command: Vec<String>,
+/// A tree the commands of one side run in; removed when dropped.
+pub trait Tree {
+    fn dir(&self) -> &Path;
 }
 
-/// What to compare and how the commands run.
-pub struct Options {
-    pub repo: PathBuf,
+/// One side of the comparison (the base or the head): fresh trees of it,
+/// and how a command runs in one.
+pub trait Side {
+    type Tree: Tree;
+    /// A fresh tree (`tag` keeps concurrent ones apart).
+    fn tree(&self, tag: &str) -> Result<Self::Tree>;
+    /// Run `argv` in `tree` with exactly `env` (built from [`Side::env`]),
+    /// bounded by `timeout`.
+    fn run(
+        &self,
+        tree: &Self::Tree,
+        argv: &[String],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Outcome;
+    /// The environment every command of this side starts from.
+    fn env(&self) -> &[(String, String)];
+    /// Upper bound for a test command and for one side's replay.
+    fn timeout(&self) -> Duration;
+}
+
+impl Tree for Copy {
+    fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Side for Runner<'_> {
+    type Tree = Copy;
+
+    fn tree(&self, tag: &str) -> Result<Copy> {
+        self.copy(tag)
+    }
+
+    fn run(
+        &self,
+        tree: &Copy,
+        argv: &[String],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Outcome {
+        Runner { env, ..*self }.run(tree, argv, timeout)
+    }
+
+    fn env(&self) -> &[(String, String)] {
+        self.env
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
+/// What to compare and where each side runs.
+pub struct Request<'a, S: Side> {
+    /// The repository the changed functions are read from.
+    pub repo: &'a Path,
+    /// Commit shas.
     pub base: String,
     pub head: String,
-    pub command: Vec<String>,
-    pub execution: Execution,
+    /// Test commands (argv, no shell), run in turn on the base side; their
+    /// Python processes supply the inputs.
+    pub commands: &'a [Vec<String>],
     pub call_timeout_s: f64,
+    pub base_side: &'a S,
+    pub head_side: &'a S,
 }
 
 #[derive(Default)]
@@ -162,9 +189,8 @@ fn pinned(_file: &str, _qualname: &str) -> &'static str {
 
 /// The modified Python functions; added and removed ones are counted, and
 /// Python files that did not parse leave the comparison incomplete.
-fn modified(report: &mut Report, repo: &std::path::Path) -> anyhow::Result<Vec<ChangedFn>> {
-    let changed =
-        changed_functions(repo, &report.base, &report.head).map_err(anyhow::Error::msg)?;
+fn modified(report: &mut Report, repo: &Path) -> Result<Vec<ChangedFn>> {
+    let changed = changed_functions(repo, &report.base, &report.head)?;
     for file in changed
         .unparsed
         .iter()
@@ -185,17 +211,17 @@ fn modified(report: &mut Report, repo: &std::path::Path) -> anyhow::Result<Vec<C
 }
 
 /// The replayable targets; the rest are counted by kind.
-fn targets(
+fn targets<S: Side>(
     report: &mut Report,
-    runner: &Runner,
-    copy: &Copy,
+    side: &S,
+    tree: &S::Tree,
     modified: &[ChangedFn],
-) -> Result<Vec<Target>, String> {
+) -> Result<Vec<Target>> {
     let asked: Vec<(String, String, u32)> = modified
         .iter()
         .map(|f| (f.file.clone(), f.name.clone(), f.old.map_or(0, |s| s.0)))
         .collect();
-    let kinds = python::classify(runner, copy, &asked)?;
+    let kinds = python::classify(side, tree, &asked)?;
     let mut out = Vec::new();
     for (id, (f, (kind, qualname))) in modified.iter().zip(kinds).enumerate() {
         let name = qualname.as_deref().unwrap_or(&f.name);
@@ -233,33 +259,24 @@ fn targets(
     Ok(out)
 }
 
-pub fn measure(o: &Options) -> anyhow::Result<Value> {
-    let base = resolve_ref(&o.repo, &o.base).map_err(anyhow::Error::msg)?;
-    let head = resolve_ref(&o.repo, &o.head).map_err(anyhow::Error::msg)?;
+/// The drift report for `r.base..r.head`. `Err` only when the change or a
+/// tree could not be read at all; everything that went wrong on the way
+/// is in the report, which is then `unverified`.
+pub fn measure<S: Side>(r: &Request<S>) -> Result<Value> {
     let mut report = Report {
-        base,
-        head,
+        base: r.base.clone(),
+        head: r.head.clone(),
         reasons: Vec::new(),
         functions: BTreeMap::new(),
         skipped: Vec::new(),
         counts: Counts::default(),
     };
-    let modified = modified(&mut report, &o.repo)?;
+    let modified = modified(&mut report, r.repo)?;
     if modified.is_empty() {
         return Ok(report.finish());
     }
-    let (base, head) = (report.base.clone(), report.head.clone());
-    let runner = |rev| Runner {
-        repo: &o.repo,
-        rev,
-        link: &o.execution.link,
-        env: &o.execution.env,
-        timeout: o.execution.timeout,
-        network: o.execution.network,
-    };
-    let sides = (runner(&base), runner(&head));
-    let copy = sides.0.copy("drift-harvest").map_err(anyhow::Error::msg)?;
-    let found = targets(&mut report, &sides.0, &copy, &modified);
+    let tree = r.base_side.tree("drift-harvest")?;
+    let found = targets(&mut report, r.base_side, &tree, &modified);
     let targets = match found {
         Ok(t) if t.is_empty() => return Ok(report.finish()),
         Ok(t) => t,
@@ -268,8 +285,8 @@ pub fn measure(o: &Options) -> anyhow::Result<Value> {
             return Ok(report.finish());
         }
     };
-    match python::harvest(&sides.0, &copy, &o.command, &targets) {
-        Ok(h) => replay_all(&mut report, o, &sides, &copy, &targets, &h)?,
+    match python::harvest(r.base_side, &tree, r.commands, &targets) {
+        Ok(h) => replay_all(&mut report, r, &tree, &targets, &h)?,
         Err(e) => report.reasons.push(e),
     }
     Ok(report.finish())
@@ -333,16 +350,13 @@ fn entry(t: &Target, status: &str, inputs: usize, tally: &Tally) -> Value {
     })
 }
 
-type Sides<'a> = (Runner<'a>, Runner<'a>);
-
-fn replay_all(
+fn replay_all<S: Side>(
     report: &mut Report,
-    o: &Options,
-    sides: &Sides,
-    harvested: &Copy,
+    r: &Request<S>,
+    harvested: &S::Tree,
     targets: &[Target],
     harvest: &Harvest,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     if let Some(why) = &harvest.incomplete {
         report
             .reasons
@@ -352,18 +366,18 @@ fn replay_all(
     if items.is_empty() {
         return Ok(());
     }
-    // fresh copies: the test run may have changed files in its own
-    let old = sides.0.copy("drift-base").map_err(anyhow::Error::msg)?;
-    let new = sides.1.copy("drift-head").map_err(anyhow::Error::msg)?;
-    let pythons = [&old, &new].map(|c| python::interpreter(harvest, harvested, c));
+    // fresh trees: the test run may have changed files in its own
+    let old = r.base_side.tree("drift-base")?;
+    let new = r.head_side.tree("drift-head")?;
+    let pythons = [old.dir(), new.dir()].map(|c| python::interpreter(harvest, harvested.dir(), c));
     let settings = |python, repeat| ReplaySettings {
         python,
         sys_path: &harvest.sys_path,
-        call_timeout_s: o.call_timeout_s,
+        call_timeout_s: r.call_timeout_s,
         repeat,
     };
-    let base = python::replay(&sides.0, &old, &items, &settings(&pythons[0], 2));
-    let head = python::replay(&sides.1, &new, &items, &settings(&pythons[1], 1));
+    let base = python::replay(r.base_side, &old, &items, &settings(&pythons[0], 2));
+    let head = python::replay(r.head_side, &new, &items, &settings(&pythons[1], 1));
     match (base, head) {
         (Ok(b), Ok(h)) => {
             for r in &items {
@@ -433,94 +447,4 @@ fn record(report: &mut Report, r: &Replay, base: &Value, head: &Value) {
     report
         .functions
         .insert(t.id, entry(t, status, r.inputs.len(), &tally));
-}
-
-fn options(a: &DriftArgs) -> anyhow::Result<Options> {
-    if !(a.call_timeout_s.is_finite() && a.call_timeout_s > 0.0) {
-        anyhow::bail!("--call-timeout-s must be a positive number of seconds");
-    }
-    Ok(Options {
-        repo: a.repo.clone(),
-        base: a.base.clone(),
-        head: a.head.clone(),
-        command: a.command.clone(),
-        execution: Execution {
-            link: a.link.clone(),
-            env: crate::profilecli::env_pairs(&a.env)?,
-            timeout: Duration::from_secs(a.timeout_s),
-            network: a.network,
-        },
-        call_timeout_s: a.call_timeout_s,
-    })
-}
-
-fn short(sha: &Value) -> &str {
-    sha.as_str().map_or("?", |s| &s[..s.len().min(12)])
-}
-
-fn line(v: &Value) -> String {
-    emi_ledger::pyfmt::dumps_line(v)
-}
-
-/// The report for a terminal: drifts first, then what was not compared.
-pub fn render(r: &Value) -> String {
-    let c = &r["counts"];
-    let mut out = format!(
-        "drift {}..{}: {}\n{} targets, {} compared, {} with drift\n",
-        short(&r["base"]),
-        short(&r["head"]),
-        r["state"].as_str().unwrap_or("?"),
-        c["targets"],
-        c["compared"],
-        c["with_drift"]
-    );
-    for f in r["functions"].as_array().into_iter().flatten() {
-        out += &format!(
-            "\n{} {} [{}]: {} inputs, {} compared\n",
-            f["file"].as_str().unwrap_or("?"),
-            f["name"].as_str().unwrap_or("?"),
-            f["status"].as_str().unwrap_or("?"),
-            f["inputs"],
-            f["compared"]
-        );
-        for d in f["drifts"].as_array().into_iter().flatten() {
-            out += &format!(
-                "  input {}\n    old {}\n    new {}\n",
-                line(&d["input"]),
-                line(&d["old"]),
-                line(&d["new"])
-            );
-        }
-        if f["more_drifts"].as_u64().is_some_and(|n| n > 0) {
-            out += &format!("  ... and {} more drifts\n", f["more_drifts"]);
-        }
-    }
-    for s in r["skipped"].as_array().into_iter().flatten() {
-        out += &format!(
-            "skipped {} {}: {}\n",
-            s["file"].as_str().unwrap_or("?"),
-            s["name"].as_str().unwrap_or("?"),
-            s["reason"].as_str().unwrap_or("?")
-        );
-    }
-    for why in r["reasons"].as_array().into_iter().flatten() {
-        out += &format!("unverified: {}\n", why.as_str().unwrap_or("?"));
-    }
-    out += &format!("counts: {}\n", line(c));
-    out += &format!("{}\n", NOTE);
-    out
-}
-
-pub fn run(a: &DriftArgs) -> anyhow::Result<u8> {
-    let report = measure(&options(a)?)?;
-    let text = if a.format == "json" {
-        emi_ledger::pyfmt::dumps_pretty(&report) + "\n"
-    } else {
-        render(&report)
-    };
-    match &a.output {
-        Some(p) => std::fs::write(p, text).with_context(|| format!("writing {}", p.display()))?,
-        None => write!(std::io::stdout().lock(), "{text}")?,
-    }
-    Ok(0)
 }

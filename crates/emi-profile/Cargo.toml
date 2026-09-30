@@ -12,6 +12,7 @@ emi-git.workspace = true
 emi-diff = { path = "../emi-diff" }
 emi-exec.workspace = true
 emi-history.workspace = true
+emi-ledger = { path = "../emi-ledger" }
 emi-panel.workspace = true
 emi-scan.workspace = true
 roxmltree.workspace = true

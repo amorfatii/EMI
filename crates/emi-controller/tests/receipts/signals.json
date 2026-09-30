@@ -1,0 +1,157 @@
+{
+  "schema": "emi-task-receipt-0.1",
+  "task_id": "rc-signals",
+  "decision": {
+    "decision": "accepted",
+    "candidate_id": "<sha>",
+    "content_id": "<sha>",
+    "contract_id": "<digest>",
+    "revision": 1,
+    "at": "<time>",
+    "reasons": [
+      "every requirement verified by its frozen checks; all gates pass"
+    ]
+  },
+  "verified": {
+    "requirements": [
+      {
+        "id": "R1",
+        "acceptance": "clamp clamps",
+        "state": "verified",
+        "checks": [
+          {
+            "check": "tests",
+            "status": "passed"
+          }
+        ]
+      }
+    ],
+    "trusted_restored": [],
+    "held_out_injected": [],
+    "inventory": {
+      "state": "not_measured",
+      "reason": "the contract has no test inventory"
+    },
+    "shaken_reruns": {
+      "state": "not_measured",
+      "reason": "the contract asks for no shaken reruns"
+    }
+  },
+  "evidence_kind": {
+    "catch_kind": "none",
+    "structural": [],
+    "pattern": [],
+    "isolation": "sandboxed"
+  },
+  "escalations": {
+    "state": "none",
+    "open": []
+  },
+  "scope": {
+    "envelope_violations": [],
+    "runner_config_added": [],
+    "runner_config_policy": "reject",
+    "untrusted_test_changes": []
+  },
+  "pinning": {
+    "mutation": {
+      "state": "measured",
+      "candidates": 1,
+      "run": 1,
+      "killed": 0,
+      "survived": 1,
+      "timed_out": 0,
+      "errors": 0,
+      "survivors": [
+        {
+          "file": "app.py",
+          "function": "clamp",
+          "line": 4,
+          "original": "*",
+          "replacement": "/"
+        }
+      ],
+      "note": "a surviving mutant may be equivalent to the original; treat survivors as places to look, not defects"
+    },
+    "drift": {
+      "state": "measured",
+      "reasons": [],
+      "note": "inputs come from the test run on the base commit; drift on inputs the tests never pass is not seen",
+      "counts": {
+        "targets": 1,
+        "compared": 1,
+        "with_drift": 1
+      },
+      "drifts": [
+        {
+          "file": "app.py",
+          "function": "clamp",
+          "input": {
+            "args": [
+              -2
+            ],
+            "kwargs": {}
+          },
+          "old": {
+            "returned": 0
+          },
+          "new": {
+            "raised": "ValueError"
+          }
+        }
+      ]
+    }
+  },
+  "places_to_look": {
+    "public_surfaces": {
+      "state": "not_measured",
+      "reason": "not available in this version"
+    },
+    "co_change_partners": {
+      "state": "not_measured",
+      "reason": "not available in this version"
+    }
+  },
+  "not_verified": [
+    {
+      "what": "structural gate",
+      "state": "not_required",
+      "meaning": "the contract has no structural policy; growth in maintenance burden was not measured"
+    },
+    {
+      "what": "test inventory",
+      "state": "not_required",
+      "meaning": "the contract has no test inventory; each check passed on its exit code alone"
+    },
+    {
+      "what": "shaken reruns",
+      "state": "not_required",
+      "meaning": "not requested by the contract; code that depends on how it is tested was not looked for"
+    },
+    {
+      "what": "refactor",
+      "state": "not_required",
+      "meaning": "not a refactoring task; simplification was not measured"
+    },
+    {
+      "what": "dependency pins",
+      "state": "not_required",
+      "meaning": "the contract links no dependency directory; there was nothing to pin"
+    },
+    {
+      "what": "behaviour outside the tests' inputs",
+      "state": "not_measured",
+      "meaning": "the checks exercise only the inputs they contain; other inputs may behave differently"
+    },
+    {
+      "what": "performance",
+      "state": "not_measured",
+      "meaning": "no check measures speed or resource use"
+    },
+    {
+      "what": "security properties beyond the guardrails",
+      "state": "not_measured",
+      "meaning": "nothing here looks for vulnerabilities; the guardrails only flag known risky edits"
+    }
+  ]
+}

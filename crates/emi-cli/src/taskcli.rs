@@ -26,6 +26,9 @@ pub enum TaskCommand {
     Verify(VerifyArgs),
     /// Latest decision for a candidate, without running anything.
     Status(VerifyArgs),
+    /// The latest decision for a candidate rendered for a reviewer: what
+    /// was verified, how, and what was not (read-only).
+    Receipt(ReceiptArgs),
     /// Complete the task with an accepted commit (exit 0) or deny (exit 3).
     Complete(VerifyArgs),
     /// Record a contract revision (actor and reason required).
@@ -72,12 +75,20 @@ pub struct VerifyArgs {
     /// Candidate commit/ref (default HEAD).
     #[arg(long, default_value = "HEAD")]
     candidate: String,
-    /// Verify the uncommitted working tree instead (verify/status only).
+    /// Verify the uncommitted working tree instead (verify/status/receipt only).
     #[arg(long)]
     worktree: bool,
     /// Repository (default: the contract's).
     #[arg(long)]
     repo: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReceiptArgs {
+    #[command(flatten)]
+    target: VerifyArgs,
+    #[arg(long, default_value = "md", value_parser = ["md", "json"])]
+    format: String,
 }
 
 #[derive(Args)]
@@ -411,6 +422,20 @@ fn status(a: &VerifyArgs) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// `emi task receipt`: the latest decision for the candidate as a
+/// receipt, Markdown for a person or the JSON it is rendered from.
+fn receipt(a: &ReceiptArgs) -> anyhow::Result<u8> {
+    let t = &a.target;
+    let s = store(&t.authority, &t.task, t.repo.as_ref())?;
+    let r = emi_controller::receipt(&s, &candidate(t)).map_err(anyhow::Error::msg)?;
+    if a.format == "json" {
+        print(&r);
+    } else {
+        print!("{}", emi_controller::receipt::markdown(&r));
+    }
+    Ok(0)
+}
+
 fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
     let err = anyhow::Error::msg;
     match cmd {
@@ -429,6 +454,7 @@ fn supervised(cmd: &TaskCommand) -> anyhow::Result<u8> {
             })
         }
         TaskCommand::Status(a) => status(a),
+        TaskCommand::Receipt(a) => receipt(a),
         TaskCommand::Complete(a) => {
             let (done, record) = emi_controller::complete(
                 &store(&a.authority, &a.task, a.repo.as_ref())?,

@@ -59,6 +59,11 @@ pub fn list() -> Vec<Value> {
                "inputSchema": {"type": "object", "required": ["authority", "task"], "properties": {
                    "authority": {"type": "string"}, "task": {"type": "string"},
                    "candidate": {"type": "string", "description": "Commit/ref; omit for the working tree."}}}}),
+        json!({"name": "emi_task_receipt",
+               "description": "The latest decision for a candidate as a receipt for a reviewer: the decision and its reasons, each requirement's checks, trusted and held-out files, what kind of evidence carries it (structural or pattern), open escalations, scope, how much the tests pin the change (mutation, drift, when the contract asks for them) and an explicit list of what was not verified. Read-only: no checks run, no budget spent.",
+               "inputSchema": {"type": "object", "required": ["authority", "task"], "properties": {
+                   "authority": {"type": "string"}, "task": {"type": "string"},
+                   "candidate": {"type": "string", "description": "Commit/ref; omit for the working tree."}}}}),
         json!({"name": "emi_task_escalate",
                "description": "Report that the task's tests or contract contradict its objective instead of changing them. A person reviews the conflict; use this rather than editing, skipping or special-casing tests.",
                "inputSchema": {"type": "object", "required": ["authority", "task", "reason"], "properties": {
@@ -96,6 +101,7 @@ pub fn call(name: &str, args: &Value) -> Option<Out> {
         "emi_profile" => profile(args),
         "emi_task_verify" => task_verify(args),
         "emi_task_status" => task_status(args),
+        "emi_task_receipt" => task_receipt(args),
         "emi_task_escalate" => task_escalate(args),
         "emi_guard" => guard(args),
         _ => return None,
@@ -456,6 +462,11 @@ fn task_status(args: &Value) -> Out {
               "budgets": contract["budgets"], "retries_used": state["cumulative"]["retries"],
               "candidate_id": id, "latest_decision": latest, "escalations": escalations}),
     )
+}
+
+fn task_receipt(args: &Value) -> Out {
+    let (store, _) = task_store(args)?;
+    emi_controller::receipt(&store, &candidate(args))
 }
 
 fn task_escalate(args: &Value) -> Out {

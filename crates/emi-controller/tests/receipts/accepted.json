@@ -1,0 +1,137 @@
+{
+  "schema": "emi-task-receipt-0.1",
+  "task_id": "rc-accepted",
+  "decision": {
+    "decision": "accepted",
+    "candidate_id": "<sha>",
+    "content_id": "<sha>",
+    "contract_id": "<digest>",
+    "revision": 1,
+    "at": "<time>",
+    "reasons": [
+      "every requirement verified by its frozen checks; all gates pass"
+    ]
+  },
+  "verified": {
+    "requirements": [
+      {
+        "id": "R1",
+        "acceptance": "add(1, 2) == 3",
+        "state": "verified",
+        "checks": [
+          {
+            "check": "unit",
+            "status": "passed"
+          }
+        ]
+      }
+    ],
+    "trusted_restored": {
+      "state": "not_measured",
+      "reason": "the contract has no verification section"
+    },
+    "held_out_injected": {
+      "state": "not_measured",
+      "reason": "the contract has no verification section"
+    },
+    "inventory": {
+      "state": "not_measured",
+      "reason": "the contract has no verification section"
+    },
+    "shaken_reruns": {
+      "state": "not_measured",
+      "reason": "the contract has no verification section"
+    }
+  },
+  "evidence_kind": {
+    "catch_kind": "none",
+    "structural": [],
+    "pattern": [],
+    "isolation": "sandboxed"
+  },
+  "escalations": {
+    "state": "none",
+    "open": []
+  },
+  "scope": {
+    "envelope_violations": [],
+    "runner_config_added": [],
+    "runner_config_policy": "review, as the contract has no verification section",
+    "untrusted_test_changes": {
+      "state": "not_measured",
+      "reason": "the contract has no verification section"
+    }
+  },
+  "pinning": {
+    "mutation": {
+      "state": "not_measured",
+      "reason": "the contract does not set verification.mutation"
+    },
+    "drift": {
+      "state": "not_measured",
+      "reason": "the contract does not set verification.drift"
+    }
+  },
+  "places_to_look": {
+    "public_surfaces": {
+      "state": "not_measured",
+      "reason": "not available in this version"
+    },
+    "co_change_partners": {
+      "state": "not_measured",
+      "reason": "not available in this version"
+    }
+  },
+  "not_verified": [
+    {
+      "what": "verification",
+      "state": "not_required",
+      "meaning": "the contract has no verification section; trusted tests were not restored and no held-out test ran"
+    },
+    {
+      "what": "test inventory",
+      "state": "not_required",
+      "meaning": "the contract has no test inventory; each check passed on its exit code alone"
+    },
+    {
+      "what": "shaken reruns",
+      "state": "not_required",
+      "meaning": "not requested by the contract; code that depends on how it is tested was not looked for"
+    },
+    {
+      "what": "refactor",
+      "state": "not_required",
+      "meaning": "not a refactoring task; simplification was not measured"
+    },
+    {
+      "what": "dependency pins",
+      "state": "not_required",
+      "meaning": "the contract links no dependency directory; there was nothing to pin"
+    },
+    {
+      "what": "mutation",
+      "state": "not_required",
+      "meaning": "not requested by the contract; the tests' strength on the changed lines is unknown"
+    },
+    {
+      "what": "drift",
+      "state": "not_required",
+      "meaning": "not requested by the contract; whether the change answers differently for the tests' inputs is unknown"
+    },
+    {
+      "what": "behaviour outside the tests' inputs",
+      "state": "not_measured",
+      "meaning": "the checks exercise only the inputs they contain; other inputs may behave differently"
+    },
+    {
+      "what": "performance",
+      "state": "not_measured",
+      "meaning": "no check measures speed or resource use"
+    },
+    {
+      "what": "security properties beyond the guardrails",
+      "state": "not_measured",
+      "meaning": "nothing here looks for vulnerabilities; the guardrails only flag known risky edits"
+    }
+  ]
+}

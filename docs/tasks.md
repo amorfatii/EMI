@@ -13,6 +13,7 @@ task separates the roles:
 emi task create   --authority ~/.emi-authority --spec task.json
 emi task verify   --authority ~/.emi-authority --task fix-add --worktree   # or --candidate REF
 emi task status   --authority ~/.emi-authority --task fix-add
+emi task receipt  --authority ~/.emi-authority --task fix-add --candidate HEAD   # --format md|json
 emi task complete --authority ~/.emi-authority --task fix-add --candidate HEAD
 emi task revise   --authority ~/.emi-authority --task fix-add --changes '{"objective": "..."}' --actor lead --reason "scope grew"
 emi task approve  --authority ~/.emi-authority --task fix-add --candidate HEAD --item 'guard:ci.edited:.github/workflows/test.yml' --actor lead --reason "pin bump requested in the issue"
@@ -30,7 +31,8 @@ Every verify also runs the **guardrails** (docs/guardrails.md):
 
 Exit codes: `verify` returns 0 when accepted and 3 otherwise; `complete`
 and `hook-check` return 0 or 3. Agents get the same through MCP as
-`emi_task_verify` and `emi_task_status` (docs/agents.md).
+`emi_task_verify`, `emi_task_status` and `emi_task_receipt`
+(docs/agents.md).
 
 ## The spec
 
@@ -73,8 +75,9 @@ simplification.
   creation, naming where it is (`envelope: unknown key permited_paths`):
   at the top level of the spec, in `envelope`, in each requirement
   (`id`, `acceptance`, `checks`), in `verification`, in each
-  `verification.held_out` entry (`content`, `file`) and in
-  `verification.inventory`. A `held_out` that is not an object, or an
+  `verification.held_out` entry (`content`, `file`), in
+  `verification.inventory`, in `verification.mutation` (`max_mutants`)
+  and in `verification.drift` (no keys yet). A `held_out` that is not an object, or an
   entry of it that is not one, is refused too. A misspelt key would
   otherwise switch a protection off without a word.
 - **Checks.** Commands are argv lists, never a shell. They run through
@@ -200,6 +203,57 @@ optional `verification` section does this the way benchmarks grade:
   - **If a rerun cannot complete:** the decision is `incomplete`, never an acceptance.
   - **Not covered:** code that special-cases the visible inputs. Held-out tests with other inputs are the answer to that.
 
+### How much the tests pin the change (`mutation`, `drift`)
+
+Two optional entries of `verification` measure what a passing run is
+worth. They are **review signals**: they appear in the decision under
+`gates.verification.mutation` and `gates.verification.drift`, each with
+`"affects_decision": false`, and never change the decision, its reasons,
+its review items or `assurance`. Both are written into the contract only
+when the spec sets them, so contracts without them keep their ids.
+
+```json
+"verification": {"trusted": ["tests/*"], "mutation": {"max_mutants": 20}, "drift": {}}
+```
+
+- **`mutation`:** `{"max_mutants": N}`, N from 1 to 200. The mutants of
+  `emi diff-mutate` (docs/diff-mutate.md): tokens on the lines the
+  candidate added inside functions, sampled the same way. Each runs through
+  the task's own machinery: a workspace prepared exactly like a check's
+  (trusted files restored, held-out files injected, the contract's
+  execution policy and isolation), the mutant applied, and the checks the
+  requirements bind run against it. A mutant is **killed** when one of them
+  fails, stopping at the first. Every run is appended to `evidence.jsonl`
+  as a `check_run` with a `mutant` field. The gate is the report
+  `emi diff-mutate --format json` prints, with two differences: the
+  unmutated run is the requirement checks' (`baseline: {"passed": true,
+  "checks": {...}}`), and `not_mutated.excluded` lists files no mutant is
+  drawn from here, test files and files the checks see in another version
+  (restored trusted files, held-out files).
+  - `not_run` (with `reason`) when the unmutated checks did not all pass:
+    a failing check would kill every mutant.
+  - `unverified` (with `detail`) when a mutant could not be run to a
+    verdict, or a step failed; its counts stay as observed, never read as
+    zero survivors.
+  - Survivors are places to look, not defects: a surviving mutant may be
+    **equivalent** to the original (`x * 1` against `x / 1` for the
+    integers the tests use), which no test can kill.
+- **`drift`:** `{}` (its keys are reserved for options). The comparison
+  of `emi drift` (docs/drift.md): the checks the requirements bind run on
+  the baseline with the input recorder, in a workspace prepared like the
+  inventory's baseline run; the recorded inputs are replayed against the
+  baseline and against the candidate as its checks see it, under the
+  contract's execution policy. The bound for each test run and each side's
+  replay is the longest of those checks' `timeout_s`; one call gets 2
+  seconds. Its limits are `emi drift`'s: Python only, instance methods,
+  nested and async functions counted rather than replayed, and nothing is
+  said about inputs the tests never pass. A baseline whose checks fail (the
+  usual bug fix) gives partial inputs, so the gate is `unverified`.
+- **Cost.** Each mutant costs one run of the checks, and drift one run of
+  them plus two replays. The time is real verification work, so it is
+  charged to the task's `max_time_s` budget like the checks'. Keep
+  `max_mutants` small, and the checks fast, on tasks with a tight budget.
+
 **Making held-out tests.** Three ways to get cases the agent never sees. All write the held-out file to `--out`, which must be outside the repository.
 
 - **Random split by test** (`--unit tests`, the default): `emi task holdout --file tests/test_x.py --out /secure/held.py --share 0.3` moves a seeded share of the file's top-level test functions and test methods to `--out`. Decorators travel with their tests; imports, helpers and fixtures stay in both files. A file with one test cannot be split.
@@ -297,6 +351,140 @@ older decision look like the latest. `complete` accepts only a commit whose late
 under the current contract is `accepted`, or `needs_review` with an
 approval of exactly that decision; verifying the working tree never
 completes a task.
+
+## Receipt
+
+`emi task verify` answers accepted, rejected, needs_review or incomplete.
+`emi task receipt` (MCP `emi_task_receipt`) says what that answer is
+worth: it renders the latest decision for a candidate under the current
+contract for the person who relies on it. It runs nothing, spends no
+budget and records nothing; without a decision it is an error.
+
+```sh
+emi task receipt --authority ~/.emi-authority --task fix-add --candidate HEAD            # Markdown
+emi task receipt --authority ~/.emi-authority --task fix-add --worktree --format json   # the object it renders
+```
+
+`--format json` gives one object (`schema: emi-task-receipt-0.1`), built
+by one function the CLI and MCP share, with these sections in order, each
+always present. Anything not measured is `{"state": "not_measured",
+"reason": ...}`, never a blank or a zero.
+
+1. **Decision** (`decision`): the decision, candidate and verified
+   content, contract id and revision, when it was recorded, the reasons.
+2. **What was verified** (`verified`): each requirement with its checks
+   and their status; trusted files restored; held-out files injected (by
+   name, never their content); the test inventory; the shaken reruns.
+3. **Evidence kind** (`evidence_kind`): `assurance`'s catch kind and
+   signals, and, when a pattern signal is among them, "pattern findings are
+   review hints; code written differently would pass them".
+4. **Escalations** (`escalations`): the open ones with their reasons, or
+   none.
+5. **Scope** (`scope`): envelope violations, test-runner configuration
+   added and the policy, test files outside the trusted set that changed.
+6. **How much the tests pin the change** (`pinning`): mutation (killed,
+   survived, survivors) and drift (functions compared, each drift with its
+   input and old → new answer), when the contract asks for them.
+7. **Places to look** (`places_to_look`): public surfaces and co-change
+   partners; not measured in this version.
+8. **Not verified** (`not_verified`): every gate or signal whose state is
+   `not_required`, `not_run`, `unverified`, `nothing_to_mutate` or
+   `nothing_to_compare`, or that the decision does not have, and every
+   unverified requirement, each with what that means; then what no
+   decision verifies: behaviour outside the tests' inputs, performance,
+   and security properties beyond the guardrails.
+
+The Markdown for a task with `mutation` and `drift` whose candidate made
+`clamp` raise on negative inputs (from the test suite's fixture):
+
+```markdown
+# Verification receipt: rc-signals
+
+## Decision
+
+| | |
+|---|---|
+| Decision | **accepted** |
+| Candidate | `<sha>` |
+| Content verified | `<sha>` |
+| Contract | `<digest>` (revision 1) |
+| Recorded at | <time> |
+
+Reasons:
+
+- every requirement verified by its frozen checks; all gates pass
+
+## What was verified
+
+| Requirement | Acceptance | State | Check | Check status |
+|---|---|---|---|---|
+| R1 | clamp clamps | verified | `tests` | passed |
+
+- Trusted files restored: none
+- Held-out files injected: none
+- Test inventory: not measured (the contract has no test inventory)
+- Shaken reruns: not measured (the contract asks for no shaken reruns)
+
+## Evidence kind
+
+- Catch kind: none
+- Structural signals: none
+- Pattern signals: none
+- Isolation: sandboxed
+
+## Escalations
+
+none
+
+## Scope
+
+Envelope violations: none
+
+- Test-runner configuration added: none (policy: reject)
+- Test files outside the trusted set changed: none
+
+## How much the tests pin the change
+
+### Mutation
+
+- State: measured
+- Mutants run: 1 of 1 candidates; killed 0, survived 1, timed out 0, errors 0
+
+| File | Line | Function | Original | Mutant |
+|---|---|---|---|---|
+| `app.py` | 4 | `clamp` | `*` | `/` |
+
+Note: a surviving mutant may be equivalent to the original; treat survivors as places to look, not defects.
+
+### Drift
+
+- State: measured
+- Functions: 1 modified, 1 compared on the tests' inputs, 1 with drift
+
+| Function | Input | Old → new |
+|---|---|---|
+| `app.py` `clamp` | `{"args": [-2], "kwargs": {}}` | `{"returned": 0}` → `{"raised": "ValueError"}` |
+
+Note: inputs come from the test run on the base commit; drift on inputs the tests never pass is not seen.
+
+## Places to look
+
+- Public surfaces: not measured (not available in this version)
+- Co-change partners: not measured (not available in this version)
+
+## Not verified
+
+| What | State | What it means |
+|---|---|---|
+| structural gate | not_required | the contract has no structural policy; growth in maintenance burden was not measured |
+| test inventory | not_required | the contract has no test inventory; each check passed on its exit code alone |
+| shaken reruns | not_required | not requested by the contract; code that depends on how it is tested was not looked for |
+| refactor | not_required | not a refactoring task; simplification was not measured |
+| dependency pins | not_required | the contract links no dependency directory; there was nothing to pin |
+| behaviour outside the tests' inputs | not_measured | the checks exercise only the inputs they contain; other inputs may behave differently |
+| performance | not_measured | no check measures speed or resource use |
+| security properties beyond the guardrails | not_measured | nothing here looks for vulnerabilities; the guardrails only flag known risky edits |
+```
 
 ## Reporting a contract conflict
 

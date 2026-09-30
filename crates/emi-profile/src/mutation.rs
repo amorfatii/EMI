@@ -73,7 +73,7 @@ pub struct Results {
 }
 
 /// Write the mutated file, refusing to write through a link in the tree.
-fn write_mutant(dir: &Path, file: &str, mutant: &Mutant) -> Result<()> {
+pub fn write_mutant(dir: &Path, file: &str, mutant: &Mutant) -> Result<()> {
     let path = dir.join(file);
     let meta = path
         .symlink_metadata()
@@ -130,6 +130,13 @@ fn run_mutant(plan: &Plan, key: &FunctionKey, m: &Mutant, n: usize, timeout: Dur
     }
 }
 
+/// The bound for one mutant's run: a mutant that loops forever must not
+/// cost the whole budget, so at most three times the unmutated run (and
+/// ten seconds more than it), never above `limit`.
+pub fn mutant_timeout(limit: Duration, unmutated: Duration) -> Duration {
+    limit.min((unmutated * 3).max(unmutated + Duration::from_secs(10)))
+}
+
 /// Run every target's mutants; nothing runs if the baseline fails.
 pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
     let (record, passed, took, isolation) = baseline(plan)?;
@@ -142,11 +149,7 @@ pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
     if !passed {
         return Ok(results);
     }
-    // a mutant that loops forever must not cost the whole budget
-    let timeout = plan
-        .runner
-        .timeout
-        .min((took * 3).max(took + Duration::from_secs(10)));
+    let timeout = mutant_timeout(plan.runner.timeout, took);
     let mut n = 1;
     for t in targets {
         let tally = results.tallies.entry(t.key.clone()).or_default();

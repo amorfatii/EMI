@@ -205,6 +205,11 @@ impl Store {
     /// means the log is damaged: an error, never a silently shorter log
     /// (a lost row could make an older decision look like the latest).
     pub fn rows(&self, kind: &str) -> Result<Vec<Value>> {
+        Ok(self.rows_at(kind)?.into_iter().map(|(r, _)| r).collect())
+    }
+
+    /// [`Store::rows`] with the time each row was appended.
+    fn rows_at(&self, kind: &str) -> Result<Vec<(Value, String)>> {
         let text = match std::fs::read_to_string(self.dir.join("evidence.jsonl")) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -219,7 +224,8 @@ impl Store {
                 )
             })?;
             if row["kind"] == kind {
-                out.push(row["record"].clone());
+                let at = row["at"].as_str().unwrap_or_default().to_owned();
+                out.push((row["record"].clone(), at));
             }
         }
         Ok(out)
@@ -228,9 +234,20 @@ impl Store {
     /// The latest decision about `candidate` under the current contract.
     pub fn latest_decision(&self, candidate: &str, contract_id: &str) -> Result<Option<Value>> {
         Ok(self
-            .rows("decision")?
+            .latest_decision_at(candidate, contract_id)?
+            .map(|(d, _)| d))
+    }
+
+    /// [`Store::latest_decision`] and when it was recorded.
+    pub fn latest_decision_at(
+        &self,
+        candidate: &str,
+        contract_id: &str,
+    ) -> Result<Option<(Value, String)>> {
+        Ok(self
+            .rows_at("decision")?
             .into_iter()
             .rev()
-            .find(|d| d["candidate_id"] == candidate && d["contract_id"] == contract_id))
+            .find(|(d, _)| d["candidate_id"] == candidate && d["contract_id"] == contract_id))
     }
 }

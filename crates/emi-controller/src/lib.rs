@@ -10,6 +10,7 @@ pub mod approve;
 pub mod contract;
 pub mod deps;
 pub mod escalate;
+pub mod receipt;
 pub mod refactor;
 pub mod runner_config;
 pub mod store;
@@ -17,6 +18,7 @@ pub mod verify;
 
 pub use approve::approve;
 pub use escalate::{escalate, open_escalations};
+pub use receipt::receipt;
 pub use store::Store;
 pub use verify::{Candidate, complete, hook_check, verify};
 

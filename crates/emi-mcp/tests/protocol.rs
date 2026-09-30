@@ -41,6 +41,7 @@ fn handshake_lists_tools_and_rejects_unknowns() {
             "emi_accept_rewrite",
             "emi_task_verify",
             "emi_task_status",
+            "emi_task_receipt",
             "emi_task_escalate",
             "emi_guard",
             "emi_profile",
@@ -265,4 +266,47 @@ fn an_escalation_shows_in_the_task_status() {
         after["escalations"][0]["reason"], "the check asserts the opposite of the objective",
         "{after}"
     );
+}
+
+#[test]
+fn the_receipt_round_trips_the_latest_decision() {
+    let r = Repo(std::env::temp_dir().join(format!("emi-mcp-rc-repo-{}", std::process::id())));
+    let auth = Repo(std::env::temp_dir().join(format!("emi-mcp-rc-auth-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&r.0);
+    let _ = std::fs::remove_dir_all(&auth.0);
+    std::fs::create_dir_all(&r.0).unwrap_or_default();
+    git(&r.0, &["init", "-q", "-b", "main"]);
+    std::fs::write(r.0.join("app.py"), "def add(a, b):\n    return a - b\n").unwrap_or_default();
+    git(&r.0, &["add", "-A"]);
+    git(&r.0, &["commit", "-q", "-m", "base"]);
+    let spec = json!({
+        "task_id": "t1", "repo": r.0, "baseline": "HEAD", "objective": "make add() add",
+        "requirements": [{"id": "R1", "acceptance": "add adds", "checks": ["unit"]}],
+        "checks": {"unit": {"command": ["python3", "-c", "import app; assert app.add(1, 2) == 3"],
+                            "success": {"exit_code": 0}, "timeout_s": 30}},
+        "envelope": {"permitted_paths": ["app.py"]},
+    });
+    emi_controller::create(&auth.0, &spec).unwrap_or_else(|e| panic!("{e}"));
+    let tool = |name: &str, args: Value| {
+        let out = call(1, "tools/call", json!({"name": name, "arguments": args}));
+        let text = out["result"]["content"][0]["text"].as_str().unwrap_or("{}");
+        (
+            out["result"]["isError"] == true,
+            serde_json::from_str::<Value>(text).unwrap_or_else(|_| json!(text)),
+        )
+    };
+    let args = json!({"authority": auth.0, "task": "t1"});
+    let (failed, none) = tool("emi_task_receipt", args.clone());
+    assert!(failed, "no decision yet: {none}");
+    std::fs::write(r.0.join("app.py"), "def add(a, b):\n    return a + b\n").unwrap_or_default();
+    let (_, decision) = tool("emi_task_verify", args.clone());
+    assert_eq!(decision["decision"], "accepted", "{decision}");
+    let (failed, receipt) = tool("emi_task_receipt", args);
+    assert!(!failed, "{receipt}");
+    let store = emi_controller::Store::open(&auth.0, "t1", &r.0).unwrap_or_else(|e| panic!("{e}"));
+    let direct = emi_controller::receipt(&store, &emi_controller::Candidate::Worktree)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(receipt, direct, "the tool returns the controller's receipt");
+    assert_eq!(receipt["decision"]["decision"], "accepted", "{receipt}");
+    assert_eq!(receipt["decision"]["candidate_id"], "worktree", "{receipt}");
 }
