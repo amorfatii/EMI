@@ -10,6 +10,7 @@ use emi_panel::{Function, Lang};
 use serde_json::{Value, json};
 
 use crate::hunks::{self, FileChange, Status};
+use crate::snapshot::resolve_ref;
 
 /// How a function changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +117,9 @@ pub fn added_lines(
 
 /// The functions `base..head` adds, modifies or removes.
 pub fn changed_functions(repo: &Path, base: &str, head: &str) -> Result<ChangedFunctions, String> {
+    // the clean view has no refs of its own, so name the commits by sha
+    let (base, head) = (resolve_ref(repo, base)?, resolve_ref(repo, head)?);
+    let (base, head) = (base.as_str(), head.as_str());
     let view = emi_git::CleanView::of(repo)?;
     let files = hunks::changes(view.path(), base, Some(head))?;
     let mut out = ChangedFunctions {
