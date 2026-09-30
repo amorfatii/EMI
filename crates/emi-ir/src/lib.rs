@@ -3,6 +3,7 @@
 
 pub mod burden;
 pub mod clones;
+pub mod exports;
 pub mod graph;
 pub mod model;
 pub mod pyrepr;
