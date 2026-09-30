@@ -12,6 +12,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 mod checkcli;
 mod diffcli;
 mod diffmutcli;
+mod drift;
 mod explaincli;
 mod gatecli;
 mod guardcli;
@@ -141,6 +142,10 @@ enum Command {
     /// what the tests would not notice going wrong there. A report; gates
     /// nothing.
     DiffMutate(diffmutcli::DiffMutateArgs),
+    /// For the Python functions a change modifies: replay the inputs the base
+    /// commit's tests pass them against the old and the new code, and report
+    /// every input where the answers differ. A report; exits 0 when measured.
+    Drift(drift::DriftArgs),
     /// Gate consecutive first-parent commit pairs and report the verdict
     /// curve (calibrate allowances before enforcing).
     Backtest(diffcli::BacktestArgs),
@@ -322,6 +327,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Diff(args) => diffcli::run(&args),
         Command::ChangedFunctions(args) => diffcli::changed_functions(&args),
         Command::DiffMutate(args) => diffmutcli::run(&args),
+        Command::Drift(args) => drift::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
         Command::Hotspots(args) => historycli::run(&args),
         Command::Check(args) => checkcli::run(&args),
