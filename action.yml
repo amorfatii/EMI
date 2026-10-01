@@ -40,7 +40,7 @@ runs:
       shell: bash
       run: |
         if ! command -v emi >/dev/null; then
-          cargo install --locked --git https://github.com/andrej/emi --rev "${{ inputs.emi-version }}" emi-cli
+          cargo install --locked --git https://github.com/amorfatii/EMI --rev "${{ inputs.emi-version }}" emi-cli
         fi
     - name: Gate
       id: gate

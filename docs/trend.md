@@ -31,6 +31,7 @@ measures one side of a change (same `--probe` and `--profile` defaults:
 
 | Field | Meaning |
 |---|---|
+| `date` | The commit's committer date, ISO 8601 with a numeric offset (`+00:00` for UTC, never `Z`), whatever git version wrote it |
 | `sloc`, `files` | Source lines and measured files in the scope |
 | `burden` | Total E + V + C mass over the scope: the measured part only |
 | `guard_warnings` | Guardrail findings (`emi guard`, default policy) of the step from the previous row's commit to this one, counted by family; `null` when the guard could not run |

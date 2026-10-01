@@ -351,7 +351,7 @@ pub fn log(m: &Value, root: &Path) -> Value {
         "version": "2.1.0",
         "runs": [{
             "tool": {"driver": {"name": "emi", "version": env!("CARGO_PKG_VERSION"),
-                                "informationUri": "https://github.com/andrej/emi", "rules": rules}},
+                                "informationUri": "https://github.com/amorfatii/EMI", "rules": rules}},
             "properties": {"measurementProfile": m["measurement_profile"]},
             "results": r.out,
         }]

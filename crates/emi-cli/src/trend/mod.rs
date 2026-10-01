@@ -67,6 +67,17 @@ fn is_date(s: &str) -> bool {
         })
 }
 
+/// A commit date with a numeric UTC offset, as every other timestamp the
+/// tool writes has it. Git's strict ISO format writes `Z` for a zero
+/// offset in current versions and `+00:00` in older ones; the same instant
+/// must not serialise two ways depending on the installed git.
+fn numeric_offset(date: &str) -> String {
+    match date.strip_suffix('Z') {
+        Some(stem) => format!("{stem}+00:00"),
+        None => date.to_owned(),
+    }
+}
+
 fn lines(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -109,7 +120,7 @@ pub fn walk(
         .filter_map(|l| l.split_once(' '))
         .map(|(sha, date)| Commit {
             sha: sha.to_owned(),
-            date: date.to_owned(),
+            date: numeric_offset(date),
         })
         .collect();
     let Some(first) = commits.first() else {
@@ -318,6 +329,17 @@ mod tests {
         assert_eq!(select(6, 10), [0, 5]);
         assert_eq!(select(1, 3), [0]);
         assert!(select(0, 1).is_empty());
+    }
+
+    #[test]
+    fn a_commit_date_always_carries_a_numeric_offset() {
+        assert_eq!(
+            numeric_offset("2021-01-01T12:00:00Z"),
+            "2021-01-01T12:00:00+00:00"
+        );
+        for kept in ["2021-01-01T12:00:00+00:00", "2021-01-01T12:00:00-05:30"] {
+            assert_eq!(numeric_offset(kept), kept);
+        }
     }
 
     #[test]

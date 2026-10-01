@@ -358,6 +358,7 @@ dependencies = [
  "emi-scan",
  "rustix",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
