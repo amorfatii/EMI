@@ -198,6 +198,26 @@ fn a_test_that_fails_at_the_baseline_and_passes_on_the_candidate_proves_the_chan
 }
 
 #[test]
+fn the_repository_may_be_named_through_a_symbolic_link() {
+    let fx = Fixture::new();
+    fx.write(&[
+        ("src/calc.py", ADD_FIXED),
+        (
+            "tests/test_calc.py",
+            "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\ndef test_add_none():\n    assert add(None, 2) == 2\n",
+        ),
+    ]);
+    fx.commit("handle None");
+    let alias = tempfile::tempdir().expect("tempdir");
+    let named = alias.path().join("checkout");
+    std::os::unix::fs::symlink(fx.path(), &named).expect("symlink");
+    let mut req = fx.request();
+    req.repo = named;
+    let v = change(&req).to_json();
+    assert_eq!(v["status"], "proven", "{v}");
+}
+
+#[test]
 fn a_test_that_already_passes_at_the_baseline_is_redundant() {
     let fx = Fixture::new();
     fx.write(&[
@@ -283,6 +303,21 @@ fn a_change_with_no_added_test_leaves_every_changed_function_unproven() {
 }
 
 #[test]
+fn an_old_test_in_a_moved_file_is_not_an_added_test() {
+    let fx = Fixture::new();
+    git(
+        fx.path(),
+        &["mv", "tests/test_calc.py", "tests/test_arithmetic.py"],
+    );
+    fx.commit("move the tests");
+    let v = change(&fx.request()).to_json();
+    assert_eq!(v["status"], "none", "{v}");
+    for list in ["proving_tests", "redundant_tests", "unknown_tests"] {
+        assert_eq!(v[list], json!([]), "{list}: {v}");
+    }
+}
+
+#[test]
 fn a_change_outside_functions_has_no_change_to_prove() {
     let fx = Fixture::new();
     fx.write(&[("tests/test_calc.py", "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\ndef test_add_more():\n    assert add(5, 5) == 10\n")]);
@@ -320,6 +355,28 @@ fn a_test_that_fails_on_the_candidate_too_is_unknown_not_proving() {
     // the change cannot be called unproven while a test may yet prove it
     assert_eq!(function(&v, "add")["status"], "unknown");
     assert_eq!(v["status"], "unknown");
+}
+
+#[test]
+fn a_test_that_does_not_finish_in_time_is_unknown() {
+    let fx = Fixture::new();
+    fx.write(&[(
+        "tests/test_slow.py",
+        "import time\n\n\ndef test_slow():\n    time.sleep(120)\n",
+    )]);
+    fx.commit("a test that hangs");
+    let mut req = fx.request();
+    req.timeout = Duration::from_secs(4);
+    let v = change(&req).to_json();
+    assert_eq!(v["proving_tests"], json!([]), "{v}");
+    assert_eq!(v["redundant_tests"], json!([]), "{v}");
+    assert_eq!(
+        v["unknown_tests"],
+        json!([{
+            "id": "tests/test_slow.py::test_slow",
+            "reason": "at the baseline: timed out (limit 4 s)",
+        }])
+    );
 }
 
 #[test]
@@ -468,12 +525,15 @@ fn a_collection_error_at_the_candidate_is_unknown_with_a_reason() {
     fx.commit("a test file that does not import");
     let v = change(&fx.request()).to_json();
     assert_eq!(v["status"], "unknown", "{v}");
+    let reason = v["not_measured"][0].as_str().unwrap_or_default();
     assert!(
-        v["not_measured"][0]
-            .as_str()
-            .is_some_and(|s| s.contains("listing the tests at the candidate")),
+        reason.starts_with("listing the tests at the candidate exited 2"),
         "{v}"
     );
+    assert!(reason.contains("SyntaxError"), "{v}");
+    // no scratch path, so the same inputs give the same receipt
+    assert!(!reason.contains("emi-profile"), "{v}");
+    assert_eq!(change(&fx.request()).to_json(), v);
 }
 
 #[test]

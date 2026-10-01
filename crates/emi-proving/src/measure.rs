@@ -2,11 +2,11 @@
 //! ones against the baseline's product code, then see which changed
 //! functions the proving tests execute.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use emi_diff::functions::{ChangeKind, ChangedFn, ChangedFunctions, changed_functions};
-use emi_diff::snapshot;
+use emi_diff::{hunks, snapshot};
 use emi_profile::sandbox::{Copy, Runner};
 
 use crate::classify::{Verdict, classify, failed_at_baseline};
@@ -34,15 +34,21 @@ pub fn measure(req: &Request) -> Result<ChangeEvidence, String> {
     if req.timeout.is_zero() {
         return Err("the timeout must be longer than zero".into());
     }
-    let view = emi_git::CleanView::of(&req.repo)?;
+    snapshot::normalize_source(&req.source)?;
+    // an absolute path: dependency links and the hidden repository are
+    // named by it inside the sandbox
+    let repo = std::fs::canonicalize(&req.repo)
+        .map_err(|e| format!("repository {}: {e}", req.repo.display()))?;
+    let view = emi_git::CleanView::of(&repo)?;
     let scratch = snapshot::TempDir::new("emi-proving-")?;
-    let base = snapshot::resolve_ref(&req.repo, &req.baseline)?;
+    let base = snapshot::resolve_ref(&repo, &req.baseline)?;
     let cand = match &req.candidate {
-        Candidate::Ref(reference) => snapshot::resolve_ref(&req.repo, reference)?,
-        Candidate::Worktree => snapshot::commit_worktree(&req.repo, view.path(), scratch.path())?,
+        Candidate::Ref(reference) => snapshot::resolve_ref(&repo, reference)?,
+        Candidate::Worktree => snapshot::commit_worktree(&repo, view.path(), scratch.path())?,
     };
     let ctx = Context {
         req,
+        repo: &repo,
         objects: view.path(),
         base,
         cand,
@@ -50,11 +56,17 @@ pub fn measure(req: &Request) -> Result<ChangeEvidence, String> {
             globs: &req.test_globs,
         },
     };
-    Ok(ctx.run().sorted())
+    let mut evidence = ctx.run();
+    if req.strict {
+        evidence.not_measured.push(STRICT_NOT_MEASURED.to_owned());
+    }
+    Ok(evidence.sorted())
 }
 
 struct Context<'a> {
     req: &'a Request,
+    /// The live repository, as an absolute path.
+    repo: &'a Path,
     /// A clean view that holds both commits.
     objects: &'a Path,
     base: String,
@@ -93,7 +105,7 @@ impl Context<'_> {
         };
         let env = self.env();
         let runner = Runner {
-            repo: &self.req.repo,
+            repo: self.repo,
             rev: &self.cand,
             link: &self.req.link,
             env: &env,
@@ -106,9 +118,6 @@ impl Context<'_> {
             Err(why) => self.unmeasured(&changed, vec![why]),
         };
         evidence.isolation = session.isolation();
-        if self.req.strict {
-            evidence.not_measured.push(STRICT_NOT_MEASURED.to_owned());
-        }
         evidence
     }
 
@@ -192,11 +201,22 @@ impl Context<'_> {
             let pristine = s.tree("baseline-list", &self.base)?;
             s.list(&pristine, "baseline")?
         };
-        let added = pytest::added_ids(&at_candidate, &at_baseline);
+        let added = pytest::added_ids(&at_candidate, &at_baseline, &self.renames()?);
         if added.is_empty() {
             return Ok(Classified::default());
         }
         self.classify_added(s, &tree, &added)
+    }
+
+    /// Files git sees as moved by the change: new path to old path.
+    fn renames(&self) -> Result<BTreeMap<String, String>, String> {
+        let files = hunks::changes(self.objects, &self.base, Some(&self.cand))
+            .map_err(|e| format!("the files the change moved could not be read: {e}"))?;
+        Ok(files
+            .into_iter()
+            .filter(|f| f.status == hunks::Status::Renamed)
+            .filter_map(|f| f.old_path.map(|old| (f.path, old)))
+            .collect())
     }
 
     /// Run the added tests against the baseline's product code, with the
@@ -393,6 +413,7 @@ impl Context<'_> {
                 None => ".".to_owned(),
             })
             .collect();
+        // validated by `measure`
         if let Ok(source) = snapshot::normalize_source(&self.req.source)
             && !source.is_empty()
         {

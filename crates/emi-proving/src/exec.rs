@@ -7,11 +7,12 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::time::Duration;
 
 use emi_exec::{Outcome, Status};
 use emi_profile::coverage::Resolved;
 use emi_profile::covrun::{self, CoverageRun};
-use emi_profile::sandbox::{Copy, Runner, tail};
+use emi_profile::sandbox::{Copy, Runner};
 
 use crate::junit::{self, Observed, RunExit};
 use crate::pytest::{self, Command};
@@ -31,19 +32,49 @@ pub struct Session<'a> {
     isolations: RefCell<BTreeSet<String>>,
 }
 
-/// How a run ended, in words for the record.
-pub fn exit_of(o: &Outcome) -> RunExit {
+/// How a run ended, in words for the receipt. Nothing in the words varies
+/// from one run of the same inputs to the next (no durations, no scratch
+/// paths): the receipt is deterministic.
+pub fn exit_of(o: &Outcome, limit: Duration) -> RunExit {
     match (o.status, o.exit_code) {
         (Status::NotLaunched, _) => RunExit::Failed(format!(
             "could not start: {}",
             o.launch_error.as_deref().unwrap_or("unknown launch error")
         )),
-        (Status::TimedOut, _) => RunExit::Failed(format!("timed out after {} ms", o.duration_ms)),
+        (Status::TimedOut, _) => {
+            RunExit::Failed(format!("timed out (limit {} s)", limit.as_secs()))
+        }
         (Status::Exited, _) if !o.receipt.verified_clean => {
             RunExit::Failed("the run left processes behind".into())
         }
         (Status::Exited, Some(code)) => RunExit::Code(code),
         (Status::Exited, None) => RunExit::Failed(format!("killed by signal {:?}", o.signal)),
+    }
+}
+
+/// What failed, from pytest's output: the last three of its `E   ...`
+/// lines (the exception is last), without the scratch directory's path.
+/// The rest of the output holds timings that differ between runs.
+pub fn error_lines(out: &str, dir: &Path) -> String {
+    let dir = dir.to_string_lossy();
+    let lines: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("E ").map(str::trim))
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(3)..]
+        .iter()
+        .map(|l| l.replace(dir.as_ref(), "<tree>"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `: detail`, or nothing when there is none.
+fn with(detail: String) -> String {
+    if detail.is_empty() {
+        detail
+    } else {
+        format!(": {detail}")
     }
 }
 
@@ -104,12 +135,18 @@ impl<'a> Session<'a> {
     /// The node ids the test command lists in `copy`, or why it could not.
     pub fn list(&self, copy: &Copy, what: &str) -> Result<BTreeSet<String>, String> {
         let o = self.run(copy, &self.command.list_argv());
-        match exit_of(&o) {
+        match exit_of(&o, self.runner.timeout) {
+            // the executor keeps a bounded amount of output: a longer list
+            // would silently lose its tail, and with it added tests
+            RunExit::Code(0) if o.stdout_bytes > o.stdout.len() as u64 => Err(format!(
+                "listing the tests at the {what} printed more than {} bytes, which is more than is kept",
+                o.stdout.len()
+            )),
             RunExit::Code(0) => pytest::parse_listing(&o.stdout)
                 .map_err(|e| format!("listing the tests at the {what}: {e}")),
             RunExit::Code(code) => Err(format!(
-                "listing the tests at the {what} exited {code}: {}",
-                tail(&o.stdout, 400)
+                "listing the tests at the {what} exited {code}{}",
+                with(error_lines(&o.stdout, &copy.dir))
             )),
             RunExit::Failed(why) => Err(format!("listing the tests at the {what} {why}")),
         }
@@ -126,7 +163,8 @@ impl<'a> Session<'a> {
             let _ = std::fs::remove_file(copy.dir.join(&rel));
             let o = self.run(copy, &self.command.run_argv(batch, &rel));
             let report = read_report(&copy.dir, &rel);
-            seen.extend(junit::observe(&exit_of(&o), report, batch));
+            let exit = exit_of(&o, self.runner.timeout);
+            seen.extend(junit::observe(&exit, report, batch));
         }
         seen
     }
@@ -152,13 +190,19 @@ impl<'a> Session<'a> {
                 self.isolations.borrow_mut().insert(isolation.to_owned());
             }
         }
-        // the step that failed is the last one recorded
-        resolved.map_err(
-            |why| match steps.last().and_then(|s| s["stderr_tail"].as_str()) {
-                Some(err) if !err.is_empty() => format!("{why}: {err}"),
-                _ => why,
-            },
-        )
+        // the step that failed is the last one recorded; its last error
+        // line says why (the rest of its output holds timings)
+        resolved.map_err(|why| {
+            let last = steps
+                .last()
+                .and_then(|s| s["stderr_tail"].as_str())
+                .and_then(|err| err.lines().rev().find(|l| !l.trim().is_empty()))
+                .map(|l| {
+                    l.trim()
+                        .replace(copy.dir.to_string_lossy().as_ref(), "<tree>")
+                });
+            format!("{why}{}", with(last.unwrap_or_default()))
+        })
     }
 }
 

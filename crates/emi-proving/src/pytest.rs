@@ -6,7 +6,7 @@
 //! the list is what the command would run, and dropped for running chosen
 //! ids, which must not drag the rest of the suite along.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Options that take their value as the next argument.
 const VALUE_OPTIONS: &[&str] = &[
@@ -238,9 +238,26 @@ pub fn parse_listing(stdout: &str) -> Result<BTreeSet<String>, String> {
 
 /// The tests the candidate adds: ids it lists that the baseline does not.
 /// A test whose body changed keeps its id and is not added; a renamed or
-/// newly parametrized one has a new id and is.
-pub fn added_ids(candidate: &BTreeSet<String>, baseline: &BTreeSet<String>) -> Vec<String> {
-    candidate.difference(baseline).cloned().collect()
+/// newly parametrized one has a new id and is. A test in a file git sees as
+/// moved (`renames`: new path to old path) is the same test at a new path,
+/// not an added one: it would otherwise look redundant, since it passes at
+/// the baseline.
+pub fn added_ids(
+    candidate: &BTreeSet<String>,
+    baseline: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let moved = |id: &str| {
+        let file = file_of(id);
+        renames
+            .get(file)
+            .is_some_and(|old| baseline.contains(&format!("{old}{}", &id[file.len()..])))
+    };
+    candidate
+        .iter()
+        .filter(|id| !baseline.contains(*id) && !moved(id))
+        .cloned()
+        .collect()
 }
 
 /// The file part of a node id.

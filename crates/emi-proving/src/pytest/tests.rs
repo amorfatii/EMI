@@ -136,15 +136,35 @@ fn added_tests_are_the_ids_only_the_candidate_lists() {
         "t.py::new",
         "new_file.py::z",
     ]);
+    let none = BTreeMap::new();
     assert_eq!(
-        added_ids(&candidate, &baseline),
+        added_ids(&candidate, &baseline, &none),
         vec!["new_file.py::z", "t.py::c[2]", "t.py::new"]
     );
     // identical lists add nothing, and removing tests adds nothing
-    assert!(added_ids(&baseline, &baseline).is_empty());
-    assert!(added_ids(&set(&["t.py::a"]), &baseline).is_empty());
+    assert!(added_ids(&baseline, &baseline, &none).is_empty());
+    assert!(added_ids(&set(&["t.py::a"]), &baseline, &none).is_empty());
     // everything is added when the baseline has no tests
-    assert_eq!(added_ids(&baseline, &set(&[])).len(), 4);
+    assert_eq!(added_ids(&baseline, &set(&[]), &none).len(), 4);
+}
+
+#[test]
+fn tests_in_a_moved_file_are_not_added() {
+    let baseline = set(&["old/t.py::a", "old/t.py::T::b[1]", "keep.py::c"]);
+    let candidate = set(&[
+        "new/t.py::a",
+        "new/t.py::T::b[1]",
+        // written in the moved file after it moved
+        "new/t.py::fresh",
+        "keep.py::c",
+    ]);
+    let moved: BTreeMap<String, String> = [("new/t.py".to_owned(), "old/t.py".to_owned())].into();
+    assert_eq!(
+        added_ids(&candidate, &baseline, &moved),
+        vec!["new/t.py::fresh"]
+    );
+    // without the rename they all look added
+    assert_eq!(added_ids(&candidate, &baseline, &BTreeMap::new()).len(), 3);
 }
 
 #[test]
