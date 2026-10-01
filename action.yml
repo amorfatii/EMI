@@ -1,11 +1,20 @@
 name: EMI
 description: >
-  Gate a pull request on proven structural burden growth, comment the
-  verdict on the PR, and upload findings to code scanning.
+  Check a completion claim with enforced EMI verification, publish the
+  receipt as a required job status, and optionally report structural burden.
 branding:
   icon: activity
   color: blue
 inputs:
+  mode:
+    description: done (completion receipt) or burden (legacy structural gate).
+    default: done
+  baseline:
+    description: Trusted baseline ref; defaults to the pull request base SHA. Required outside a PR.
+    default: ""
+  candidate:
+    description: Candidate ref; defaults to the pull request head SHA, otherwise HEAD.
+    default: ""
   source:
     description: Product scope directory (repository-relative).
     default: src
@@ -29,21 +38,38 @@ inputs:
     default: "true"
   sarif:
     description: Upload scan and rule findings to code scanning.
-    default: "true"
+    default: "false"
   emi-version:
     description: Git ref of emi to build.
     default: main
+outputs:
+  action:
+    description: stop, repair, ask_person, or incomplete (done mode).
+    value: ${{ steps.done.outputs.action }}
+  regression:
+    description: held, broken, or unknown (done mode).
+    value: ${{ steps.done.outputs.regression }}
+  change:
+    description: Level of change evidence (done mode).
+    value: ${{ steps.done.outputs.change }}
 runs:
   using: composite
   steps:
+    - name: Validate mode
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        case "$MODE" in done|burden) ;; *) echo "mode must be done or burden" >&2; exit 2 ;; esac
     - name: Install emi
       shell: bash
       run: |
         if ! command -v emi >/dev/null; then
-          cargo install --locked --git https://github.com/andrej/emi --rev "${{ inputs.emi-version }}" emi-cli
+          cargo install --locked --git https://github.com/amorfatii/EMI --rev "${{ inputs.emi-version }}" emi-cli
         fi
     - name: Gate
       id: gate
+      if: ${{ inputs.mode == 'burden' }}
       shell: bash
       env:
         BASE: ${{ github.event.pull_request.base.sha }}
@@ -60,6 +86,23 @@ runs:
           --format markdown --link-base "$LINK" -o emi-comment.md
         echo "code=$?" >> "$GITHUB_OUTPUT"
         cat emi-comment.md >> "$GITHUB_STEP_SUMMARY"
+    - name: Completion evidence
+      id: done
+      if: ${{ inputs.mode == 'done' }}
+      shell: bash
+      env:
+        BASELINE: ${{ inputs.baseline || github.event.pull_request.base.sha }}
+        CANDIDATE: ${{ inputs.candidate || github.event.pull_request.head.sha || 'HEAD' }}
+      run: bash "${{ github.action_path }}/ci/done-status.sh"
+    - name: Upload completion receipt
+      if: ${{ inputs.mode == 'done' && always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: emi-completion-receipt
+        path: |
+          emi-done.json
+          emi-comment.md
+        if-no-files-found: warn
     - name: Comment
       if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
       shell: bash
@@ -84,4 +127,6 @@ runs:
         category: emi
     - name: Verdict
       shell: bash
-      run: exit ${{ steps.gate.outputs.code }}
+      env:
+        CODE: ${{ steps.done.outputs.code || steps.gate.outputs.code }}
+      run: exit "${CODE:-5}"

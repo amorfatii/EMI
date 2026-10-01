@@ -1,0 +1,24 @@
+[package]
+name = "emi-proving"
+description = "Change evidence: which tests a candidate adds fail at the baseline (proving) or pass there already (redundant), and which changed functions a proving test executes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emi-diff = { path = "../emi-diff" }
+emi-exec.workspace = true
+emi-git.workspace = true
+emi-profile.workspace = true
+emi-scan.workspace = true
+roxmltree.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+emi-panel.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

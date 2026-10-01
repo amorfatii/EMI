@@ -395,6 +395,11 @@ const MEANINGS: &[(&str, &str, &str)] = &[
         "the test inventory could not be taken; tests dropped through configuration would not be seen",
     ),
     (
+        "test inventory",
+        "nothing_to_compare",
+        "the baseline's inventory listed no test, so there was none to keep; tests the candidate added were not compared with anything",
+    ),
+    (
         "shaken reruns",
         "not_required",
         "not requested by the contract; code that depends on how it is tested was not looked for",

@@ -1,0 +1,25 @@
+[package]
+name = "emi-done"
+description = "The done check: what was proven when a coding agent says it is finished"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emi-controller.workspace = true
+emi-diff = { path = "../emi-diff" }
+emi-exec.workspace = true
+emi-git.workspace = true
+emi-ir.workspace = true
+emi-ledger = { path = "../emi-ledger" }
+emi-proving = { path = "../emi-proving" }
+emi-scan.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -23,6 +23,7 @@ emi-guard = { path = "crates/emi-guard" }
 emi-exec = { path = "crates/emi-exec" }
 emi-git = { path = "crates/emi-git" }
 emi-controller = { path = "crates/emi-controller" }
+emi-done = { path = "crates/emi-done" }
 emi-lsp = { path = "crates/emi-lsp" }
 emi-panel = { path = "crates/emi-panel" }
 emi-profile = { path = "crates/emi-profile" }
@@ -41,6 +42,7 @@ yaml_serde = "0.10"
 rustix = { version = "1", features = ["process", "fs"] }
 regex = "1"
 thiserror = "2"
+tempfile = "3"
 
 # Measurement contract pins: changing any of these changes measurements and
 # requires a profile bump (the PROFILE constants in the adapter crates).

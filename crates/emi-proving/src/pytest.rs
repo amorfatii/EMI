@@ -1,0 +1,286 @@
+//! The test command as pytest argv: how to list tests, run chosen ones and
+//! run them under coverage, and how to read the list.
+//!
+//! The configured command is an invocation of pytest with options. Its path
+//! selectors (`tests/`, `tests/test_a.py::test_x`) are kept for listing, so
+//! the list is what the command would run, and dropped for running chosen
+//! ids, which must not drag the rest of the suite along.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Options that take their value as the next argument.
+const VALUE_OPTIONS: &[&str] = &[
+    "-k",
+    "-m",
+    "-p",
+    "-c",
+    "-o",
+    "-W",
+    "-n",
+    "-r",
+    "--maxfail",
+    "--tb",
+    "--ignore",
+    "--ignore-glob",
+    "--deselect",
+    "--rootdir",
+    "--confcutdir",
+    "--import-mode",
+    "--durations",
+    "--durations-min",
+    "--basetemp",
+    "--junitxml",
+    "--junit-xml",
+    "--numprocesses",
+    "--dist",
+    "--cov",
+    "--cov-report",
+    "--cov-config",
+    "--log-level",
+    "--override-ini",
+    "--capture",
+    "--color",
+    "--assert",
+    "--timeout",
+];
+
+/// Flags that change what the listing prints, or stop a run at the first
+/// failure and so hide the other tests' outcomes.
+const VERBOSITY: &[&str] = &["-q", "-qq", "-v", "-vv", "--quiet", "--verbose"];
+const STOP_EARLY: &[&str] = &["-x", "--exitfirst"];
+
+/// A recognised pytest invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Command {
+    /// What starts pytest: `python -m pytest`, or the `pytest` script.
+    launcher: Vec<String>,
+    /// Python that can run `-m coverage` next to the same packages.
+    interpreter: String,
+    options: Vec<String>,
+    selectors: Vec<String>,
+}
+
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// The Python beside a `pytest` script (the same virtualenv), else
+/// `python3`.
+fn sibling_python(script: &str) -> String {
+    match script.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/python"),
+        None => "python3".to_owned(),
+    }
+}
+
+/// Split the arguments after the launcher into options and selectors.
+fn split(rest: &[String]) -> (Vec<String>, Vec<String>) {
+    let (mut options, mut selectors) = (Vec::new(), Vec::new());
+    let mut takes_value = false;
+    for arg in rest {
+        if takes_value {
+            options.push(arg.clone());
+            takes_value = false;
+        } else if arg.starts_with('-') {
+            takes_value = VALUE_OPTIONS.contains(&arg.as_str());
+            options.push(arg.clone());
+        } else {
+            selectors.push(arg.clone());
+        }
+    }
+    (options, selectors)
+}
+
+impl Command {
+    /// Recognise `python -m pytest ...`, `pytest ...` or `py.test ...`; any
+    /// other command (a wrapper, a Makefile target) is refused with why,
+    /// because its per-test results cannot be read.
+    pub fn parse(argv: &[String]) -> Result<Command, String> {
+        let first = argv.first().ok_or("the test command is empty")?;
+        let name = basename(first);
+        let (launcher, interpreter, rest) = if name.starts_with("python") {
+            if argv.get(1).map(String::as_str) != Some("-m")
+                || argv.get(2).map(String::as_str) != Some("pytest")
+            {
+                return Err(not_pytest(first));
+            }
+            (argv[..3].to_vec(), first.clone(), &argv[3..])
+        } else if name == "pytest" || name == "py.test" {
+            (vec![first.clone()], sibling_python(first), &argv[1..])
+        } else {
+            return Err(not_pytest(first));
+        };
+        let (options, selectors) = split(rest);
+        Ok(Command {
+            launcher,
+            interpreter,
+            options,
+            selectors,
+        })
+    }
+
+    fn without(&self, drop: &[&[&str]]) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut skip_value = false;
+        for opt in &self.options {
+            if skip_value {
+                skip_value = false;
+                continue;
+            }
+            let name = opt.split('=').next().unwrap_or(opt);
+            if drop.iter().any(|set| set.contains(&name)) {
+                skip_value = VALUE_OPTIONS.contains(&name) && !opt.contains('=');
+                continue;
+            }
+            out.push(opt.clone());
+        }
+        out
+    }
+
+    /// Print the node ids the configured command would run.
+    pub fn list_argv(&self) -> Vec<String> {
+        let mut argv = self.launcher.clone();
+        argv.extend(self.without(&[VERBOSITY]));
+        argv.extend(self.selectors.clone());
+        argv.extend(["--collect-only", "-q", "-p", "no:cacheprovider"].map(str::to_owned));
+        argv
+    }
+
+    /// Everything before the ids of a run of chosen tests.
+    fn run_prefix(&self, junit: &str) -> Vec<String> {
+        let mut argv: Vec<String> = Vec::new();
+        argv.extend(self.without(&[STOP_EARLY, &["--maxfail"]]));
+        // a file that cannot be imported must not stop the other files
+        argv.extend(
+            ["--continue-on-collection-errors", "-p", "no:cacheprovider"].map(str::to_owned),
+        );
+        argv.push(format!("--junitxml={junit}"));
+        argv
+    }
+
+    /// Run exactly `ids`, writing the JUnit report to `junit`.
+    pub fn run_argv(&self, ids: &[String], junit: &str) -> Vec<String> {
+        let mut argv = self.launcher.clone();
+        argv.extend(self.run_prefix(junit));
+        argv.extend(ids.iter().cloned());
+        argv
+    }
+
+    /// Run exactly `ids` under coverage.py, measuring `sources`, then write
+    /// the JSON report to `output`. Two commands, run in order.
+    pub fn coverage_argv(&self, ids: &[String], rcfile: &str, output: &str) -> Vec<Vec<String>> {
+        let py = self.interpreter.clone();
+        let mut run = vec![py.clone(), "-m".into(), "coverage".into(), "run".into()];
+        run.push(format!("--rcfile={rcfile}"));
+        run.extend(["-m".into(), "pytest".into()]);
+        run.extend(["-p".into(), "emi_proving_contexts".into()]);
+        run.extend(self.run_prefix(".emi-proving/coverage-run.xml"));
+        run.extend(ids.iter().cloned());
+        // a changed file that does not parse is left out of the report
+        // (and so unknown) instead of failing the report for every file
+        let json = [
+            py,
+            "-m".into(),
+            "coverage".into(),
+            "json".into(),
+            format!("--rcfile={rcfile}"),
+            "--ignore-errors".into(),
+            "-o".into(),
+        ];
+        vec![run, json.into_iter().chain([output.to_owned()]).collect()]
+    }
+}
+
+fn not_pytest(first: &str) -> String {
+    format!(
+        "the test command is not a pytest invocation (expected `python -m pytest ...` or `pytest ...`, got `{first}`): per-test results cannot be read"
+    )
+}
+
+/// A listed node id: a path, `::`, then names, with no space before the
+/// first `::` (a warning or summary line has one).
+fn is_node_id(line: &str) -> bool {
+    line.split_once("::")
+        .is_some_and(|(path, _)| !path.is_empty() && !path.contains(char::is_whitespace))
+}
+
+/// A file-count line (`tests/test_a.py: 3`): what `-qq` prints instead of
+/// node ids, which the listing cannot be read from.
+fn is_file_count(line: &str) -> bool {
+    line.rsplit_once(": ").is_some_and(|(path, n)| {
+        !path.contains(char::is_whitespace)
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && !n.is_empty()
+    })
+}
+
+/// The node ids in the output of `pytest --collect-only -q`.
+pub fn parse_listing(stdout: &str) -> Result<BTreeSet<String>, String> {
+    let ids: BTreeSet<String> = stdout
+        .lines()
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| !l.trim().is_empty())
+        .filter(|l| is_node_id(l))
+        .map(str::to_owned)
+        .collect();
+    if ids.is_empty() && stdout.lines().any(is_file_count) {
+        return Err(
+            "pytest listed file counts, not node ids (a quiet option in its configuration?)".into(),
+        );
+    }
+    Ok(ids)
+}
+
+/// The tests the candidate adds: ids it lists that the baseline does not.
+/// A test whose body changed keeps its id and is not added; a renamed or
+/// newly parametrized one has a new id and is. A test in a file git sees as
+/// moved (`renames`: new path to old path) is the same test at a new path,
+/// not an added one: it would otherwise look redundant, since it passes at
+/// the baseline.
+pub fn added_ids(
+    candidate: &BTreeSet<String>,
+    baseline: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let moved = |id: &str| {
+        let file = file_of(id);
+        renames
+            .get(file)
+            .is_some_and(|old| baseline.contains(&format!("{old}{}", &id[file.len()..])))
+    };
+    candidate
+        .iter()
+        .filter(|id| !baseline.contains(*id) && !moved(id))
+        .cloned()
+        .collect()
+}
+
+/// The file part of a node id.
+pub fn file_of(id: &str) -> &str {
+    id.split("::").next().unwrap_or(id)
+}
+
+/// Ids (sorted, so a file's ids are together) in batches that each stay in
+/// one file and fit one argument list. One file per run because a file that
+/// cannot be imported makes pytest abort a run that names it, with the
+/// other files' tests not run: a broken file must not hide the others.
+pub fn batches(ids: &[String]) -> Vec<&[String]> {
+    const BYTES: usize = 100_000;
+    let mut out = Vec::new();
+    let (mut start, mut size) = (0, 0);
+    for (at, id) in ids.iter().enumerate() {
+        let new_file = at > start && file_of(id) != file_of(&ids[at - 1]);
+        if (new_file || size + id.len() + 1 > BYTES) && at > start {
+            out.push(&ids[start..at]);
+            (start, size) = (at, 0);
+        }
+        size += id.len() + 1;
+    }
+    if start < ids.len() {
+        out.push(&ids[start..]);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests;

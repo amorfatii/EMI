@@ -30,6 +30,11 @@ pub struct Runner<'a> {
 /// A fresh copy of the commit, removed when dropped.
 pub struct Copy {
     pub dir: PathBuf,
+    /// The regular files the commit holds, sorted.
+    pub files: Vec<String>,
+    /// The symbolic links the commit holds, sorted. Links to dependency
+    /// directories made by the runner are not among them.
+    pub symlinks: Vec<String>,
     linked: Vec<PathBuf>,
 }
 
@@ -43,6 +48,14 @@ impl Runner<'_> {
     /// Materialize the commit into a new scratch directory (`tag` keeps
     /// concurrent copies apart).
     pub fn copy(&self, tag: &str) -> Result<Copy> {
+        self.copy_of(tag, self.repo, self.rev)
+    }
+
+    /// [`Runner::copy`] of `rev` read from `objects`: a repository that
+    /// holds the commit but is not the one being profiled (a clean view
+    /// that also holds a snapshot of the working tree). Dependency links
+    /// and hidden paths still come from the runner's own repository.
+    pub fn copy_of(&self, tag: &str, objects: &Path, rev: &str) -> Result<Copy> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -50,9 +63,13 @@ impl Runner<'_> {
             std::env::temp_dir().join(format!("emi-profile-{tag}-{}-{nanos}", std::process::id()));
         let mut copy = Copy {
             dir,
+            files: Vec::new(),
+            symlinks: Vec::new(),
             linked: Vec::new(),
         };
-        snapshot::materialize(self.repo, self.rev, &copy.dir)?;
+        let inventory = snapshot::materialize(objects, rev, &copy.dir)?;
+        copy.files = inventory.files;
+        copy.symlinks = inventory.symlinks;
         copy.linked = snapshot::link_dependencies(self.repo, &copy.dir, self.link)?;
         Ok(copy)
     }

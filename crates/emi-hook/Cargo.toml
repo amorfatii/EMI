@@ -1,0 +1,25 @@
+[package]
+name = "emi-hook"
+description = "Harness hooks: run the done check when an agent tries to stop, with repair-round state and installation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+emi-diff = { path = "../emi-diff" }
+emi-exec.workspace = true
+emi-git.workspace = true
+emi-ir.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shlex.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

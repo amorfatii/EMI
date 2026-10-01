@@ -1,9 +1,30 @@
 # EMI
 
-**EMI verifies code changes, especially those made by AI coding agents.**
-It checks a change against a frozen task contract and says exactly what was
-verified and what was not. It also points a reviewer at the places the tests
-do not pin down.
+**When your agent says done, EMI tells you what was actually proven.**
+
+EMI runs at the completion claim, checks the baseline's tests, and measures
+which new tests fail before the change and pass after it while executing the
+changed code. It sends fixable failures back to the agent, with three repair
+rounds by default. Its receipt separates regression evidence from evidence
+of new behaviour. **EMI reports a status; it never merges.**
+
+The completion loop supports **Linux, Python and pytest** first. It needs
+bubblewrap, pytest and coverage.py (7.9 or newer) installed in the project's
+Python environment. Claude Code and OpenCode V2 adapters are included.
+The controlled with/without experiment is still pending: there is no claim
+yet that the hook improves solve rate, false completion rate, or token use.
+
+```sh
+emi init                                      # confirm the detected configuration
+git add .emi/config.json                      # commit before starting the task
+git commit -m "Configure EMI completion checks"
+emi hook install --harness opencode            # or: --harness claude-code
+emi done --format text                         # check manually at any time
+```
+
+See [the done check](docs/done.md) and [harness installation](docs/hook.md).
+On the default branch, manual checks need `--baseline REF`; the harness
+records that baseline at the first user message.
 
 **How verification works:**
 - The trusted tests are restored and run as the contract fixed them. When the
@@ -25,12 +46,14 @@ it is, how much of it is repeated, and how tangled its files are.
 - **When a change is blocked:** the change gate (`emi diff --guardrail`)
   blocks a change only when it can prove that burden grew.
 
-EMI runs on Python, JavaScript/TypeScript, Rust and Go.
+The existing structural tools support Python, JavaScript/TypeScript, Rust
+and Go. Their measurements are frozen; they are not the completion check.
 
 ## What you can do with it
 
 | You want to… | Run |
 |---|---|
+| Check what an agent actually established | `emi init`, then `emi done` or `emi hook install` |
 | See where your codebase is costly and changes often | `emi report` → one HTML file |
 | See how burden totals change over time, split into more code and denser code | `emi trend` |
 | Block a pull request whose burden growth EMI can prove | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
@@ -57,7 +80,7 @@ cargo install --locked --path crates/emi-cli   # puts `emi` on your PATH
 Or build without installing: `cargo build --release` and run
 `target/release/emi`.
 
-## Quick start
+## Structural tools (existing workflows)
 
 Run these inside any git repository. Replace `src` with your source folder
 and `python` with your language (`python`, `js`, `rust` or `go`).
@@ -108,18 +131,24 @@ emi explain src/app/billing.py              # per function: what drives its cost
 
 ### In CI
 
-This repository is itself a GitHub Action. It gates each pull request,
-posts the verdict as a PR comment and uploads findings to code scanning:
+The GitHub Action defaults to `emi done --setting enforced`. Commit
+`.emi/config.json` in the trusted baseline and prepare the Python test
+environment before invoking it:
 
 ```yaml
 - uses: actions/checkout@v4
   with: {fetch-depth: 0}
 - uses: dtolnay/rust-toolchain@stable
+- run: python3 -m venv .venv
+- run: .venv/bin/pip install -e '.[test]' 'coverage>=7.9,<8' # adapt to the repository
 - uses: amorfatii/EMI@main
-  with: {source: src, probe: python}
+  with: {mode: done, comment: "false"}
 ```
 
-The full workflow, permissions and SARIF upload are in
+Only `stop` passes the job. Configure that job as a required check;
+`ask_person`, `repair` and `incomplete` do not pass. Pin EMI to a reviewed
+commit for actual use. Use `mode: burden` for the legacy structural gate.
+The full workflow, permissions and optional SARIF upload are in
 [docs/ci.md](docs/ci.md).
 
 ### Supervising AI agents

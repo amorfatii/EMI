@@ -1,8 +1,8 @@
-//! `emi`: structural burden measurement and gating for code changes.
+//! `emi`: completion evidence for agent changes and structural tools.
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -12,6 +12,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 mod checkcli;
 mod diffcli;
 mod diffmutcli;
+mod donecli;
 mod drift;
 mod explaincli;
 mod gatecli;
@@ -22,6 +23,7 @@ mod markdown;
 mod mergecli;
 mod placescli;
 mod profilecli;
+mod provingcli;
 mod readiness;
 mod report;
 mod sarif;
@@ -34,7 +36,7 @@ mod vary;
 #[command(
     name = "emi",
     version,
-    about = "Structural burden measurement and gating for code changes"
+    about = "When your agent says done, EMI tells you what was actually proven"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -144,6 +146,10 @@ enum Command {
     /// what the tests would not notice going wrong there. A report; gates
     /// nothing.
     DiffMutate(diffmutcli::DiffMutateArgs),
+    /// Which tests a candidate adds fail at the baseline (proving) or pass
+    /// there already (redundant), and which changed functions a proving
+    /// test executes. Prints the receipt's `change` object; a report.
+    Proving(provingcli::ProvingArgs),
     /// Where else a change may need a look: exported names and schema
     /// boundaries it changes, files that usually change with the touched
     /// ones, and modules importing them. A list; gates nothing.
@@ -190,6 +196,17 @@ enum Command {
         /// Source files; the extension picks the grammar.
         files: Vec<PathBuf>,
     },
+    /// Write `.emi/config.json`: detect the language, test command and
+    /// default branch, show them, and write once confirmed.
+    Init(donecli::InitArgs),
+    /// When an agent says it is done: say what was proven (regression
+    /// evidence, changed old tests, the action to take). Exit 0 stop, 3
+    /// repair, 4 ask a person, 5 incomplete, 2 usage or configuration error.
+    Done(donecli::DoneArgs),
+    /// Run the done check when a coding agent tries to stop (Claude Code,
+    /// opencode), and install or remove that hook.
+    #[command(subcommand)]
+    Hook(emi_hook::cli::Command),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
     /// Language server (stdio): rule diagnostics, erosion hints, burden-delta code lenses.
@@ -280,6 +297,26 @@ fn panel(files: &[PathBuf]) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+fn print_scan(
+    measurement: &serde_json::Value,
+    root: &Path,
+    format: &str,
+    output: Option<PathBuf>,
+) -> anyhow::Result<u8> {
+    let json = if format == "sarif" {
+        serde_json::to_string_pretty(&sarif::log(measurement, root))?
+    } else {
+        serde_json::to_string_pretty(measurement)?
+    };
+    match output {
+        Some(path) => {
+            fs::write(&path, json + "\n").with_context(|| format!("writing {}", path.display()))?
+        }
+        None => writeln!(std::io::stdout().lock(), "{json}")?,
+    }
+    Ok(0)
+}
+
 fn run(cli: Cli) -> anyhow::Result<u8> {
     match cli.command {
         Command::Scan {
@@ -321,22 +358,13 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                     source.clone(),
                 ),
             };
-            let json = if format == "sarif" {
-                serde_json::to_string_pretty(&sarif::log(&measurement, &root))?
-            } else {
-                serde_json::to_string_pretty(&measurement)?
-            };
-            match output {
-                Some(path) => fs::write(&path, json + "\n")
-                    .with_context(|| format!("writing {}", path.display()))?,
-                None => writeln!(std::io::stdout().lock(), "{json}")?,
-            }
-            Ok(0)
+            print_scan(&measurement, &root, &format, output)
         }
         Command::Review { input, gate } => review(&input, &gate),
         Command::Diff(args) => diffcli::run(&args),
         Command::ChangedFunctions(args) => diffcli::changed_functions(&args),
         Command::DiffMutate(args) => diffmutcli::run(&args),
+        Command::Proving(args) => provingcli::run(&args),
         Command::Places(args) => placescli::run(&args),
         Command::Drift(args) => drift::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),
@@ -350,6 +378,9 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Panel { files } => panel(&files),
         Command::Explain(args) => explaincli::run(&args),
         Command::Profile(args) => profilecli::run(&args),
+        Command::Init(args) => donecli::init(&args),
+        Command::Done(args) => donecli::done(&args),
+        Command::Hook(cmd) => emi_hook::cli::run(&cmd),
         Command::Lsp => {
             emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)

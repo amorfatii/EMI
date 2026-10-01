@@ -16,6 +16,10 @@ use crate::store::Store;
 
 mod drift;
 mod mutation;
+#[cfg(test)]
+mod reduce_table;
+#[cfg(test)]
+mod scope_errors;
 mod shake;
 
 /// What a contract without a test inventory cannot rule out.
@@ -58,7 +62,11 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 /// `(path, kind)` of every change from the baseline, renames split into
 /// delete + add.
-fn changes(repo: &Path, baseline: &str, candidate: &str) -> Result<Vec<(String, &'static str)>> {
+pub fn changes(
+    repo: &Path,
+    baseline: &str,
+    candidate: &str,
+) -> Result<Vec<(String, &'static str)>> {
     let raw = git(
         repo,
         &[
@@ -385,19 +393,19 @@ fn spec_within(
     spec
 }
 
-/// Files of `rev` matching `globs`.
-fn files_matching(repo: &Path, rev: &str, globs: &[String]) -> Vec<String> {
+/// Files of `rev` matching `globs`. A tree that cannot be listed is an
+/// error: an empty list would read as "no trusted files".
+fn files_matching(repo: &Path, rev: &str, globs: &[String]) -> Result<Vec<String>> {
     if globs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    git(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
-        .map(|raw| {
-            raw.split(|b| *b == 0)
-                .map(|p| String::from_utf8_lossy(p).into_owned())
-                .filter(|p| globs.iter().any(|g| emi_scan::walk::fnmatch(p, g)))
-                .collect()
-        })
-        .unwrap_or_default()
+    let raw = git(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
+        .map_err(|e| format!("cannot list the files of {rev}: {e}"))?;
+    Ok(raw
+        .split(|b| *b == 0)
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .filter(|p| globs.iter().any(|g| emi_scan::walk::fnmatch(p, g)))
+        .collect())
 }
 
 /// Whether the contract accepts only sandboxed runs (anything but an
@@ -427,13 +435,45 @@ fn inventory_ids(
             tail(&o.stderr, 400)
         ));
     }
-    let pytest = inv["format"] == "pytest";
-    Ok(o.stdout
+    // the output is kept only up to a limit: a list cut off there looks
+    // like a shorter suite, and two lists cut at the same place look equal
+    if o.stdout_bytes > spec.output_limit as u64 {
+        return Err(format!(
+            "the inventory printed {} bytes and only the first {} were kept, so its list of \
+             tests is partial",
+            o.stdout_bytes, spec.output_limit
+        ));
+    }
+    parse_inventory(&o.stdout, inv["format"] == "pytest")
+}
+
+/// The test ids in an inventory's output. In the pytest format only
+/// `path::name` lines are ids (the rest is the runner's summary); output
+/// with lines but no id is a format the controller does not read, not an
+/// empty suite.
+fn parse_inventory(
+    stdout: &str,
+    pytest: bool,
+) -> std::result::Result<std::collections::BTreeSet<String>, String> {
+    let lines: Vec<&str> = stdout
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && (!pytest || l.contains("::")))
-        .map(str::to_owned)
-        .collect())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let ids: std::collections::BTreeSet<String> = lines
+        .iter()
+        .filter(|l| !pytest || l.contains("::"))
+        .map(|l| (*l).to_owned())
+        .collect();
+    if ids.is_empty() && !lines.is_empty() {
+        return Err(format!(
+            "the inventory printed {} line(s) but no line of its output is a test id \
+             (path::name), so it is not the pytest format listing; first line: {:?}",
+            lines.len(),
+            lines[0]
+        ));
+    }
+    Ok(ids)
 }
 
 /// Test-runner configuration the candidate added: restoring only undoes
@@ -504,7 +544,14 @@ fn verification_gate(
                 if !missing.is_empty() {
                     state = "fail";
                 }
-                gate["inventory"] = json!({"state": if missing.is_empty() { "pass" } else { "fail" },
+                // a baseline that lists no test has none to keep: say so
+                // instead of reporting a comparison that compared nothing
+                let inventory_state = match (missing.is_empty(), base.is_empty()) {
+                    (false, _) => "fail",
+                    (true, true) => "nothing_to_compare",
+                    (true, false) => "pass",
+                };
+                gate["inventory"] = json!({"state": inventory_state,
                     "baseline": base.len(), "candidate": cand.len(), "missing": missing});
             }
             (Err(e), _) | (_, Err(e)) => {
@@ -551,6 +598,14 @@ fn tail(s: &str, n: usize) -> String {
     chars[chars.len().saturating_sub(n)..].iter().collect()
 }
 
+/// The record of a check that could not be run at all: an environment
+/// error, never a pass or a failure of the candidate.
+fn refused_run(id: &str, def: &Value, why: String) -> (String, String, Value) {
+    let record = json!({"check_id": id, "check_definition_id": digest("check-definition", def),
+                        "status": "error", "attribution": "environment", "launch_error": why});
+    ("error".into(), "environment".into(), record)
+}
+
 /// Run one frozen check; `(status, attribution, run record)`.
 fn run_check(
     id: &str,
@@ -572,15 +627,19 @@ fn run_check_within(
     execution: &Value,
     mounts: Mounts,
 ) -> (String, String, Value) {
+    // contracts frozen before the status was required may state none: the
+    // check cannot be judged, which is not the same as expecting 0
+    let Some(expected) = def["success"]["exit_code"].as_u64() else {
+        return refused_run(
+            id,
+            def,
+            "the check states no usable success.exit_code".into(),
+        );
+    };
     let spec = match exec_spec(&def["command"], workspace, execution, timeout, mounts) {
         Ok(spec) => spec,
-        Err(e) => {
-            let record = json!({"check_id": id, "check_definition_id": digest("check-definition", def),
-                                "status": "error", "attribution": "environment", "launch_error": e});
-            return ("error".into(), "environment".into(), record);
-        }
+        Err(e) => return refused_run(id, def, e),
     };
-    let expected = def["success"]["exit_code"].as_i64().unwrap_or(0);
     let o = emi_exec::run(&spec);
     let unsandboxed = sandbox_required(execution) && o.receipt.isolation != "bwrap";
     let (status, attribution) = match o.status {
@@ -590,14 +649,21 @@ fn run_check_within(
         Status::NotLaunched => ("error", "environment"),
         Status::TimedOut => ("timeout", "unresolved"),
         Status::Exited if !o.receipt.verified_clean => ("error", "environment"),
-        Status::Exited if o.exit_code.map(i64::from) == Some(expected) => ("passed", "candidate"),
+        Status::Exited if o.exit_code.and_then(|c| u64::try_from(c).ok()) == Some(expected) => {
+            ("passed", "candidate")
+        }
         Status::Exited => ("failed", "candidate"),
     };
+    // the verdict rests on the exit status, which output limits cannot cut,
+    // but the retained output is the first bytes: say when it is not all
+    let limit = spec.output_limit as u64;
     let record = json!({
         "check_id": id, "check_definition_id": digest("check-definition", def),
         "status": status, "attribution": attribution, "exit_code": o.exit_code, "signal": o.signal,
         "duration_ms": o.duration_ms, "launch_error": o.launch_error,
         "stdout_tail": tail(&o.stdout, 2000), "stderr_tail": tail(&o.stderr, 2000),
+        "stdout_bytes": o.stdout_bytes, "stderr_bytes": o.stderr_bytes,
+        "output_truncated": o.stdout_bytes > limit || o.stderr_bytes > limit,
         "receipt": o.receipt,
     });
     (status.to_owned(), attribution.to_owned(), record)
@@ -698,6 +764,65 @@ fn ids_in(ledger: &[Value], state: &str) -> Vec<String> {
         .iter()
         .filter(|r| r["state"] == state)
         .map(|r| r["id"].as_str().unwrap_or("").to_owned())
+        .collect()
+}
+
+/// Ids of the requirements that are neither verified nor failed: a state
+/// the ledger does not name leaves its requirement unresolved, never met.
+fn unresolved_ids(ledger: &[Value]) -> Vec<String> {
+    ledger
+        .iter()
+        .filter(|r| !matches!(r["state"].as_str(), Some("verified" | "failed")))
+        .map(|r| r["id"].as_str().unwrap_or("").to_owned())
+        .collect()
+}
+
+/// The states each gate reports. A gate in any other state, or in none,
+/// has not said it passed.
+const GATE_STATES: [(&str, &[&str]); 7] = [
+    ("envelope", &["pass", "fail"]),
+    (
+        "structural",
+        &["not_required", "pass", "needs_review", "unverified", "fail"],
+    ),
+    (
+        "guardrails",
+        &["not_required", "pass", "needs_review", "unverified", "fail"],
+    ),
+    (
+        "verification",
+        &["not_required", "pass", "needs_review", "unverified", "fail"],
+    ),
+    (
+        "refactor",
+        &["not_required", "pass", "needs_review", "unverified", "fail"],
+    ),
+    ("dependencies", &["not_required", "pass", "unverified"]),
+    ("escalation", &["none", "open", "unverified"]),
+];
+
+/// One line per gate whose state is not one it reports.
+fn unknown_gate_states(g: &Gates) -> Vec<String> {
+    let reported = [
+        g.envelope,
+        g.structural,
+        g.guardrails,
+        g.verification,
+        g.refactor,
+        g.dependencies,
+        g.escalation,
+    ];
+    GATE_STATES
+        .iter()
+        .zip(reported)
+        .filter(|((_, known), gate)| !gate["state"].as_str().is_some_and(|s| known.contains(&s)))
+        .map(|((name, _), gate)| {
+            format!(
+                "gate {name} reported state {}, which the controller does not know, so it \
+                 cannot count as passed",
+                gate["state"]
+            )
+        })
         .collect()
 }
 
@@ -823,13 +948,14 @@ fn rejections(ledger: &[Value], g: &Gates) -> Vec<Reason> {
 /// What could not be verified (empty: everything was).
 fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
     let mut reasons = Vec::new();
-    let unverified = ids_in(ledger, "unverified");
+    let unverified = unresolved_ids(ledger);
     if require_all && !unverified.is_empty() {
         reasons.push(format!(
             "requirements not verified (errors, timeouts or unverified cleanup): {}",
             unverified.join(", ")
         ));
     }
+    reasons.extend(unknown_gate_states(g));
     if g.structural["state"] == "unverified" {
         reasons.push("structural gate could not measure the candidate".into());
     }
@@ -981,16 +1107,44 @@ fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, 
     if !missing.is_empty() {
         return ("incomplete", missing.into_iter().map(gap).collect());
     }
-    let review = reviews(gates);
+    // only reachable without `require_all` when a requirement is unverified:
+    // the decision then says it accepted on that policy
+    let waived = if require_all {
+        Vec::new()
+    } else {
+        unresolved_ids(ledger)
+    };
+    let waiver = (!waived.is_empty()).then(|| {
+        gap(format!(
+            "accepted although requirements were not verified, because \
+             {REQUIRE_ALL_POLICY} is false: {}",
+            waived.join(", ")
+        ))
+    });
+    let mut review = reviews(gates);
     if !review.is_empty() {
+        review.extend(waiver);
         return ("needs_review", review);
     }
-    (
-        "accepted",
-        vec![gap(
-            "every requirement verified by its frozen checks; all gates pass".into(),
-        )],
-    )
+    let accepted = waiver.unwrap_or_else(|| {
+        gap("every requirement verified by its frozen checks; all gates pass".into())
+    });
+    ("accepted", vec![accepted])
+}
+
+/// The contract setting that lets a decision stand with requirements
+/// unverified.
+const REQUIRE_ALL_POLICY: &str = "completion_policy.require_all_requirements_verified";
+
+/// The requirements a decision stood on without verifying them, when it
+/// did so on the contract's policy and nothing else.
+fn policy_reliance(decision: &str, ledger: &[Value], require_all: bool) -> Option<Value> {
+    let unverified = unresolved_ids(ledger);
+    if require_all || unverified.is_empty() || !matches!(decision, "accepted" | "needs_review") {
+        return None;
+    }
+    Some(json!({"policy": REQUIRE_ALL_POLICY, "value": false,
+                "unverified_requirements": unverified}))
 }
 
 /// What kind of evidence a decision rests on: the structural signals and
@@ -1171,7 +1325,7 @@ fn run_verified(
         baseline: &subject.baseline,
         contract,
         changed,
-        trusted_files: files_matching(&subject.objects, &subject.baseline, &trusted),
+        trusted_files: files_matching(&subject.objects, &subject.baseline, &trusted)?,
         hidden: vec![subject.authority.clone(), subject.repo.clone()],
     };
     let restored = trusted_changes(&trusted, changed);
@@ -1321,6 +1475,7 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         escalation: &g["escalation"],
     };
     let (decision, reasons) = reduce(&eval.ledger, &gates, require_all);
+    let reliance = policy_reliance(decision, &eval.ledger, require_all);
     let state = store.charge(started.elapsed().as_secs_f64())?;
     let mut d = head(decision, reasons.iter().map(|r| r.text.clone()).collect());
     d["content_id"] = json!(subject.rev);
@@ -1331,8 +1486,19 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         d["review_items"] = json!(crate::approve::review_items(&d));
     }
     d["assurance"] = assurance(&reasons, isolation_of(&contract));
+    let mut limits = Vec::new();
     if contract["verification"]["inventory"].is_null() {
-        d["limits"] = json!([NO_INVENTORY]);
+        limits.push(NO_INVENTORY.to_owned());
+    }
+    if let Some(r) = reliance {
+        limits.push(format!(
+            "requirements left unverified were accepted under {REQUIRE_ALL_POLICY} = false: {}",
+            globs(&r["unverified_requirements"]).join(", ")
+        ));
+        d["relied_on_policy"] = r;
+    }
+    if !limits.is_empty() {
+        d["limits"] = json!(limits);
     }
     d["budget"] =
         json!({"retries_used": state["cumulative"]["retries"], "budgets": contract["budgets"]});
@@ -1351,6 +1517,18 @@ fn unseen_escalations(store: &Store, contract_id: &str, decision: Option<&Value>
         .and_then(|d| d["gates"]["escalation"]["escalations"].as_array())
         .map_or(0, Vec::len);
     Ok(open.saturating_sub(seen))
+}
+
+/// Why an accepted decision completes, naming the policy it relied on.
+fn accepted_reason(decision: &Value) -> String {
+    match decision.get("relied_on_policy") {
+        Some(r) => format!(
+            "accepted under the current contract, relying on {REQUIRE_ALL_POLICY} = false \
+             (unverified: {})",
+            globs(&r["unverified_requirements"]).join(", ")
+        ),
+        None => "accepted under the current contract".to_owned(),
+    }
 }
 
 pub fn complete(store: &Store, reference: &str) -> Result<(bool, Value)> {
@@ -1377,7 +1555,7 @@ pub fn complete(store: &Store, reference: &str) -> Result<(bool, Value)> {
             a["reason"].as_str().unwrap_or("")
         ),
         (Some(d), None) if !accepted => format!("latest decision is {}", d["decision"]),
-        (Some(_), None) => "accepted under the current contract".to_owned(),
+        (Some(d), None) => accepted_reason(d),
     };
     let accepted = accepted || approval.is_some();
     let record = json!({"task_id": contract["task_id"], "contract_id": cid, "candidate_id": sha,

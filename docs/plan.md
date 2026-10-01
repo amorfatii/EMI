@@ -119,11 +119,11 @@ emi done [--repo .] [--baseline REF] [--setting cooperative|enforced]
 The top-level field is an `action`, not a verdict: the two evidence parts are
 the truth, and "stop" does not mean "correct".
 
-### Interface 3: the receipt (`emi-done-receipt-0.1`)
+### Interface 3: the receipt (`emi-done-receipt-0.2`)
 
 ```json
 {
-  "schema": "emi-done-receipt-0.1",
+  "schema": "emi-done-receipt-0.2",
   "repo": "/abs/path",
   "baseline": {"sha": "…", "source": "merge-base:main | session | explicit"},
   "candidate": {"id": "worktree | <sha>", "content_id": "<tree sha>"},
@@ -243,3 +243,47 @@ Pre-registered in `emi-lab` before any outcome data:
 - **Real use:** about 10 tasks from the owner's own repositories, judged by
   the owner.
 - **A miss** means rethinking the hook, not shipping it.
+
+## Integration evidence (2026-10-01)
+
+Implemented on `feat/done` by integrating the committed done-check, proving,
+hook and verdict branches. The proving worktree's uncommitted correction was
+preserved; the integrated implementation addresses import inflation with
+per-test coverage contexts. `emi done` measures the same frozen candidate as
+its regression check. Real pytest exposed and fixed the duplicated `-q`
+inventory flag that the stand-in runner had not caught.
+
+- The scripted proposer loop runs the actual binary and pytest: a regression
+  is repaired, a redundant test removed, and the final change is proven.
+- Tests cover the three-round limit, user-message reset, baseline-owned CI
+  configuration, refusal of CI approvals, and incomplete skipped-test evidence.
+- The installed native OpenCode V2 adapter is tested against the public context
+  API with real subprocess checks, and against a private OpenCode **2.0.18**
+  server with a local scripted provider: three native turns, two EMI repairs,
+  and one final queued receipt, without a fourth provider call. The native
+  check exposed `session.execution.succeeded` events without location and
+  non-resuming synthetic notes hidden until another turn. Both were fixed;
+  receipts now use visible, non-resuming queued prompts. Directory entrypoint
+  `.opencode/plugins/emi/index.js` is required on that release; a standalone
+  `.js` file was not discovered. The native test is opt-in because it needs
+  OpenCode installed. No real-model usefulness run was performed.
+- The GitHub Action defaults to completion evidence; legacy structural mode
+  remains explicit, including this Rust repository's dogfood workflow.
+  Hosted job execution and branch protection are not configured locally.
+- Full fmt, Clippy, tests, release build and golden parity passed with
+  `RUST_TEST_THREADS=2 bash scripts/check.sh`. A default-parallel attempt
+  received SIGKILL in the controller lifecycle suite; the cause was not
+  established. No tests were removed to get the bounded-concurrency pass.
+- The generic controller retains two explicitly ignored per-test-execution
+  regressions in `runner_evidence.rs`. The derived completion check fails
+  closed on unreadable summaries and skipped/expected-failure execution;
+  this does not imply all generic `emi task` checks gained per-test evidence.
+
+### Experiment blocked before registration
+
+`emi-lab/protocols/H1-completion-hook.md` is a **draft**, not a registered or
+run study. S5a's features file contains all 500 distinct SWE-bench Verified
+tasks with no collection errors. Thus the stated 100-task sample "not used
+in earlier studies" is unavailable. The owner must authorize disclosed reuse
+or another dataset, and freeze the model, harness and resource budget before
+registration or any outcome collection. No usefulness claim has been proven.
