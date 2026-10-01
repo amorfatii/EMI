@@ -177,10 +177,14 @@ change evidence. A file with removed or changed lines asks a person.
 The first check of a baseline therefore runs the suite twice. An empty
 suite, a report that names fewer tests than were collected, an exit status
 that disagrees with the report, and a cut or unreadable report are
-`incomplete`: collection alone is not proof the tests executed. A run that
-does not print one outcome per test (for example under `pytest-xdist`)
-cannot be compared, and falls back to the strict rule: any skip or expected
-failure is `incomplete`.
+`incomplete`: collection alone is not proof the tests executed.
+
+The outcomes are not read from what pytest prints while it runs (a test that
+writes to the terminal, or a parallel runner, makes that unreadable). The
+check starts the tests' own Python with a small reporter that calls
+`pytest.main` with the configured arguments and, at the end, prints one
+line per test from the reports pytest hands its plugins, closed by a count.
+A listing that is cut short or does not add up is no evidence.
 
 `enforced` describes which inputs EMI reads. It is **not yet a claim of
 adversarial security**: isolation-before-launch, sealed dependencies and
