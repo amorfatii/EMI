@@ -1,6 +1,6 @@
 # Include in .gitlab-ci.yml:
 #   include:
-#     - remote: https://raw.githubusercontent.com/andrej/emi/main/ci/emi.gitlab-ci.yml
+#     - remote: https://raw.githubusercontent.com/amorfatii/EMI/main/ci/emi.gitlab-ci.yml
 #   variables:
 #     EMI_SOURCE: src
 #     EMI_PROBE: python
@@ -17,7 +17,7 @@ emi:
     EMI_ALLOW_GROWTH: "10"
     EMI_ALLOW_HEADROOM: "50"
   script:
-    - cargo install --locked --git https://github.com/andrej/emi emi-cli
+    - cargo install --locked --git https://github.com/amorfatii/EMI emi-cli
     - >
       emi diff --repo . --source "$EMI_SOURCE" --probe "$EMI_PROBE" --profile "$EMI_PROFILE"
       --before "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --after "$CI_COMMIT_SHA" --guardrail

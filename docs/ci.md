@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: <owner>/emi@main
+      - uses: amorfatii/EMI@main
         with: {source: src, probe: js, allow-growth: "10", allow-headroom: "50"}
 ```
 
