@@ -47,27 +47,54 @@ fn string_list(v: Option<&Value>, label: &str, nonempty: bool) -> Result<Vec<Str
 }
 
 /// `validate_check_definition`: argv (never a shell), success criteria,
-/// positive timeout.
+/// positive timeout. Every key must be one the verifier reads.
 fn check_definition(id: &str, def: &Value) -> Result<()> {
     let Some(d) = def.as_object() else {
         return Err(format!("check {id} must be object"));
     };
+    known_keys("check", d, &format!("check {id}"))?;
     let argv = d.get("command").and_then(Value::as_array);
-    if !argv.is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_string)) {
-        return Err(format!(
-            "check {id} command must be nonempty string array (argv, no shell)"
-        ));
+    let guards = [
+        (
+            argv.is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_string)),
+            format!("check {id} command must be nonempty string array (argv, no shell)"),
+        ),
+        (
+            d.get("success").is_some_and(Value::is_object),
+            format!("check {id} needs success criteria"),
+        ),
+        (
+            valid_timeout(d.get("timeout_s")),
+            format!("check {id} timeout_s must be a number of seconds in (0, {MAX_TIMEOUT_S}]"),
+        ),
+    ];
+    if let Some((_, message)) = guards.into_iter().find(|(ok, _)| !ok) {
+        return Err(message);
     }
-    if !d.get("success").is_some_and(Value::is_object) {
-        return Err(format!("check {id} needs success criteria"));
-    }
-    if !valid_timeout(d.get("timeout_s")) {
-        return Err(format!(
-            "check {id} timeout_s must be a number of seconds in (0, {MAX_TIMEOUT_S}]"
-        ));
-    }
-    Ok(())
+    success_criteria(id, &d["success"])
 }
+
+/// The only criterion the verifier evaluates is the exit status. Any other
+/// key would be read as satisfied without ever being looked at, and a
+/// missing status would silently mean 0, so both are refused.
+fn success_criteria(id: &str, success: &Value) -> Result<()> {
+    let fields = success.as_object().cloned().unwrap_or_default();
+    known_keys("check.success", &fields, &format!("check {id}: success"))?;
+    if fields
+        .get("exit_code")
+        .and_then(Value::as_u64)
+        .is_some_and(|c| c <= MAX_EXIT_STATUS)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "check {id} success.exit_code must be an integer exit status in 0..={MAX_EXIT_STATUS}"
+        ))
+    }
+}
+
+/// The largest status a process can exit with.
+const MAX_EXIT_STATUS: u64 = 255;
 
 /// Longest run a contract may allow (one week): anything longer is a
 /// mistake, and far larger values cannot be represented as a duration.
@@ -144,6 +171,17 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
         ],
     ),
     ("requirement", &["id", "acceptance", "checks"]),
+    ("check", &["command", "success", "timeout_s"]),
+    ("check.success", &["exit_code"]),
+    (
+        "structural",
+        &["probe", "source", "allowance", "headroom", "profile"],
+    ),
+    ("warning_policy", &["treatment"]),
+    (
+        "guardrails",
+        &["tiers", "allow_classes", "max_net_sloc", "max_files"],
+    ),
     (
         "verification",
         &[
@@ -242,9 +280,11 @@ fn budgets(v: Option<&Value>) -> Result<Value> {
             "max_time_s" => x.as_f64().is_some_and(|t| t >= 0.0),
             // a limit nothing checks would read as protection that is not there
             "max_tokens" => {
-                return Err("budgets.max_tokens is not supported: the controller cannot observe \
+                return Err(
+                    "budgets.max_tokens is not supported: the controller cannot observe \
                             token use, so it could never enforce it; use max_retries or max_time_s"
-                    .into());
+                        .into(),
+                );
             }
             _ => return Err(format!("unknown budget key: {k:?}")),
         };
@@ -263,6 +303,7 @@ fn structural(v: Option<&Value>) -> Result<Value> {
     let Some(m) = s.as_object() else {
         return Err("structural must be an object".into());
     };
+    known_keys("structural", m, "structural")?;
     if !matches!(
         m.get("probe").and_then(Value::as_str),
         Some("python" | "js" | "rust" | "go")
@@ -290,11 +331,54 @@ fn guardrails(v: Option<&Value>) -> Result<Value> {
     match v {
         Some(Value::Bool(false)) => Ok(Value::Null),
         None | Some(Value::Bool(true)) => Ok(json!({})),
-        Some(policy @ Value::Object(_)) => {
+        Some(policy @ Value::Object(fields)) => {
+            guardrail_settings(fields)?;
             emi_guard::Policy::from_json(policy).map_err(|e| format!("guardrails: {e}"))?;
             Ok(policy.clone())
         }
         Some(_) => Err("guardrails must be false or a policy object".into()),
+    }
+}
+
+/// Scope keys of a guardrail policy: the controller switches the scope
+/// guardrail off and enforces the envelope instead, so they would do nothing.
+const SCOPE_KEYS: [&str; 4] = [
+    "permitted_paths",
+    "excluded_paths",
+    "protected_paths",
+    "change_kinds",
+];
+
+/// The guardrail settings the controller reads, each with the type the
+/// policy parser would otherwise drop without a word (a budget written as
+/// a string disables the budget).
+fn guardrail_settings(fields: &Map<String, Value>) -> Result<()> {
+    if let Some(k) = SCOPE_KEYS.iter().find(|k| fields.contains_key(**k)) {
+        return Err(format!(
+            "guardrails.{k} is not read here: scope is the envelope's (set envelope.{k})"
+        ));
+    }
+    known_keys("guardrails", fields, "guardrails")?;
+    let typed: [(&str, bool, &str); 3] = [
+        (
+            "tiers",
+            fields.get("tiers").is_none_or(Value::is_object),
+            "an object",
+        ),
+        (
+            "max_net_sloc",
+            fields.get("max_net_sloc").is_none_or(Value::is_i64),
+            "an integer",
+        ),
+        (
+            "max_files",
+            fields.get("max_files").is_none_or(Value::is_u64),
+            "a nonnegative integer",
+        ),
+    ];
+    match typed.iter().find(|(_, ok, _)| !ok) {
+        Some((key, _, want)) => Err(format!("guardrails.{key} must be {want}")),
+        None => Ok(()),
     }
 }
 
@@ -488,7 +572,25 @@ fn shake(v: Option<&Value>) -> Result<Option<u64>> {
     }
 }
 
+/// Prose exclusions nothing checks: only an empty list (kept in the frozen
+/// contract so earlier contracts keep their shape) is accepted.
+fn exclusions(v: Option<&Value>) -> Result<Value> {
+    let listed = string_list(v, "exclusions", false)?;
+    if listed.is_empty() {
+        Ok(json!(listed))
+    } else {
+        Err(
+            "exclusions is not enforced, so it would only look like a protection; \
+             put paths the change must not touch in envelope.excluded_paths"
+                .into(),
+        )
+    }
+}
+
 fn warning_policy(v: Option<&Value>) -> Result<Value> {
+    if let Some(fields) = v.and_then(Value::as_object) {
+        known_keys("warning_policy", fields, "warning_policy")?;
+    }
     let treatment = v
         .map_or(Some("review"), |w| {
             w.get("treatment").and_then(Value::as_str)
@@ -544,7 +646,7 @@ pub fn revised(key: &str, v: &Value) -> Result<Value> {
         "warning_policy" => warning_policy(some),
         "completion_policy" => completion_policy(some),
         "execution" => execution(some),
-        "exclusions" => string_list(some, "exclusions", false).map(|l| json!(l)),
+        "exclusions" => exclusions(some),
         "verification" => verification(some).map(|x| x.unwrap_or(Value::Null)),
         "refactor" => crate::refactor::spec(some).map(|x| x.unwrap_or(Value::Null)),
         _ => Err(format!("{key} cannot be revised")),
@@ -603,7 +705,7 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
         "predecessor": null,
         "objective": spec["objective"].as_str().unwrap_or("").trim(),
         "requirements": requirements(spec.get("requirements"), checks)?,
-        "exclusions": string_list(spec.get("exclusions"), "exclusions", false)?,
+        "exclusions": exclusions(spec.get("exclusions"))?,
         "repo": {"path": repo_path},
         "baseline": {"sha": baseline_sha, "ref": spec.get("baseline").cloned().unwrap_or(Value::Null)},
         "measurement_contract_id": measurement_contract_id(&structural),

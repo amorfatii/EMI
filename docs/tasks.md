@@ -83,7 +83,27 @@ simplification.
   `verification.inventory`, in `verification.mutation` (`max_mutants`)
   and in `verification.drift` (no keys yet). A `held_out` that is not an object, or an
   entry of it that is not one, is refused too. A misspelt key would
-  otherwise switch a protection off without a word.
+  otherwise switch a protection off without a word. The same holds
+  inside each check (`command`, `success`, `timeout_s`), `structural`
+  (`probe`, `source`, `allowance`, `headroom`, `profile`),
+  `warning_policy` (`treatment`) and `guardrails` (`tiers`,
+  `allow_classes`, `max_net_sloc`, `max_files`; scope keys belong to the
+  envelope and are refused there, and a budget of the wrong type is
+  refused rather than dropped). `exclusions` is prose nothing checks, so
+  a non-empty list is refused; use `envelope.excluded_paths`.
+- **Success criteria.** The one criterion a check is judged by is its exit
+  status, so `success` is `{"exit_code": N}` with `N` an integer in
+  0..=255, stated explicitly. An output, artifact or count criterion would
+  be read as satisfied without ever being evaluated, so it is refused, as
+  is a missing or mistyped status. A check in a contract frozen before
+  this rule that states none runs to an `error` (decision `incomplete`),
+  never against an assumed 0.
+- **Completion policy.** `completion_policy.require_all_requirements_verified`
+  is `true` unless the contract says otherwise. Set to `false`, a
+  requirement whose checks errored or timed out no longer stops an
+  acceptance; the decision then names the unverified requirements in its
+  reason, in `limits` and in `relied_on_policy`, and never says that
+  every requirement was verified. A failed requirement rejects either way.
 - **Checks.** Commands are argv lists, never a shell. They run through
   `emi-exec` in a fresh snapshot of the candidate (a commit's raw blobs, or
   the working tree as a commit would contain it). By default they run under
@@ -294,7 +314,7 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 | Decision | When |
 |---|---|
 | `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, test-runner configuration was added (`runner_config` absent or `reject`), the structural gate blocked, or the budget is exhausted |
-| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
+| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; a linked dependency directory differs from its pin, or a gate or the ledger reported a state the controller does not know |
 | `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, a test file outside the trusted set was changed, test-runner configuration was added under `runner_config: review` or in a contract without a `verification` section, or an escalation is open; completes only with an approval of its `review_items` |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 
