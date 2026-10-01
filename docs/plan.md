@@ -288,11 +288,17 @@ inventory flag that the stand-in runner had not caught.
   done` inherits it; this does not imply undeclared generic `emi task`
   checks gained per-test evidence.
 
-### Experiment blocked before registration
+### Experiment decision recorded, still unregistered
 
 `emi-lab/protocols/H1-completion-hook.md` is a **draft**, not a registered or
 run study. S5a's features file contains all 500 distinct SWE-bench Verified
-tasks with no collection errors. Thus the stated 100-task sample "not used
-in earlier studies" is unavailable. The owner must authorize disclosed reuse
-or another dataset, and freeze the model, harness and resource budget before
-registration or any outcome collection. No usefulness claim has been proven.
+tasks with no collection errors, so no fresh 100-task sample exists. On
+2026-10-01 the owner authorized disclosed reuse (prior S5a exposure stated
+in every report, never labelled fresh) and pinned the harness to opencode;
+no spend authorized. The deterministic 100-task draw is proposed in
+`emi-lab/results/H1/manifest.jsonl` (meta in `manifest-meta.json`).
+Still needed before registration or any outcome collection: the run
+go-ahead with a concurrency cap (model pinned 2026-10-01 to
+`opencode/muse-spark-1.3-contributor-free`, variant `medium`, $0 tier),
+environment admission for all 100 tasks, the freeze record, and the
+registration commit. No usefulness claim has been proven.

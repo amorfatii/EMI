@@ -57,6 +57,10 @@ _Avoid_: gate verdict, pass, proceed
 The record of what one acceptance decision rests on and what it did not verify.
 _Avoid_: report, summary, proof
 
+**Execution evidence**:
+What a check run itself reported about each test it ran, beyond its exit status.
+_Avoid_: test output, test log, exit code
+
 **Regression evidence**:
 Evidence that behaviour present at the baseline still holds in the candidate.
 _Avoid_: old tests pass, no breakage
