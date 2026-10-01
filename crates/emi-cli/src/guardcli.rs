@@ -61,7 +61,7 @@ fn sarif(report: &Report) -> Value {
         })
         .collect();
     json!({"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
-           "runs": [{"tool": {"driver": {"name": "emi-guard", "informationUri": "https://github.com/andrej/emi",
+           "runs": [{"tool": {"driver": {"name": "emi-guard", "informationUri": "https://github.com/amorfatii/EMI",
                                           "rules": rules}}, "results": results}]})
 }
 

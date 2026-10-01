@@ -113,16 +113,16 @@ fn is_target(path: &str, targets: &[String]) -> bool {
     targets.iter().any(|g| fnmatch(path, g))
 }
 
-/// Files of the tree at `rev` matching `targets`.
-fn target_files(repo: &Path, rev: &str, targets: &[String]) -> Vec<String> {
-    emi_git::run(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
-        .map(|out| {
-            out.split(|b| *b == 0)
-                .map(|p| String::from_utf8_lossy(p).into_owned())
-                .filter(|p| is_target(p, targets))
-                .collect()
-        })
-        .unwrap_or_default()
+/// Files of the tree at `rev` matching `targets`; a tree that cannot be
+/// listed is an error, not a refactor with no targets.
+fn target_files(repo: &Path, rev: &str, targets: &[String]) -> Result<Vec<String>> {
+    let out = emi_git::run(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
+        .map_err(|e| format!("cannot list the files of {rev}: {e}"))?;
+    Ok(out
+        .split(|b| *b == 0)
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .filter(|p| is_target(p, targets))
+        .collect())
 }
 
 /// The refactor gate. `workspace` holds the candidate as the checks saw
@@ -148,7 +148,10 @@ pub fn gate(
         return json!({"state": "unverified", "detail": "refactor.min_cognitive_reduction missing"});
     };
     // the targets plus every source file the candidate touches
-    let mut paths = target_files(repo, baseline, &targets);
+    let mut paths = match target_files(repo, baseline, &targets) {
+        Ok(paths) => paths,
+        Err(detail) => return json!({"state": "unverified", "detail": detail}),
+    };
     paths.extend(
         changed
             .iter()

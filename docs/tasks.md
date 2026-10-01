@@ -67,6 +67,10 @@ simplification.
   derived from the structural policy follow it; identity, baseline and
   derived fields cannot be revised. A contract with no requirements never
   reduces to `accepted`.
+- **Budgets.** `budgets` holds `max_retries` (verifications) and
+  `max_time_s` (verification time), the two the controller measures. A
+  `max_tokens` budget is refused at creation and in a revision: EMI cannot
+  observe token use, so it could never enforce one.
 - **Limits.** Check and inventory `timeout_s` must be in (0, 604800]
   seconds. `execution` accepts only `isolation` (`best`, `bwrap`, `none`),
   `network` (a boolean), `link` (relative paths) and `env` (strings);
@@ -79,7 +83,27 @@ simplification.
   `verification.inventory`, in `verification.mutation` (`max_mutants`)
   and in `verification.drift` (no keys yet). A `held_out` that is not an object, or an
   entry of it that is not one, is refused too. A misspelt key would
-  otherwise switch a protection off without a word.
+  otherwise switch a protection off without a word. The same holds
+  inside each check (`command`, `success`, `timeout_s`), `structural`
+  (`probe`, `source`, `allowance`, `headroom`, `profile`),
+  `warning_policy` (`treatment`) and `guardrails` (`tiers`,
+  `allow_classes`, `max_net_sloc`, `max_files`; scope keys belong to the
+  envelope and are refused there, and a budget of the wrong type is
+  refused rather than dropped). `exclusions` is prose nothing checks, so
+  a non-empty list is refused; use `envelope.excluded_paths`.
+- **Success criteria.** The one criterion a check is judged by is its exit
+  status, so `success` is `{"exit_code": N}` with `N` an integer in
+  0..=255, stated explicitly. An output, artifact or count criterion would
+  be read as satisfied without ever being evaluated, so it is refused, as
+  is a missing or mistyped status. A check in a contract frozen before
+  this rule that states none runs to an `error` (decision `incomplete`),
+  never against an assumed 0.
+- **Completion policy.** `completion_policy.require_all_requirements_verified`
+  is `true` unless the contract says otherwise. Set to `false`, a
+  requirement whose checks errored or timed out no longer stops an
+  acceptance; the decision then names the unverified requirements in its
+  reason, in `limits` and in `relied_on_policy`, and never says that
+  every requirement was verified. A failed requirement rejects either way.
 - **Checks.** Commands are argv lists, never a shell. They run through
   `emi-exec` in a fresh snapshot of the candidate (a commit's raw blobs, or
   the working tree as a commit would contain it). By default they run under
@@ -190,7 +214,19 @@ optional `verification` section does this the way benchmarks grade:
   keeps `path::name` lines). It runs on the baseline and on the verified
   workspace. A baseline test missing from the candidate rejects it, which
   catches tests dropped through configuration (`collect_ignore`,
-  `--deselect`, a runner option) rather than by editing test files.
+  `--deselect`, a runner option) rather than by editing test files. A
+  list the controller cannot take whole is `unverified`, never a shorter
+  list: output beyond the 1 MiB kept, and (in the `pytest` format) output
+  with lines but no `path::name` id. A baseline that lists no test gives
+  the inventory state `nothing_to_compare`, listed under *Not verified*.
+- **What the exit status cannot show.** A check is judged by its exit
+  status; the controller reads no per-test result. A run that exits 0
+  after a test was skipped, expected to fail or never ran, because the
+  candidate's code made it so, still counts as passed. Restored trusted
+  tests, the inventory and the guardrails cover the usual ways in; the rest
+  needs per-test outcomes. A check's run record says when its output was
+  cut (`output_truncated`), and one killed by a signal is a failure, one
+  that outlives its timeout is unresolved (`incomplete`).
 
 - **`shake`:** `{"rounds": 1}` (up to 3). Every check that passed runs again, and the task needs review if a rerun fails. Each rerun changes three things:
   - the trusted Python tests' functions and classes are renamed;
@@ -290,7 +326,7 @@ Restored trusted tests and the inventory keep the behaviour. `emi task refactor-
 | Decision | When |
 |---|---|
 | `rejected` | a requirement's check failed, a change left the envelope, a blocking guardrail fired, a baseline test is missing from the inventory, test-runner configuration was added (`runner_config` absent or `reject`), the structural gate blocked, or the budget is exhausted |
-| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; or a linked dependency directory differs from its pin |
+| `incomplete` | a requirement could not be verified: launch errors, timeouts, or a run whose cleanup was not verified; or the structural gate, the guardrails or the test inventory could not run; a linked dependency directory differs from its pin, or a gate or the ledger reported a state the controller does not know |
 | `needs_review` | everything verified, but the structural gate warned under `treatment: review`, a review-tier guardrail fired, a trusted file was changed, a test file outside the trusted set was changed, test-runner configuration was added under `runner_config: review` or in a contract without a `verification` section, or an escalation is open; completes only with an approval of its `review_items` |
 | `accepted` | every requirement verified by its frozen checks, and every gate passes |
 
