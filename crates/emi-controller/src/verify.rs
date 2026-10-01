@@ -18,6 +18,8 @@ mod drift;
 mod mutation;
 #[cfg(test)]
 mod reduce_table;
+#[cfg(test)]
+mod scope_errors;
 mod shake;
 
 /// What a contract without a test inventory cannot rule out.
@@ -387,19 +389,19 @@ fn spec_within(
     spec
 }
 
-/// Files of `rev` matching `globs`.
-fn files_matching(repo: &Path, rev: &str, globs: &[String]) -> Vec<String> {
+/// Files of `rev` matching `globs`. A tree that cannot be listed is an
+/// error: an empty list would read as "no trusted files".
+fn files_matching(repo: &Path, rev: &str, globs: &[String]) -> Result<Vec<String>> {
     if globs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    git(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
-        .map(|raw| {
-            raw.split(|b| *b == 0)
-                .map(|p| String::from_utf8_lossy(p).into_owned())
-                .filter(|p| globs.iter().any(|g| emi_scan::walk::fnmatch(p, g)))
-                .collect()
-        })
-        .unwrap_or_default()
+    let raw = git(repo, &["ls-tree", "-r", "-z", "--name-only", rev])
+        .map_err(|e| format!("cannot list the files of {rev}: {e}"))?;
+    Ok(raw
+        .split(|b| *b == 0)
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .filter(|p| globs.iter().any(|g| emi_scan::walk::fnmatch(p, g)))
+        .collect())
 }
 
 /// Whether the contract accepts only sandboxed runs (anything but an
@@ -429,13 +431,45 @@ fn inventory_ids(
             tail(&o.stderr, 400)
         ));
     }
-    let pytest = inv["format"] == "pytest";
-    Ok(o.stdout
+    // the output is kept only up to a limit: a list cut off there looks
+    // like a shorter suite, and two lists cut at the same place look equal
+    if o.stdout_bytes > spec.output_limit as u64 {
+        return Err(format!(
+            "the inventory printed {} bytes and only the first {} were kept, so its list of \
+             tests is partial",
+            o.stdout_bytes, spec.output_limit
+        ));
+    }
+    parse_inventory(&o.stdout, inv["format"] == "pytest")
+}
+
+/// The test ids in an inventory's output. In the pytest format only
+/// `path::name` lines are ids (the rest is the runner's summary); output
+/// with lines but no id is a format the controller does not read, not an
+/// empty suite.
+fn parse_inventory(
+    stdout: &str,
+    pytest: bool,
+) -> std::result::Result<std::collections::BTreeSet<String>, String> {
+    let lines: Vec<&str> = stdout
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && (!pytest || l.contains("::")))
-        .map(str::to_owned)
-        .collect())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let ids: std::collections::BTreeSet<String> = lines
+        .iter()
+        .filter(|l| !pytest || l.contains("::"))
+        .map(|l| (*l).to_owned())
+        .collect();
+    if ids.is_empty() && !lines.is_empty() {
+        return Err(format!(
+            "the inventory printed {} line(s) but no line of its output is a test id \
+             (path::name), so it is not the pytest format listing; first line: {:?}",
+            lines.len(),
+            lines[0]
+        ));
+    }
+    Ok(ids)
 }
 
 /// Test-runner configuration the candidate added: restoring only undoes
@@ -506,7 +540,14 @@ fn verification_gate(
                 if !missing.is_empty() {
                     state = "fail";
                 }
-                gate["inventory"] = json!({"state": if missing.is_empty() { "pass" } else { "fail" },
+                // a baseline that lists no test has none to keep: say so
+                // instead of reporting a comparison that compared nothing
+                let inventory_state = match (missing.is_empty(), base.is_empty()) {
+                    (false, _) => "fail",
+                    (true, true) => "nothing_to_compare",
+                    (true, false) => "pass",
+                };
+                gate["inventory"] = json!({"state": inventory_state,
                     "baseline": base.len(), "candidate": cand.len(), "missing": missing});
             }
             (Err(e), _) | (_, Err(e)) => {
@@ -609,11 +650,16 @@ fn run_check_within(
         }
         Status::Exited => ("failed", "candidate"),
     };
+    // the verdict rests on the exit status, which output limits cannot cut,
+    // but the retained output is the first bytes: say when it is not all
+    let limit = spec.output_limit as u64;
     let record = json!({
         "check_id": id, "check_definition_id": digest("check-definition", def),
         "status": status, "attribution": attribution, "exit_code": o.exit_code, "signal": o.signal,
         "duration_ms": o.duration_ms, "launch_error": o.launch_error,
         "stdout_tail": tail(&o.stdout, 2000), "stderr_tail": tail(&o.stderr, 2000),
+        "stdout_bytes": o.stdout_bytes, "stderr_bytes": o.stderr_bytes,
+        "output_truncated": o.stdout_bytes > limit || o.stderr_bytes > limit,
         "receipt": o.receipt,
     });
     (status.to_owned(), attribution.to_owned(), record)
@@ -1275,7 +1321,7 @@ fn run_verified(
         baseline: &subject.baseline,
         contract,
         changed,
-        trusted_files: files_matching(&subject.objects, &subject.baseline, &trusted),
+        trusted_files: files_matching(&subject.objects, &subject.baseline, &trusted)?,
         hidden: vec![subject.authority.clone(), subject.repo.clone()],
     };
     let restored = trusted_changes(&trusted, changed);

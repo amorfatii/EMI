@@ -214,7 +214,19 @@ optional `verification` section does this the way benchmarks grade:
   keeps `path::name` lines). It runs on the baseline and on the verified
   workspace. A baseline test missing from the candidate rejects it, which
   catches tests dropped through configuration (`collect_ignore`,
-  `--deselect`, a runner option) rather than by editing test files.
+  `--deselect`, a runner option) rather than by editing test files. A
+  list the controller cannot take whole is `unverified`, never a shorter
+  list: output beyond the 1 MiB kept, and (in the `pytest` format) output
+  with lines but no `path::name` id. A baseline that lists no test gives
+  the inventory state `nothing_to_compare`, listed under *Not verified*.
+- **What the exit status cannot show.** A check is judged by its exit
+  status; the controller reads no per-test result. A run that exits 0
+  after a test was skipped, expected to fail or never ran, because the
+  candidate's code made it so, still counts as passed. Restored trusted
+  tests, the inventory and the guardrails cover the usual ways in; the rest
+  needs per-test outcomes. A check's run record says when its output was
+  cut (`output_truncated`), and one killed by a signal is a failure, one
+  that outlives its timeout is unresolved (`incomplete`).
 
 - **`shake`:** `{"rounds": 1}` (up to 3). Every check that passed runs again, and the task needs review if a rerun fails. Each rerun changes three things:
   - the trusted Python tests' functions and classes are renamed;
