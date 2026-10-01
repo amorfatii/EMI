@@ -78,6 +78,9 @@ impl Runner<'_> {
     pub fn run(&self, copy: &Copy, argv: &[String], timeout: Duration) -> Outcome {
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
         let mut spec = Spec::new(&argv, &copy.dir);
+        // a listing or a report with one line per test outgrows the
+        // default limit on a large suite
+        spec.output_limit = 32 << 20;
         spec.timeout = timeout;
         spec.isolation = Isolation::Best {
             network: self.network,

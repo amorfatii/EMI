@@ -428,7 +428,9 @@ fn inventory_ids(
     mounts: Mounts,
 ) -> std::result::Result<std::collections::BTreeSet<String>, String> {
     let timeout = inv["timeout_s"].as_f64().unwrap_or(300.0);
-    let spec = exec_spec(&inv["command"], workspace, execution, timeout, mounts)?;
+    let mut spec = exec_spec(&inv["command"], workspace, execution, timeout, mounts)?;
+    // one line per test: a large suite's listing outgrows the default limit
+    spec.output_limit = EVIDENCE_OUTPUT_LIMIT;
     let o = emi_exec::run(&spec);
     if sandbox_required(execution) && o.receipt.isolation != "bwrap" {
         return Err("the inventory could not run sandboxed (bubblewrap unavailable)".into());

@@ -219,12 +219,14 @@ fn a_listing_whose_lines_are_not_test_ids_is_unverified_not_empty() {
     );
 }
 
-/// A listing of 40000 ids, more than the 1 MiB of output the controller
-/// keeps, from which `skip.txt` removes the ids it names.
+/// A listing of 40000 long ids, more than the 32 MiB of output the
+/// controller keeps of a listing, from which `skip.txt` removes the ids it
+/// names.
 fn long_listing() -> Value {
     let code = "import re\nomit = set(open('skip.txt').read().split())\n\
+                pad = 'x' * 900\n\
                 for i in range(40000):\n    n = f'test_{i:05d}'\n    \
-                if n not in omit:\n        print(f'tests/test_long.py::{n}')\n";
+                if n not in omit:\n        print(f'tests/test_long.py::{n}_{pad}')\n";
     json!({"command": ["python3", "-c", code], "format": "pytest"})
 }
 
