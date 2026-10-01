@@ -118,11 +118,14 @@ fn measurement_error(v: &Value) -> Option<String> {
     if let Some(test) = unknown_test {
         return Some(format!("{}: {}", test["id"], test["reason"]));
     }
+    // a function is unknown while a test the candidate added fails: that
+    // is the proposer's to repair, not something that could not be measured
+    let failing = v["failing_tests"].as_array().is_some_and(|t| !t.is_empty());
     let unknown_function = v["functions"]
         .as_array()?
         .iter()
         .any(|f| f["status"] == "unknown");
-    if v["status"] == "unknown" || unknown_function {
+    if !failing && (v["status"] == "unknown" || unknown_function) {
         return Some(
             v["not_measured"]
                 .as_array()?
@@ -155,6 +158,17 @@ mod tests {
                              {"file": "src/a.py", "function": "g", "line": 20, "status": "unproven"}],
                "proving_tests": [], "redundant_tests": [{"id": "tests/t.py::test_extra"}],
                "unknown_tests": [], "not_measured": []})
+    }
+
+    #[test]
+    fn a_failing_added_test_is_not_a_measurement_fault() {
+        let c = ChangeEvidence::Measured(json!({"status": "unknown",
+            "functions": [{"file": "src/a.py", "function": "f", "line": 1, "status": "unknown"}],
+            "proving_tests": [], "redundant_tests": [], "unknown_tests": [],
+            "failing_tests": [{"id": "tests/t.py::test_w", "candidate_result": "failed"}],
+            "not_measured": ["src/a.py: f: an added test could not be classified"]}));
+        assert_eq!(c.fault(), None);
+        assert_eq!(c.facts().failing_tests, 1);
     }
 
     #[test]
