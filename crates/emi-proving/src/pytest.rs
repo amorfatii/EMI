@@ -143,13 +143,24 @@ impl Command {
         &self.interpreter
     }
 
-    /// Print the node ids the configured command would run.
+    /// List the node ids the configured command would run, exactly (see
+    /// `emi_report.py`): the project's own options cannot change the form.
     pub fn list_argv(&self) -> Vec<String> {
-        let mut argv = self.launcher.clone();
+        let mut argv = self.reporter();
         argv.extend(self.without(&[VERBOSITY]));
         argv.extend(self.selectors.clone());
         argv.extend(["--collect-only", "-q", "-p", "no:cacheprovider"].map(str::to_owned));
         argv
+    }
+
+    /// The tests' own Python running the reporter in place of `-m pytest`;
+    /// the import path is the same (the current directory first).
+    fn reporter(&self) -> Vec<String> {
+        vec![
+            self.interpreter.clone(),
+            "-c".to_owned(),
+            include_str!("emi_report.py").to_owned(),
+        ]
     }
 
     /// Run what the configured command runs, ending with one exact outcome
@@ -158,11 +169,7 @@ impl Command {
     /// tests' own Python with the reporter in place of `-m pytest`; the
     /// import path is the same (the current directory first).
     pub fn report_argv(&self) -> Vec<String> {
-        let mut argv = vec![
-            self.interpreter.clone(),
-            "-c".to_owned(),
-            include_str!("emi_report.py").to_owned(),
-        ];
+        let mut argv = self.reporter();
         argv.extend(self.without(&[VERBOSITY, &["--tb"]]));
         argv.extend(self.selectors.clone());
         // a file that cannot be imported must not keep the others from
@@ -248,7 +255,8 @@ pub fn uncollected_files(stdout: &str) -> BTreeSet<String> {
         .lines()
         .filter_map(|l| {
             let line = l.trim().trim_matches('_').trim();
-            line.strip_prefix("ERROR collecting ")
+            line.strip_prefix("EMI-BROKEN ")
+                .or_else(|| line.strip_prefix("ERROR collecting "))
                 .or_else(|| line.strip_prefix("ERROR "))
         })
         .map(|rest| rest.split(" - ").next().unwrap_or(rest).trim())
@@ -257,8 +265,34 @@ pub fn uncollected_files(stdout: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The exact listing the reporter prints (`EMI-ITEM <id>` lines closed by
+/// `EMI-ITEMS <count>`): `None` when the output holds none, `Err` when it
+/// is cut short or does not add up.
+pub fn reporter_listing(stdout: &str) -> Option<Result<BTreeSet<String>, String>> {
+    let mut ids = BTreeSet::new();
+    let (mut rows, mut closed) = (0usize, None);
+    for line in stdout.lines() {
+        if let Some(count) = line.strip_prefix("EMI-ITEMS ") {
+            closed = count.trim().parse::<usize>().ok();
+        } else if let Some(id) = line.strip_prefix("EMI-ITEM ") {
+            rows += 1;
+            ids.insert(id.to_owned());
+        }
+    }
+    match (rows, closed) {
+        (0, None) => None,
+        (n, Some(count)) if n == count => Some(Ok(ids)),
+        _ => Some(Err(
+            "the listing of tests is cut short or does not add up to its own count".to_owned(),
+        )),
+    }
+}
+
 /// The node ids in the output of `pytest --collect-only -q`.
 pub fn parse_listing(stdout: &str) -> Result<BTreeSet<String>, String> {
+    if let Some(exact) = reporter_listing(stdout) {
+        return exact;
+    }
     let ids: BTreeSet<String> = stdout
         .lines()
         .skip_while(|l| l.trim().is_empty())

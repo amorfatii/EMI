@@ -386,18 +386,15 @@ mod tests {
         assert_eq!(spec["verification"]["runner_config"], "review");
         assert_eq!(spec["envelope"]["permitted_paths"], json!(["*"]));
         assert!(spec["envelope"].get("protected_paths").is_none());
-        let inventory = &spec["verification"]["inventory"]["command"];
+        let inventory = names(&spec["verification"]["inventory"]["command"]);
+        assert_eq!((inventory[0], inventory[1]), (".venv/bin/python", "-c"));
+        assert!(
+            inventory[2].contains("EMI-ITEM"),
+            "the reporter lists the tests"
+        );
         assert_eq!(
-            inventory,
-            &json!([
-                ".venv/bin/python",
-                "-m",
-                "pytest",
-                "--collect-only",
-                "-q",
-                "-p",
-                "no:cacheprovider"
-            ])
+            inventory[3..],
+            ["--collect-only", "-q", "-p", "no:cacheprovider"]
         );
         let command = names(&spec["checks"]["tests"]["command"]);
         assert_eq!((command[0], command[1]), (".venv/bin/python", "-c"));

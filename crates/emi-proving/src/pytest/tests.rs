@@ -41,10 +41,28 @@ fn only_pytest_invocations_are_recognised() {
 #[test]
 fn listing_keeps_the_selectors_and_one_quiet_flag() {
     let c = command("python -m pytest -q -vv -k slow tests/unit -x");
+    let listing = c.list_argv();
+    // the tests' own Python runs the reporter, which calls pytest
+    assert_eq!((listing[0].as_str(), listing[1].as_str()), ("python", "-c"));
+    assert!(listing[2].contains("EMI-ITEM"));
     assert_eq!(
-        c.list_argv(),
-        argv("python -m pytest -k slow -x tests/unit --collect-only -q -p no:cacheprovider")
+        listing[3..],
+        argv("-k slow -x tests/unit --collect-only -q -p no:cacheprovider")
     );
+}
+
+#[test]
+fn the_reporters_listing_is_exact_and_must_be_whole() {
+    let out = "<Module tests/t.py>\n  <Function test_a>\n\nEMI-ITEM tests/t.py::test_a\nEMI-ITEM tests/t.py::test_p[x y]\nEMI-BROKEN tests/broken.py\nEMI-ITEMS 2\n";
+    let ids = parse_listing(out).unwrap_or_default();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains("tests/t.py::test_p[x y]"));
+    assert_eq!(
+        uncollected_files(out).into_iter().collect::<Vec<_>>(),
+        ["tests/broken.py"]
+    );
+    assert!(parse_listing("EMI-ITEM tests/t.py::test_a\n").is_err());
+    assert!(parse_listing("EMI-ITEM tests/t.py::test_a\nEMI-ITEMS 3\n").is_err());
 }
 
 #[test]

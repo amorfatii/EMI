@@ -474,6 +474,9 @@ fn parse_inventory(
     stdout: &str,
     pytest: bool,
 ) -> std::result::Result<std::collections::BTreeSet<String>, String> {
+    if pytest && let Some(exact) = reporter_inventory(stdout) {
+        return exact;
+    }
     let lines: Vec<&str> = stdout
         .lines()
         .map(str::trim_end)
@@ -502,6 +505,31 @@ fn parse_inventory(
         ));
     }
     Ok(ids)
+}
+
+/// The exact listing a reporter inside the runner printed: `EMI-ITEM <id>`
+/// per test, closed by `EMI-ITEMS <count>`. `None` when the output holds no
+/// such listing; an error when it is cut short or does not add up.
+fn reporter_inventory(
+    stdout: &str,
+) -> Option<std::result::Result<std::collections::BTreeSet<String>, String>> {
+    let mut ids = std::collections::BTreeSet::new();
+    let (mut rows, mut closed) = (0usize, None);
+    for line in stdout.lines() {
+        if let Some(count) = line.strip_prefix("EMI-ITEMS ") {
+            closed = count.trim().parse::<usize>().ok();
+        } else if let Some(id) = line.strip_prefix("EMI-ITEM ") {
+            rows += 1;
+            ids.insert(id.to_owned());
+        }
+    }
+    match (rows, closed) {
+        (0, None) => None,
+        (n, Some(count)) if n == count => Some(Ok(ids)),
+        _ => Some(Err(
+            "the inventory's listing is cut short or does not add up to its own count".to_owned(),
+        )),
+    }
 }
 
 /// Test-runner configuration the candidate added: restoring only undoes

@@ -53,6 +53,16 @@ class Report:
         self.skipped, self.passed = False, not failed
 
 
+class Item:
+    def __init__(self, nodeid):
+        self.nodeid = nodeid
+
+
+class Session:
+    def __init__(self, ids):
+        self.items = [Item(i) for i in ids]
+
+
 def tell(plugins, hook, *args):
     for plugin in plugins:
         if hasattr(plugin, hook):
@@ -76,6 +86,7 @@ def run(argv, plugins):
         else:
             ids += [f"{path}::{n}" for n in names]
     if "--collect-only" in argv:
+        tell(plugins, "pytest_collection_finish", Session(ids))
         print("\n".join(ids))
         print()
         print(f"{len(ids)} tests collected in 0.01s")

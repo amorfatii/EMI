@@ -366,3 +366,16 @@ fn outcomes_are_read_exactly_when_tests_print_to_the_terminal() {
         "{receipt}"
     );
 }
+
+#[test]
+fn the_listing_is_exact_whatever_the_projects_own_options() {
+    let p = Project::new();
+    // the project's options make pytest verbose: its plain listing is then
+    // a tree of names, not ids
+    p.write("pytest.ini", "[pytest]\npythonpath = .\naddopts = -v\n");
+    p.commit("verbose by default");
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    assert_eq!(receipt["regression"]["tests_run"], 2, "{receipt}");
+}
