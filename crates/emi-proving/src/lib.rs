@@ -15,6 +15,24 @@
 //! The pure parts (reading JUnit XML, classifying a test, judging a
 //! function, the status rule) are separate from the sandboxed runs, so each
 //! has its own truth table.
+//!
+//! What the result does not say:
+//!
+//! - Tests are run as chosen node ids, one file per run, so a test that
+//!   depends on another running first is judged without it.
+//! - A test file that fails to import at the baseline (it names a function
+//!   the candidate added) reports one error for the whole file, so every
+//!   added test in it is `errored` at the baseline, including ones that do
+//!   not use the new name.
+//! - A test file moved without git seeing a rename (too little in common)
+//!   looks like new tests, which pass at the baseline and so look redundant.
+//! - The stricter rule (a proving test must kill a mutant no other test
+//!   kills, `Request::strict`) is not measured: asking for it adds a
+//!   `not_measured` entry and changes nothing else.
+//! - The test report is written by a process the candidate controls. It is
+//!   cross-checked against the run's exit code and the listed ids, which
+//!   catches a report that disagrees with them, not one that lies
+//!   consistently.
 
 pub mod classify;
 pub mod evidence;
