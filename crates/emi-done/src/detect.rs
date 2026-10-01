@@ -127,8 +127,10 @@ fn test_globs(files: &[String]) -> Result<Vec<String>, Error> {
             (_, n) if n.starts_with("test_") && t.contains('/') => "*/test_*.py".to_owned(),
             (_, n) if n.starts_with("test_") => "test_*.py".to_owned(),
             (_, n) if n.ends_with("_test.py") => "*_test.py".to_owned(),
-            (Some(d), _) => format!("{d}/*"),
-            (None, _) => t.clone(),
+            // a lone test-like file inside a package (a test helper such
+            // as `pkg/testing/fixtures.py`) names itself: a glob over its
+            // top directory would declare the whole package to be tests
+            _ => t.clone(),
         };
         globs.push(glob);
     }
@@ -341,6 +343,20 @@ mod tests {
         let empty = repo();
         let err = detect(empty.path(), None).err().map(|e| e.to_string());
         assert!(err.is_some_and(|m| m.contains("no Python files")));
+    }
+
+    #[test]
+    fn a_test_helper_inside_a_package_does_not_make_the_package_tests() {
+        let files: Vec<String> = [
+            "sphinx/testing/fixtures.py",
+            "sphinx/app.py",
+            "tests/test_a.py",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let globs = test_globs(&files).unwrap_or_default();
+        assert!(!globs.iter().any(|g| g == "sphinx/*"), "{globs:?}");
+        assert!(globs.contains(&"tests/*".to_owned()), "{globs:?}");
     }
 
     #[test]
