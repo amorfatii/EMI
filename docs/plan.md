@@ -119,11 +119,11 @@ emi done [--repo .] [--baseline REF] [--setting cooperative|enforced]
 The top-level field is an `action`, not a verdict: the two evidence parts are
 the truth, and "stop" does not mean "correct".
 
-### Interface 3: the receipt (`emi-done-receipt-0.2`)
+### Interface 3: the receipt (`emi-done-receipt-0.3`)
 
 ```json
 {
-  "schema": "emi-done-receipt-0.2",
+  "schema": "emi-done-receipt-0.3",
   "repo": "/abs/path",
   "baseline": {"sha": "…", "source": "merge-base:main | session | explicit"},
   "candidate": {"id": "worktree | <sha>", "content_id": "<tree sha>"},
@@ -146,6 +146,7 @@ the truth, and "stop" does not mean "correct".
                    "status": "proven | unproven | unknown"}],
     "proving_tests": [{"id": "tests/test_a.py::test_new", "baseline_result": "failed | errored"}],
     "redundant_tests": [{"id": "tests/test_a.py::test_extra"}],
+    "failing_tests": [{"id": "tests/test_a.py::test_wip", "candidate_result": "failed | errored"}],
     "unknown_tests": [{"id": "…", "reason": "…"}],
     "not_measured": ["…"]
   },
@@ -167,6 +168,7 @@ Evaluated top to bottom; the first match wins.
 |---|---|
 | Any part could not be measured for an environment reason | `incomplete` |
 | `regression.status` is `broken` | `repair` |
+| `change.failing_tests` is not empty (a test the candidate added fails on it) | `repair` |
 | `change.redundant_tests` is not empty | `repair` |
 | `on_unproven` is `repair` and a function is `unproven` | `repair` |
 | A changed old test or changed runner configuration is not approved | `ask_person` |

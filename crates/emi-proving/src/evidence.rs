@@ -73,6 +73,14 @@ pub struct UnknownTest {
     pub reason: String,
 }
 
+/// A test the candidate adds that does not pass on the candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailingTest {
+    pub id: String,
+    /// `failed` or `errored`.
+    pub candidate_result: &'static str,
+}
+
 /// The `change` object of the receipt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeEvidence {
@@ -80,6 +88,7 @@ pub struct ChangeEvidence {
     pub functions: Vec<FunctionEvidence>,
     pub proving_tests: Vec<ProvingTest>,
     pub redundant_tests: Vec<String>,
+    pub failing_tests: Vec<FailingTest>,
     pub unknown_tests: Vec<UnknownTest>,
     /// Everything the measurement could not establish, and why.
     pub not_measured: Vec<String>,
@@ -98,6 +107,7 @@ impl ChangeEvidence {
             functions,
             proving_tests: Vec::new(),
             redundant_tests: Vec::new(),
+            failing_tests: Vec::new(),
             unknown_tests: Vec::new(),
             not_measured: reasons,
             isolation: None,
@@ -110,6 +120,7 @@ impl ChangeEvidence {
             .sort_by(|a, b| (&a.file, a.line, &a.function).cmp(&(&b.file, b.line, &b.function)));
         self.proving_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.redundant_tests.sort();
+        self.failing_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.unknown_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.not_measured.sort();
         self.not_measured.dedup();
@@ -132,6 +143,9 @@ impl ChangeEvidence {
             })).collect::<Vec<_>>(),
             "redundant_tests": self.redundant_tests.iter()
                 .map(|id| json!({"id": id})).collect::<Vec<_>>(),
+            "failing_tests": self.failing_tests.iter()
+                .map(|t| json!({"id": t.id, "candidate_result": t.candidate_result}))
+                .collect::<Vec<_>>(),
             "unknown_tests": self.unknown_tests.iter()
                 .map(|t| json!({"id": t.id, "reason": t.reason})).collect::<Vec<_>>(),
             "not_measured": self.not_measured,
@@ -197,6 +211,10 @@ mod tests {
                 "tests/test_a.py::test_z".into(),
                 "tests/test_a.py::test_a".into(),
             ],
+            failing_tests: vec![FailingTest {
+                id: "tests/test_a.py::test_w".into(),
+                candidate_result: "failed",
+            }],
             unknown_tests: vec![UnknownTest {
                 id: "tests/test_a.py::test_s".into(),
                 reason: "skipped".into(),
@@ -220,6 +238,9 @@ mod tests {
                 "redundant_tests": [
                     {"id": "tests/test_a.py::test_a"},
                     {"id": "tests/test_a.py::test_z"},
+                ],
+                "failing_tests": [
+                    {"id": "tests/test_a.py::test_w", "candidate_result": "failed"},
                 ],
                 "unknown_tests": [{"id": "tests/test_a.py::test_s", "reason": "skipped"}],
                 "not_measured": ["a", "b"],

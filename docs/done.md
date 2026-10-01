@@ -52,7 +52,7 @@ pinned again; enforced verification refuses them (`incomplete`).
 
 ### The receipt
 
-`--format json` prints the receipt in canonical JSON (`emi-done-receipt-0.2`);
+`--format json` prints the receipt in canonical JSON (`emi-done-receipt-0.3`);
 `--format text` is the same in plain words and is the default on a terminal.
 
 - **Regression**: `held`, `broken` or `unknown`, with the tests run, the

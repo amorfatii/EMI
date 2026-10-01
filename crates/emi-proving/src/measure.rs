@@ -10,6 +10,7 @@ use emi_diff::{hunks, snapshot};
 use emi_profile::sandbox::{Copy, Runner};
 
 use crate::classify::{Verdict, classify, failed_at_baseline};
+use crate::evidence::FailingTest;
 use crate::evidence::{ChangeEvidence, FunctionEvidence, ProvingTest, UnknownTest, status_of};
 use crate::exec::Session;
 use crate::junit::Observed;
@@ -92,6 +93,7 @@ struct Context<'a> {
 struct Classified {
     proving: Vec<ProvingTest>,
     redundant: Vec<String>,
+    failing: Vec<FailingTest>,
     unknown: Vec<UnknownTest>,
     coverage: Option<(Copy, crate::exec::Coverage)>,
 }
@@ -300,6 +302,10 @@ impl Context<'_> {
                     baseline_result,
                 }),
                 Verdict::Redundant => out.redundant.push(id.clone()),
+                Verdict::Failing(candidate_result) => out.failing.push(FailingTest {
+                    id: id.clone(),
+                    candidate_result,
+                }),
                 Verdict::Unknown(reason) => out.unknown.push(UnknownTest {
                     id: id.clone(),
                     reason,
@@ -317,9 +323,13 @@ impl Context<'_> {
     ) -> ChangeEvidence {
         let mut evidence = ChangeEvidence::unknown(Vec::new(), Vec::new());
         let ids: Vec<String> = classified.proving.iter().map(|t| t.id.clone()).collect();
-        let unclassified = classified.unknown.len();
+        // a failing added test may yet prove the change once it passes,
+        // so it keeps a function from being called unproven, like one
+        // that could not be classified
+        let unclassified = classified.unknown.len() + classified.failing.len();
         evidence.proving_tests = classified.proving;
         evidence.redundant_tests = classified.redundant;
+        evidence.failing_tests = classified.failing;
         evidence.unknown_tests = classified.unknown;
         let changed = match changed {
             Ok(changed) => changed,

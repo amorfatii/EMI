@@ -53,12 +53,14 @@ pub fn command(repo: &Path) -> Command {
     cmd
 }
 
-fn failure(args: &[&str], stderr: &[u8]) -> String {
+/// Why a git command failed: what it printed, and how it ended. A command
+/// that was killed prints nothing, so the status is always stated.
+fn failure(args: &[&str], stderr: &[u8], status: std::process::ExitStatus) -> String {
     let detail = String::from_utf8_lossy(&stderr[..stderr.len().min(300)])
         .trim()
         .to_owned();
     format!(
-        "git {} failed: {detail}",
+        "git {} failed ({status}): {detail}",
         args.iter().take(3).copied().collect::<Vec<_>>().join(" ")
     )
 }
@@ -97,9 +99,9 @@ pub fn run_with(
     if out.status.success() {
         Ok(out.stdout)
     } else if out.stderr.is_empty() {
-        Err(failure(args, &out.stdout))
+        Err(failure(args, &out.stdout, out.status))
     } else {
-        Err(failure(args, &out.stderr))
+        Err(failure(args, &out.stderr, out.status))
     }
 }
 

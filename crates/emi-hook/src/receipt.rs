@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::decision::{Action, DoneResult};
 
 /// Current schema; the previous additive form remains readable.
-pub const SCHEMA: &str = "emi-done-receipt-0.2";
+pub const SCHEMA: &str = "emi-done-receipt-0.3";
 
 /// Items listed before the rest are only counted.
 const LIST_LIMIT: usize = 5;

@@ -1,4 +1,4 @@
-//! The receipt (`emi-done-receipt-0.2`): the two evidence parts, the
+//! The receipt (`emi-done-receipt-0.3`): the two evidence parts, the
 //! changed old tests, the action, and what none of it establishes. The
 //! change part arrives as a value ([`ChangeEvidence`]); everything else is
 //! assembled from what this crate measured.
@@ -16,7 +16,7 @@ use crate::config::OnUnproven;
 use crate::oldtests::Entry;
 use crate::regression::{Regression, Status};
 
-pub const SCHEMA: &str = "emi-done-receipt-0.2";
+pub const SCHEMA: &str = "emi-done-receipt-0.3";
 
 /// Everything a receipt is made of.
 pub struct Parts<'a> {
@@ -60,6 +60,7 @@ fn facts(p: &Parts) -> action::Facts {
     action::Facts {
         faults: faults(p),
         regression_broken: p.regression.status == Status::Broken,
+        failing_tests: change.failing_tests,
         redundant_tests: change.redundant_tests,
         unproven_functions: change.unproven_functions,
         on_unproven: p.on_unproven,
@@ -88,6 +89,11 @@ fn repair_line(p: &Parts) -> Option<String> {
                 r.reasons.first().map_or("see the receipt", String::as_str)
             ),
         });
+    }
+    if let Some(id) = &change.first_failing {
+        return Some(format!(
+            "{id} is a test you added and it fails on your change; fix the code or the test."
+        ));
     }
     if let Some(id) = &change.first_redundant {
         return Some(format!(

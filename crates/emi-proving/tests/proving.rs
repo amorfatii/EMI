@@ -328,7 +328,7 @@ fn a_change_outside_functions_has_no_change_to_prove() {
 }
 
 #[test]
-fn a_test_that_fails_on_the_candidate_too_is_unknown_not_proving() {
+fn a_test_that_fails_on_the_candidate_too_is_failing_not_proving() {
     let fx = Fixture::new();
     fx.write(&[
         ("src/calc.py", ADD_FIXED),
@@ -340,12 +340,10 @@ fn a_test_that_fails_on_the_candidate_too_is_unknown_not_proving() {
     fx.commit("a wrong test");
     let v = change(&fx.request()).to_json();
     assert_eq!(v["proving_tests"], json!([]));
-    let unknown = &v["unknown_tests"][0];
-    assert_eq!(unknown["id"], "tests/test_calc.py::test_wrong");
-    assert!(
-        unknown["reason"]
-            .as_str()
-            .is_some_and(|r| r.contains("candidate")),
+    assert_eq!(v["unknown_tests"], json!([]), "{v}");
+    assert_eq!(
+        v["failing_tests"],
+        json!([{"id": "tests/test_calc.py::test_wrong", "candidate_result": "failed"}]),
         "{v}"
     );
     // the change cannot be called unproven while a test may yet prove it

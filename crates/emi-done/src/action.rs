@@ -38,6 +38,8 @@ pub struct Facts {
     /// Parts that could not be measured for an environment reason.
     pub faults: Vec<String>,
     pub regression_broken: bool,
+    /// Tests the candidate adds that do not pass on it.
+    pub failing_tests: usize,
     pub redundant_tests: usize,
     pub unproven_functions: usize,
     pub on_unproven: OnUnproven,
@@ -47,9 +49,10 @@ pub struct Facts {
 
 /// Evaluated top to bottom; the first row that matches wins.
 pub fn decide(f: &Facts) -> Action {
-    let rows: [(bool, Action); 5] = [
+    let rows: [(bool, Action); 6] = [
         (!f.faults.is_empty(), Action::Incomplete),
         (f.regression_broken, Action::Repair),
+        (f.failing_tests > 0, Action::Repair),
         (f.redundant_tests > 0, Action::Repair),
         (
             f.on_unproven == OnUnproven::Repair && f.unproven_functions > 0,
@@ -70,6 +73,7 @@ mod tests {
         Facts {
             faults: Vec::new(),
             regression_broken: false,
+            failing_tests: 0,
             redundant_tests: 0,
             unproven_functions: 0,
             on_unproven: OnUnproven::Report,
@@ -88,6 +92,11 @@ mod tests {
                 Action::Incomplete,
             ),
             ("broken", |f| f.regression_broken = true, Action::Repair),
+            (
+                "failing added test",
+                |f| f.failing_tests = 1,
+                Action::Repair,
+            ),
             ("redundant", |f| f.redundant_tests = 1, Action::Repair),
             (
                 "unproven, report",
@@ -125,6 +134,7 @@ mod tests {
         let all = Facts {
             faults: vec!["x".into()],
             regression_broken: true,
+            failing_tests: 1,
             redundant_tests: 1,
             unproven_functions: 1,
             on_unproven: OnUnproven::Repair,
@@ -138,6 +148,7 @@ mod tests {
         assert_eq!(decide(&no_fault), Action::Repair);
         let only_person = Facts {
             regression_broken: false,
+            failing_tests: 0,
             redundant_tests: 0,
             unproven_functions: 0,
             faults: Vec::new(),

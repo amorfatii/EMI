@@ -28,6 +28,9 @@ impl BaselineResult {
 pub enum Verdict {
     Proving(BaselineResult),
     Redundant,
+    /// It fails on the candidate (`failed` or `errored`): the proposer's
+    /// own test does not pass on the proposer's own change.
+    Failing(&'static str),
     Unknown(String),
 }
 
@@ -62,6 +65,8 @@ pub fn classify(baseline: &Observed, candidate: Option<&Observed>) -> Verdict {
     match candidate {
         Some(Observed::Passed) => Verdict::Proving(result),
         Some(Observed::Unknown(why)) => Verdict::Unknown(format!("on the candidate: {why}")),
+        Some(Observed::Failed) => Verdict::Failing("failed"),
+        Some(Observed::Errored) => Verdict::Failing("errored"),
         Some(other) => Verdict::Unknown(format!(
             "it {} at the baseline and {} on the candidate",
             shown(baseline),
@@ -90,6 +95,11 @@ mod tests {
             (Passed, None, Verdict::Redundant),
             (Passed, Some(Failed), Verdict::Redundant),
             (Passed, Some(unknown()), Verdict::Redundant),
+            // fails at the baseline and still fails: the proposer's own test
+            // does not pass on the proposer's own change
+            (Failed, Some(Failed), Verdict::Failing("failed")),
+            (Failed, Some(Errored), Verdict::Failing("errored")),
+            (Errored, Some(Failed), Verdict::Failing("failed")),
         ];
         for (baseline, candidate, want) in cases {
             assert_eq!(
@@ -104,11 +114,8 @@ mod tests {
             (unknown(), None),
             (unknown(), Some(Passed)),
             (Failed, None),
-            (Failed, Some(Failed)),
-            (Failed, Some(Errored)),
             (Failed, Some(Skipped)),
             (Failed, Some(unknown())),
-            (Errored, Some(Failed)),
             (Errored, Some(Skipped)),
         ];
         for (baseline, candidate) in others {

@@ -238,12 +238,18 @@ fn is_file_count(line: &str) -> bool {
     })
 }
 
-/// The test files a listing or a run could not collect, from its short
-/// summary (`ERROR tests/test_a.py - ImportError: ...`).
+/// The test files a listing or a run could not collect: from its short
+/// summary (`ERROR tests/test_a.py - ImportError: ...`), or, for a pytest
+/// too old to print one, from the heading of its error report
+/// (`____ ERROR collecting tests/test_a.py ____`).
 pub fn uncollected_files(stdout: &str) -> BTreeSet<String> {
     stdout
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("ERROR "))
+        .filter_map(|l| {
+            let line = l.trim().trim_matches('_').trim();
+            line.strip_prefix("ERROR collecting ")
+                .or_else(|| line.strip_prefix("ERROR "))
+        })
         .map(|rest| rest.split(" - ").next().unwrap_or(rest).trim())
         .filter(|f| f.ends_with(".py") && !f.contains("::") && !f.contains(char::is_whitespace))
         .map(str::to_owned)

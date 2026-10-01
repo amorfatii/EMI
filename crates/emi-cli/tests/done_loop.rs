@@ -192,3 +192,38 @@ fn old_skips_and_old_failures_do_not_block_but_a_test_that_stops_running_does() 
         "{receipt}"
     );
 }
+
+#[test]
+fn an_added_test_that_fails_sends_the_proposer_back() {
+    let p = Project::new();
+    p.write(
+        "tests/test_new.py",
+        "from app import add\n\ndef test_none():\n    assert add(None, 2) == 2\n",
+    );
+    let (code, receipt) = p.done(&[]);
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "broken", "{receipt}");
+
+    // appended to an old file, the failing test is not part of the
+    // regression run (the file runs in its baseline form): still a repair
+    let fresh = Project::new();
+    let old = std::fs::read_to_string(fresh.path().join("tests/test_app.py")).expect("old test");
+    fresh.write(
+        "tests/test_app.py",
+        &format!("{old}\n\ndef test_none():\n    assert add(None, 2) == 2\n"),
+    );
+    let (code, receipt) = fresh.done(&[]);
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    assert_eq!(
+        receipt["change"]["failing_tests"][0]["id"], "tests/test_app.py::test_none",
+        "{receipt}"
+    );
+    assert!(
+        receipt["repair"][0]
+            .as_str()
+            .expect("repair line")
+            .contains("test_none"),
+        "{receipt}"
+    );
+}

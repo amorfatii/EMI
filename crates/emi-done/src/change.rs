@@ -22,6 +22,9 @@ pub enum ChangeEvidence {
 /// What the action table reads from the change part.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
+    /// Tests the candidate adds that do not pass on it.
+    pub failing_tests: usize,
+    pub first_failing: Option<String>,
     pub redundant_tests: usize,
     pub unproven_functions: usize,
     pub first_redundant: Option<String>,
@@ -40,7 +43,8 @@ const LISTS: &[&str] = &[
 /// The `change` object for evidence that was not or could not be measured.
 fn unmeasured(reason: &str) -> Value {
     json!({"status": "unknown", "functions": [], "proving_tests": [],
-           "redundant_tests": [], "unknown_tests": [], "not_measured": [reason]})
+           "redundant_tests": [], "failing_tests": [], "unknown_tests": [],
+           "not_measured": [reason]})
 }
 
 fn function_name(f: &Value) -> String {
@@ -92,7 +96,13 @@ impl ChangeEvidence {
             .flatten()
             .filter(|f| f["status"] == "unproven")
             .collect();
+        // absent in evidence measured before the list existed: none
+        let failing = v["failing_tests"].as_array().map_or(&[][..], Vec::as_slice);
         Facts {
+            failing_tests: failing.len(),
+            first_failing: failing
+                .first()
+                .map(|t| t["id"].as_str().unwrap_or("?").to_owned()),
             redundant_tests: redundant.len(),
             unproven_functions: unproven.len(),
             first_redundant: redundant
@@ -154,6 +164,8 @@ mod tests {
         assert_eq!(
             c.facts(),
             Facts {
+                failing_tests: 0,
+                first_failing: None,
                 redundant_tests: 1,
                 unproven_functions: 1,
                 first_redundant: Some("tests/t.py::test_extra".into()),
