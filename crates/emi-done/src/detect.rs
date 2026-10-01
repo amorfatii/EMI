@@ -123,6 +123,84 @@ fn python_path(files: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Absolute paths quoted in `text` (`'/a/b'` or `"/a/b"`).
+fn quoted_paths(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for quote in ['\'', '"'] {
+        let mut parts = text.split(quote);
+        parts.next();
+        // every second piece is inside a pair of quotes
+        while let Some(inside) = parts.next() {
+            if inside.starts_with('/') {
+                out.push(inside);
+            }
+            parts.next();
+        }
+    }
+    out
+}
+
+/// The directories one site-packages entry adds to the import path, when
+/// it is how an editable install does it: a `.pth` file's absolute path
+/// lines, or the package directories an editable finder maps to (their
+/// parents are the import roots).
+fn editable_targets(file: &Path) -> Vec<PathBuf> {
+    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let finder = name.starts_with("__editable___") && name.ends_with("_finder.py");
+    if !finder && !name.ends_with(".pth") {
+        return Vec::new();
+    }
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return Vec::new();
+    };
+    if finder {
+        return text
+            .lines()
+            .filter(|l| l.starts_with("MAPPING"))
+            .flat_map(quoted_paths)
+            .filter_map(|p| Path::new(p).parent().map(Path::to_path_buf))
+            .collect();
+    }
+    text.lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('/'))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Import roots inside this repository that the environment's editable
+/// installs point at: where the project's own code is imported from in
+/// the developer's checkout, whatever its layout. The repository root
+/// itself needs no entry.
+fn editable_roots(repo: &Path) -> Vec<String> {
+    let Ok(root) = repo.canonicalize() else {
+        return Vec::new();
+    };
+    let mut roots = Vec::new();
+    for venv in VENVS {
+        let Ok(pythons) = std::fs::read_dir(repo.join(venv).join("lib")) else {
+            continue;
+        };
+        for site in pythons.flatten().map(|e| e.path().join("site-packages")) {
+            let Ok(entries) = std::fs::read_dir(&site) else {
+                continue;
+            };
+            for target in entries.flatten().flat_map(|e| editable_targets(&e.path())) {
+                let inside = target.canonicalize().ok();
+                let rel = inside.as_deref().and_then(|t| t.strip_prefix(&root).ok());
+                if let Some(rel) = rel.map(|r| r.to_string_lossy().into_owned())
+                    && !rel.is_empty()
+                    && !roots.contains(&rel)
+                {
+                    roots.push(rel);
+                }
+            }
+        }
+    }
+    roots.sort();
+    roots
+}
+
 /// Most generated files `emi init` links one by one.
 const MAX_GENERATED: usize = 20;
 
@@ -331,7 +409,12 @@ pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Dete
     let files = files(repo)?;
     language(&files)?;
     let python = python(repo)?;
-    let python_path = python_path(&files);
+    let mut python_path = python_path(&files);
+    for root in editable_roots(repo) {
+        if !python_path.contains(&root) {
+            python_path.push(root);
+        }
+    }
     let branch = match default_branch_override {
         Some(b) => b.to_owned(),
         None => default_branch(repo)?,
@@ -458,6 +541,41 @@ mod tests {
             Config::from_value(&d.config.to_value()).ok().as_ref(),
             Some(&d.config)
         );
+    }
+
+    #[test]
+    fn import_roots_come_from_the_environments_editable_installs() {
+        let dir = repo();
+        commit_file(dir.path(), "py/app/__init__.py", "", "pkg");
+        commit_file(dir.path(), "libs/core/kiln/__init__.py", "", "pkg");
+        commit_file(
+            dir.path(),
+            "tests/test_a.py",
+            "def test_a():\n    pass\n",
+            "test",
+        );
+        let root = dir.path().canonicalize().unwrap_or_default();
+        let site = dir.path().join(".venv/lib/python3.12/site-packages");
+        std::fs::create_dir_all(&site).unwrap_or_default();
+        std::fs::create_dir_all(dir.path().join(".venv/bin")).unwrap_or_default();
+        std::fs::write(dir.path().join(".venv/bin/python"), "").unwrap_or_default();
+        // a path-style editable install, one of another checkout, and a
+        // finder-style one
+        std::fs::write(
+            site.join("_editable_impl_app.pth"),
+            format!("{}/py\n/somewhere/else/src\nimport os\n", root.display()),
+        )
+        .unwrap_or_default();
+        std::fs::write(
+            site.join("__editable___kiln_1_0_finder.py"),
+            format!(
+                "MAPPING: dict[str, str] = {{'kiln': '{}/libs/core/kiln'}}\n",
+                root.display()
+            ),
+        )
+        .unwrap_or_default();
+        let d = detect(dir.path(), None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(d.config.python_path, ["libs/core", "py"]);
     }
 
     #[test]
