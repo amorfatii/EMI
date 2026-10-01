@@ -79,15 +79,25 @@ pub fn measure(
     run: &CoverageRun,
     files: &BTreeSet<String>,
 ) -> (Result<Resolved, String>, Value) {
+    match runner.copy("coverage") {
+        Ok(copy) => measure_in(runner, &copy, run, files),
+        Err(e) => (Err(e), json!({"output": run.output})),
+    }
+}
+
+/// [`measure`] in a copy the caller made, which it keeps to read whatever
+/// else the commands wrote there.
+pub fn measure_in(
+    runner: &Runner,
+    copy: &crate::sandbox::Copy,
+    run: &CoverageRun,
+    files: &BTreeSet<String>,
+) -> (Result<Resolved, String>, Value) {
     if run.commands.is_empty() || !relative(&run.output) {
         let why = "coverage run needs at least one command and a relative --coverage-output path";
         return (Err(why.into()), json!({"output": run.output}));
     }
-    let copy = match runner.copy("coverage") {
-        Ok(c) => c,
-        Err(e) => return (Err(e), json!({"output": run.output})),
-    };
-    let (records, failed) = steps(runner, &copy, run);
+    let (records, failed) = steps(runner, copy, run);
     let record = json!({"output": run.output, "steps": records});
     if let Some(why) = failed {
         return (Err(why), record);
