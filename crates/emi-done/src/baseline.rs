@@ -32,22 +32,45 @@ pub struct Baseline {
     pub source: String,
 }
 
-/// The rule when no baseline was given, on already resolved commits: the
-/// merge base of HEAD and the default branch, unless that is HEAD itself.
-/// There the branch has not split off (HEAD is on the default branch, or
-/// behind it), no earlier commit says where the task began, and guessing
-/// one would measure the wrong change.
-pub fn from_merge_base(head: &str, merge_base: &str, branch: &str) -> Result<Baseline, Error> {
-    if merge_base == head {
+/// The rule when no baseline was given, on already resolved commits. The
+/// merge base of HEAD and the default branch is the baseline, even when it
+/// is HEAD itself: a branch just cut from the default branch has not split
+/// off yet, but it did start there. Two cases have no such point and need a
+/// baseline from the caller: HEAD is on the default branch itself, so no
+/// earlier commit says where the work began; or HEAD is detached at the
+/// merge base, so nothing says what it belongs to. Guessing either would
+/// measure the wrong change.
+pub fn from_merge_base(
+    head: &str,
+    merge_base: &str,
+    branch: &str,
+    current: Option<&str>,
+) -> Result<Baseline, Error> {
+    let on_default = current == Some(branch);
+    let detached_at_base = current.is_none() && merge_base == head;
+    if on_default || detached_at_base {
+        let place = if on_default {
+            format!("HEAD is on the default branch ({branch})")
+        } else {
+            format!("HEAD is detached at its merge base with {branch}")
+        };
         return Err(Error::Usage(format!(
-            "HEAD is on the default branch ({branch}), so there is no point where this work \
-             split off; pass --baseline REF (the hook passes the session baseline)"
+            "{place}, so there is no point where this work began; pass --baseline REF (the hook \
+             passes the session baseline)"
         )));
     }
     Ok(Baseline {
         sha: merge_base.to_owned(),
         source: format!("merge-base:{branch}"),
     })
+}
+
+/// The branch HEAD is on, `None` when it is detached.
+fn current_branch(repo: &Path) -> Result<Option<String>, Error> {
+    let out = emi_git::run(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map_err(|e| Error::Usage(format!("cannot tell which branch HEAD is on: {e}")))?;
+    let name = String::from_utf8_lossy(&out).trim().to_owned();
+    Ok((name != "HEAD").then_some(name))
 }
 
 /// The baseline for `repo`: the given one, or the merge base with
@@ -78,7 +101,12 @@ pub fn resolve(
             "no common history between HEAD and {default_branch} ({e}); pass --baseline REF"
         ))
     })?;
-    from_merge_base(&head, &base, default_branch)
+    from_merge_base(
+        &head,
+        &base,
+        default_branch,
+        current_branch(repo)?.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -87,15 +115,47 @@ mod tests {
     use crate::testutil::{commit_file, git, git_out, repo};
 
     #[test]
-    fn the_merge_base_is_the_baseline_unless_it_is_head() {
+    fn the_merge_base_rule_by_where_head_is() {
         let (a, b) = ("a".repeat(40), "b".repeat(40));
-        let got = from_merge_base(&a, &b, "main").unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(
-            (got.sha, got.source),
-            (b.clone(), "merge-base:main".to_owned())
-        );
-        let err = from_merge_base(&a, &a, "main").err().map(|e| e.to_string());
+        let cases: &[(&str, &str, Option<&str>, bool)] = &[
+            // (head, merge base, current branch, needs a baseline)
+            ("a", "b", Some("feature"), false),
+            ("a", "a", Some("feature"), false),
+            ("a", "b", Some("main"), true),
+            ("a", "a", Some("main"), true),
+            ("a", "b", None, false),
+            ("a", "a", None, true),
+        ];
+        for (head, base, current, refused) in cases {
+            let sha = |s: &str| if s == "a" { a.clone() } else { b.clone() };
+            let got = from_merge_base(&sha(head), &sha(base), "main", *current);
+            assert_eq!(got.is_err(), *refused, "{head} {base} {current:?}");
+            if let Ok(ok) = got {
+                assert_eq!(
+                    (ok.sha, ok.source),
+                    (sha(base), "merge-base:main".to_owned())
+                );
+            }
+        }
+        let err = from_merge_base(&a, &a, "main", Some("main"))
+            .err()
+            .map(|e| e.to_string());
         assert!(err.is_some_and(|m| m.contains("pass --baseline")));
+    }
+
+    #[test]
+    fn a_branch_cut_from_the_default_branch_uses_where_it_was_cut() {
+        let dir = repo();
+        let tip = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        git(dir.path(), &["checkout", "-q", "-b", "feature"]);
+        let got = resolve(dir.path(), None, "main").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            got,
+            Baseline {
+                sha: tip,
+                source: "merge-base:main".into()
+            }
+        );
     }
 
     #[test]
