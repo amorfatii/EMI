@@ -22,6 +22,7 @@ mod markdown;
 mod mergecli;
 mod placescli;
 mod profilecli;
+mod provingcli;
 mod readiness;
 mod report;
 mod sarif;
@@ -144,6 +145,10 @@ enum Command {
     /// what the tests would not notice going wrong there. A report; gates
     /// nothing.
     DiffMutate(diffmutcli::DiffMutateArgs),
+    /// Which tests a candidate adds fail at the baseline (proving) or pass
+    /// there already (redundant), and which changed functions a proving
+    /// test executes. Prints the receipt's `change` object; a report.
+    Proving(provingcli::ProvingArgs),
     /// Where else a change may need a look: exported names and schema
     /// boundaries it changes, files that usually change with the touched
     /// ones, and modules importing them. A list; gates nothing.
@@ -337,6 +342,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Diff(args) => diffcli::run(&args),
         Command::ChangedFunctions(args) => diffcli::changed_functions(&args),
         Command::DiffMutate(args) => diffmutcli::run(&args),
+        Command::Proving(args) => provingcli::run(&args),
         Command::Places(args) => placescli::run(&args),
         Command::Drift(args) => drift::run(&args),
         Command::Backtest(args) => diffcli::backtest(&args),

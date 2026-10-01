@@ -26,6 +26,7 @@ emi-controller.workspace = true
 emi-lsp.workspace = true
 emi-panel.workspace = true
 emi-profile.workspace = true
+emi-proving = { path = "../emi-proving" }
 anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true
