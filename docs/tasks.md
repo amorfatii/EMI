@@ -67,6 +67,10 @@ simplification.
   derived from the structural policy follow it; identity, baseline and
   derived fields cannot be revised. A contract with no requirements never
   reduces to `accepted`.
+- **Budgets.** `budgets` holds `max_retries` (verifications) and
+  `max_time_s` (verification time), the two the controller measures. A
+  `max_tokens` budget is refused at creation and in a revision: EMI cannot
+  observe token use, so it could never enforce one.
 - **Limits.** Check and inventory `timeout_s` must be in (0, 604800]
   seconds. `execution` accepts only `isolation` (`best`, `bwrap`, `none`),
   `network` (a boolean), `link` (relative paths) and `env` (strings);

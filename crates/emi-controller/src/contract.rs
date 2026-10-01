@@ -238,8 +238,14 @@ fn budgets(v: Option<&Value>) -> Result<Value> {
     };
     for (k, x) in map {
         let ok = match k.as_str() {
-            "max_retries" | "max_tokens" => x.as_u64().is_some(),
+            "max_retries" => x.as_u64().is_some(),
             "max_time_s" => x.as_f64().is_some_and(|t| t >= 0.0),
+            // a limit nothing checks would read as protection that is not there
+            "max_tokens" => {
+                return Err("budgets.max_tokens is not supported: the controller cannot observe \
+                            token use, so it could never enforce it; use max_retries or max_time_s"
+                    .into());
+            }
             _ => return Err(format!("unknown budget key: {k:?}")),
         };
         if !ok {
