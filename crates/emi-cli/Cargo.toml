@@ -23,6 +23,7 @@ emi-rules.workspace = true
 emi-guard.workspace = true
 emi-exec.workspace = true
 emi-controller.workspace = true
+emi-done.workspace = true
 emi-lsp.workspace = true
 emi-panel.workspace = true
 emi-profile.workspace = true
@@ -34,3 +35,6 @@ shlex.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

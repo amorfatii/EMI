@@ -12,6 +12,7 @@ use emi_scan::{OnSyntaxError, Options, Probe};
 mod checkcli;
 mod diffcli;
 mod diffmutcli;
+mod donecli;
 mod drift;
 mod explaincli;
 mod gatecli;
@@ -190,6 +191,13 @@ enum Command {
         /// Source files; the extension picks the grammar.
         files: Vec<PathBuf>,
     },
+    /// Write `.emi/config.json`: detect the language, test command and
+    /// default branch, show them, and write once confirmed.
+    Init(donecli::InitArgs),
+    /// When an agent says it is done: say what was proven (regression
+    /// evidence, changed old tests, the action to take). Exit 0 stop, 3
+    /// repair, 4 ask a person, 5 incomplete, 2 usage or configuration error.
+    Done(donecli::DoneArgs),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
     /// Language server (stdio): rule diagnostics, erosion hints, burden-delta code lenses.
@@ -350,6 +358,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Panel { files } => panel(&files),
         Command::Explain(args) => explaincli::run(&args),
         Command::Profile(args) => profilecli::run(&args),
+        Command::Init(args) => donecli::init(&args),
+        Command::Done(args) => donecli::done(&args),
         Command::Lsp => {
             emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)
