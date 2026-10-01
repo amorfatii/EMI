@@ -152,27 +152,22 @@ impl Command {
         argv
     }
 
-    /// Run what the configured command runs, printing one outcome line per
-    /// test (`<id> PASSED`) and no tracebacks: the form a reader can
-    /// compare test by test with another run.
+    /// Run what the configured command runs, ending with one exact outcome
+    /// line per test (see `emi_report.py`) and no tracebacks: the form a
+    /// reader can compare test by test with another run. It starts the
+    /// tests' own Python with the reporter in place of `-m pytest`; the
+    /// import path is the same (the current directory first).
     pub fn report_argv(&self) -> Vec<String> {
-        let mut argv = self.launcher.clone();
+        let mut argv = vec![
+            self.interpreter.clone(),
+            "-c".to_owned(),
+            include_str!("emi_report.py").to_owned(),
+        ];
         argv.extend(self.without(&[VERBOSITY, &["--tb"]]));
         argv.extend(self.selectors.clone());
-        // the classic style ends each line at the outcome, with no progress
-        // column to grow the report
         // a file that cannot be imported must not keep the others from
         // running: its error is one outcome among the rest
-        argv.extend(
-            [
-                "-v",
-                "--tb=no",
-                "--continue-on-collection-errors",
-                "-o",
-                "console_output_style=classic",
-            ]
-            .map(str::to_owned),
-        );
+        argv.extend(["-q", "--tb=no", "--continue-on-collection-errors"].map(str::to_owned));
         argv
     }
 

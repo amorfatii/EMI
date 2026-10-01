@@ -339,3 +339,30 @@ fn the_tests_import_the_code_being_checked_not_an_installed_copy() {
         "{receipt}"
     );
 }
+
+#[test]
+fn outcomes_are_read_exactly_when_tests_print_to_the_terminal() {
+    let p = Project::new();
+    // no output capture: what a test prints lands between its name and
+    // its outcome in pytest's own listing
+    p.write("pytest.ini", "[pytest]\npythonpath = .\naddopts = -s\n");
+    p.write(
+        "tests/test_noisy.py",
+        "import pytest\nfrom app import add\n\n@pytest.mark.parametrize('a', ['x y', 'PASSED z'])\ndef test_prints(a):\n    print('noise FAILED', a)\n    assert add(1, 1) == 2\n",
+    );
+    p.commit("noisy tests at the baseline");
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    assert_eq!(receipt["regression"]["tests_run"], 4, "{receipt}");
+
+    p.write("app.py", project::BROKEN);
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 3, "{receipt}");
+    let failed = receipt["regression"]["failed"].to_string();
+    assert!(
+        failed.contains("tests/test_noisy.py::test_prints[x y]")
+            && failed.contains("tests/test_noisy.py::test_prints[PASSED z]"),
+        "{receipt}"
+    );
+}

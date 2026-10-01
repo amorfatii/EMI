@@ -83,7 +83,10 @@ fn make_venv(repo: &Path) {
     let package = version.join("site-packages/pytest");
     std::fs::create_dir_all(&package).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(package.join("__init__.py"), "").unwrap_or_else(|e| panic!("{e}"));
-    std::fs::write(package.join("__main__.py"), FAKE_PYTEST).unwrap_or_else(|e| panic!("{e}"));
+    // started as `-m pytest` and imported as `pytest`, like the real one
+    for file in ["__main__.py", "__init__.py"] {
+        std::fs::write(package.join(file), FAKE_PYTEST).unwrap_or_else(|e| panic!("{e}"));
+    }
 }
 
 impl Fixture {

@@ -399,18 +399,15 @@ mod tests {
                 "no:cacheprovider"
             ])
         );
+        let command = names(&spec["checks"]["tests"]["command"]);
+        assert_eq!((command[0], command[1]), (".venv/bin/python", "-c"));
+        assert!(
+            command[2].contains("EMI-OUTCOME"),
+            "the reporter runs pytest"
+        );
         assert_eq!(
-            spec["checks"]["tests"]["command"],
-            json!([
-                ".venv/bin/python",
-                "-m",
-                "pytest",
-                "-v",
-                "--tb=no",
-                "--continue-on-collection-errors",
-                "-o",
-                "console_output_style=classic"
-            ])
+            command[3..],
+            ["-q", "--tb=no", "--continue-on-collection-errors"]
         );
         assert!(
             spec.get("budgets").is_none(),

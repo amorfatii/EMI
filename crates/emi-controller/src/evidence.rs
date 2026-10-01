@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 
 /// The version of this reader, recorded with what it read: a record kept
 /// from an older reader may name tests differently and is not comparable.
-pub const READER: u64 = 4;
+pub const READER: u64 = 5;
 
 /// How the run reported its tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -275,10 +275,52 @@ fn parse_summary(stdout: &str) -> Option<Evidence> {
     Some(ev)
 }
 
-/// What a check that declares pytest evidence reported: per-test lines
-/// when it printed any (the stronger form), else its pytest summary.
-/// `Err` names why the output is not test evidence at all.
+/// The exact listing a reporter inside the runner printed at the end:
+/// `EMI-OUTCOME <outcome> <id>` per test, closed by `EMI-OUTCOMES <count>`.
+/// `None` when the output holds no such listing; `Err` when it holds one
+/// that is cut short or does not add up, which is no evidence at all.
+fn parse_listing(stdout: &str) -> Option<Result<Evidence, String>> {
+    let mut ev = Evidence {
+        kind: Kind::Lines,
+        ..Evidence::default()
+    };
+    let (mut rows, mut closed) = (0usize, None);
+    for line in stdout.lines() {
+        if let Some(count) = line.strip_prefix("EMI-OUTCOMES ") {
+            closed = count.trim().parse::<usize>().ok();
+        } else if let Some(row) = line.strip_prefix("EMI-OUTCOME ") {
+            let (outcome, id) = row.split_once(' ')?;
+            rows += 1;
+            match outcome {
+                "passed" => ev.passed.insert(id.to_owned()),
+                "failed" => ev.failed.insert(id.to_owned()),
+                "error" => ev.errored.insert(id.to_owned()),
+                "skipped" | "xfailed" | "xpassed" => ev.skipped.insert(id.to_owned()),
+                _ => {
+                    return Some(Err(format!(
+                        "the run's outcome listing has an outcome this reader does not know: {outcome}"
+                    )));
+                }
+            };
+        }
+    }
+    match (rows, closed) {
+        (0, None) => None,
+        (n, Some(count)) if n == count => Some(Ok(ev)),
+        _ => Some(Err(
+            "the run's outcome listing is cut short or does not add up to its own count".into(),
+        )),
+    }
+}
+
+/// What a check that declares pytest evidence reported: the exact listing
+/// of a reporter when there is one, else per-test lines when it printed
+/// any, else its pytest summary. `Err` names why the output is not test
+/// evidence at all.
 pub fn parse(stdout: &str) -> Result<Evidence, String> {
+    if let Some(listing) = parse_listing(stdout) {
+        return listing;
+    }
     if let Some(ev) = parse_lines(stdout) {
         return Ok(ev);
     }
@@ -390,6 +432,24 @@ mod tests {
         assert_eq!(ev.kind, Kind::Lines);
         assert_eq!(ev.errored.iter().collect::<Vec<_>>(), ["tests/test_b.py"]);
         assert!(matches!(judge(&ev), Verdict::Fail(_)));
+    }
+
+    #[test]
+    fn a_reporters_listing_is_read_exactly_and_must_be_whole() {
+        let out = "noise tests/t.py::test_a FAILED\n\nEMI-OUTCOME passed tests/t.py::test_a\nEMI-OUTCOME skipped tests/t.py::test_p[a b]\nEMI-OUTCOME error tests/broken.py\nEMI-OUTCOMES 3\n";
+        let ev = parsed(out);
+        assert_eq!(ev.kind, Kind::Lines);
+        // the listing wins over anything printed while the tests ran
+        assert!(ev.failed.is_empty(), "{ev:?}");
+        assert!(ev.passed.contains("tests/t.py::test_a"));
+        assert!(ev.skipped.contains("tests/t.py::test_p[a b]"));
+        assert!(ev.errored.contains("tests/broken.py"));
+        // cut before its closing count, or a count that disagrees: nothing
+        assert!(parse("EMI-OUTCOME passed tests/t.py::test_a\n").is_err());
+        assert!(parse("EMI-OUTCOME passed tests/t.py::test_a\nEMI-OUTCOMES 2\n").is_err());
+        // an empty run is a listing of nothing, which establishes nothing
+        let none = parsed("EMI-OUTCOMES 0\n");
+        assert!(matches!(judge(&none), Verdict::Fail(_)));
     }
 
     #[test]

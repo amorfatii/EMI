@@ -2,8 +2,11 @@
 
 It collects plain `test_*` functions from `tests/`, runs them, prints
 pytest's short test summary and last line, and exits with pytest's
-statuses (0, 1, 2 for collection errors, 5 for no tests). The machine the
-tests run on has no pytest, and installing packages is not allowed there.
+statuses (0, 1, 2 for collection errors, 5 for no tests). Like pytest it
+can be started with `-m pytest` or called as `pytest.main(args, plugins)`,
+and it hands each plugin the reports the done check's reporter reads. The
+machine the tests run on has no pytest, and installing packages is not
+allowed there.
 """
 
 import ast
@@ -42,7 +45,28 @@ def summary(failed, errors, passed):
     return (", ".join(parts) or "no tests ran") + " in 0.01s"
 
 
-def main(argv):
+class Report:
+    """What a plugin is told about one test, or one file's collection."""
+
+    def __init__(self, nodeid, failed, when="call"):
+        self.nodeid, self.failed, self.when = nodeid, failed, when
+        self.skipped, self.passed = False, not failed
+
+
+def tell(plugins, hook, *args):
+    for plugin in plugins:
+        if hasattr(plugin, hook):
+            getattr(plugin, hook)(*args)
+
+
+def main(argv, plugins=()):
+    try:
+        return run(argv, plugins)
+    finally:
+        tell(plugins, "pytest_unconfigure", None)
+
+
+def run(argv, plugins):
     files = test_files()
     ids, broken = [], []
     for path in files:
@@ -57,6 +81,8 @@ def main(argv):
         print(f"{len(ids)} tests collected in 0.01s")
         return 2 if broken else (0 if ids else 5)
     problems = [("ERROR", p, "SyntaxError") for p in broken]
+    for p in broken:
+        tell(plugins, "pytest_collectreport", Report(p, True))
     passed = 0
     for path in files:
         if path in broken:
@@ -67,15 +93,18 @@ def main(argv):
             spec.loader.exec_module(module)
         except Exception as e:
             problems.append(("ERROR", path, f"{type(e).__name__}: {e}"))
+            tell(plugins, "pytest_collectreport", Report(path, True))
             continue
         for name in collect(path):
             try:
                 getattr(module, name)()
                 passed += 1
                 sys.stdout.write(".")
+                tell(plugins, "pytest_runtest_logreport", Report(f"{path}::{name}", False))
             except Exception as e:
                 problems.append(("FAILED", f"{path}::{name}", f"{type(e).__name__}: {e}"))
                 sys.stdout.write("F")
+                tell(plugins, "pytest_runtest_logreport", Report(f"{path}::{name}", True))
     print()
     if problems:
         print("=========================== short test summary info ============================")
@@ -91,4 +120,5 @@ def main(argv):
     return 0 if passed else 5
 
 
-sys.exit(main(sys.argv[1:]))
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
