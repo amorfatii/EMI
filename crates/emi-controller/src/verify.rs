@@ -330,7 +330,13 @@ impl RunSetup<'_> {
             .iter()
             .chain(&held_out)
             .map(|p| dest.join(p))
-            .filter(|p| p.exists())
+            // bubblewrap cannot bind onto a symbolic link, and refuses to
+            // start: a trusted file that is one is restored but left
+            // writable (its target, when trusted too, is still mounted)
+            .filter(|p| {
+                p.symlink_metadata()
+                    .is_ok_and(|m| !m.file_type().is_symlink())
+            })
             .collect();
         read_only.extend(linked);
         Ok(Mounts {
@@ -427,7 +433,12 @@ fn inventory_ids(
     if sandbox_required(execution) && o.receipt.isolation != "bwrap" {
         return Err("the inventory could not run sandboxed (bubblewrap unavailable)".into());
     }
-    if o.status != Status::Exited || o.exit_code != Some(0) {
+    // a test file that cannot be imported makes pytest's listing exit
+    // nonzero while still naming every test it could collect; a contract
+    // that compares the listing with the baseline's may accept that, since
+    // a file lost on the candidate shows up as missing tests
+    let tolerated = inv["collection_errors"] == "tolerate" && matches!(o.exit_code, Some(1 | 2));
+    if o.status != Status::Exited || !(o.exit_code == Some(0) || tolerated) {
         return Err(format!(
             "inventory command did not succeed ({:?}, exit {:?}): {}",
             o.status,
@@ -444,7 +455,15 @@ fn inventory_ids(
             o.stdout_bytes, spec.output_limit
         ));
     }
-    parse_inventory(&o.stdout, inv["format"] == "pytest")
+    let ids = parse_inventory(&o.stdout, inv["format"] == "pytest")?;
+    Ok(ids.iter().map(|id| portable(id, workspace)).collect())
+}
+
+/// A test id without the path of the workspace it ran in: a test
+/// parametrized by a path under its own checkout would otherwise have a
+/// different name in every workspace, and look missing or new.
+fn portable(id: &str, workspace: &Path) -> String {
+    id.replace(workspace.to_string_lossy().as_ref(), "<workspace>")
 }
 
 /// The test ids in an inventory's output. In the pytest format only
@@ -686,7 +705,8 @@ fn run_check_within(
         (status.to_owned(), attribution.to_owned(), Value::Null)
     };
     if evidence.is_object() {
-        evidence["outcomes"] = outcomes(&o, limit);
+        evidence["outcomes"] = outcomes(&o, limit, workspace);
+        evidence["reader"] = json!(crate::evidence::READER);
     }
     let record = json!({
         "check_id": id, "check_definition_id": digest("check-definition", def),
@@ -763,17 +783,22 @@ const EVIDENCE_OUTPUT_LIMIT: usize = 32 << 20;
 /// status: what a caller needs to compare one run with another (a test
 /// already skipped at the baseline is not a regression). `null` unless the
 /// whole output was kept and it holds one outcome line per test.
-fn outcomes(o: &emi_exec::Outcome, limit: u64) -> Value {
+fn outcomes(o: &emi_exec::Outcome, limit: u64, workspace: &Path) -> Value {
     if o.stdout_bytes > limit || o.stderr_bytes > limit {
         return Value::Null;
     }
     match crate::evidence::parse(&o.stdout) {
         Ok(ev) if ev.kind == crate::evidence::Kind::Lines => {
-            let failed: std::collections::BTreeSet<&String> =
-                ev.failed.iter().chain(&ev.errored).collect();
-            let skipped: Vec<&String> = ev
+            let failed: std::collections::BTreeSet<String> = ev
+                .failed
+                .iter()
+                .chain(&ev.errored)
+                .map(|id| portable(id, workspace))
+                .collect();
+            let skipped: Vec<String> = ev
                 .skipped
                 .iter()
+                .map(|id| portable(id, workspace))
                 .filter(|id| !failed.contains(id))
                 .collect();
             json!({"passed": ev.passed.len(), "failed": failed, "skipped": skipped})

@@ -131,7 +131,7 @@ fn an_unrelated_failure_beside_an_edited_test_is_repaired_first() {
     let fx = Fixture::new();
     fx.write(
         "tests/test_app.py",
-        &format!("{TEST_APP}\n\ndef test_more():\n    assert add(2, 2) == 4\n"),
+        &TEST_APP.replace("add(0, 0) == 0", "add(0, 1) == 1"),
     );
     fx.write("other.py", BROKEN_OTHER);
     let out = fx.check();
@@ -151,7 +151,7 @@ fn an_unrelated_failure_beside_an_edited_test_is_repaired_first() {
 #[test]
 fn a_changed_old_test_asks_a_person_and_the_approval_is_bound_to_that_version() {
     let fx = Fixture::new();
-    let edited = format!("{TEST_APP}\n\ndef test_more():\n    assert add(2, 2) == 4\n");
+    let edited = TEST_APP.replace("add(0, 0) == 0", "add(0, 1) == 1");
     fx.write("tests/test_app.py", &edited);
     let out = fx.check();
     let r = &out.receipt;
@@ -178,7 +178,7 @@ fn a_changed_old_test_asks_a_person_and_the_approval_is_bound_to_that_version() 
 
     fx.write(
         "tests/test_app.py",
-        &format!("{edited}\n\ndef test_again():\n    assert add(3, 3) == 6\n"),
+        &edited.replace("add(0, 1) == 1", "add(1, 0) == 1"),
     );
     let edited_again = fx.check();
     assert_eq!(
@@ -472,4 +472,17 @@ fn a_state_directory_inside_the_repository_is_incomplete_not_a_pass() {
     let out = fx.run(&request);
     assert_eq!(out.action, Action::Incomplete, "{}", out.receipt);
     assert_eq!(out.receipt["regression"]["status"], "unknown");
+}
+
+#[test]
+fn tests_appended_to_an_old_test_file_need_no_approval() {
+    let fx = Fixture::new();
+    fx.write(
+        "tests/test_app.py",
+        &format!("{TEST_APP}\n\ndef test_more():\n    assert add(2, 2) == 4\n"),
+    );
+    let out = fx.check();
+    assert_eq!(out.action, Action::Stop, "{}", out.receipt);
+    assert_eq!(out.receipt["changed_old_tests"], json!([]));
+    assert_eq!(out.receipt["regression"]["status"], "held");
 }

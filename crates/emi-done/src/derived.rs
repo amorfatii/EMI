@@ -86,8 +86,8 @@ pub fn spec(repo: &Path, config: &Config, baseline: &str, trusted: &[String]) ->
         // Two quiet flags make real pytest print counts by file, not ids.
         // Share the normalizer used by the proving measurement.
         let inventory = pytest.list_argv();
-        verification["inventory"] =
-            json!({"command": inventory, "format": "pytest", "timeout_s": INVENTORY_TIMEOUT_S});
+        verification["inventory"] = json!({"command": inventory, "format": "pytest", "timeout_s": INVENTORY_TIMEOUT_S,
+                   "collection_errors": "tolerate"});
         // The test check runs the same pytest invocation, so its own
         // report is required too: a passing exit with no readable summary
         // (an early exit) or with skips is not regression evidence.
@@ -149,10 +149,15 @@ pub struct Verified {
 pub fn baseline_check(store: &Store, baseline: &str) -> Result<Option<Value>, String> {
     let contract = store.contract()?;
     let id = contract["contract_id"].as_str().unwrap_or("");
-    let decision = match store.latest_decision(baseline, id)? {
-        Some(known) => known,
-        None => verify(store, &Candidate::Ref(baseline.to_owned()))?,
-    };
+    if let Some(known) = store.latest_decision(baseline, id)? {
+        // a run recorded by an older reader names its tests differently
+        let kept = recorded_check(store, &known)?
+            .filter(|c| c["evidence"]["reader"] == emi_controller::evidence::READER);
+        if kept.is_some() {
+            return Ok(kept);
+        }
+    }
+    let decision = verify(store, &Candidate::Ref(baseline.to_owned()))?;
     recorded_check(store, &decision)
 }
 
@@ -250,6 +255,7 @@ mod tests {
                 "pytest",
                 "-v",
                 "--tb=no",
+                "--continue-on-collection-errors",
                 "-o",
                 "console_output_style=classic"
             ])

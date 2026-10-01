@@ -223,7 +223,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("verification.drift", &[]),
     (
         "verification.inventory",
-        &["command", "format", "timeout_s"],
+        &["command", "format", "timeout_s", "collection_errors"],
     ),
 ];
 
@@ -570,8 +570,22 @@ fn inventory(v: Option<&Value>) -> Result<Value> {
     if !matches!(format, "lines" | "pytest") {
         return Err("verification.inventory.format must be lines or pytest".into());
     }
-    Ok(json!({"command": command, "format": format,
-               "timeout_s": inv.get("timeout_s").and_then(Value::as_f64).unwrap_or(300.0)}))
+    let mut out = json!({"command": command, "format": format,
+               "timeout_s": inv.get("timeout_s").and_then(Value::as_f64).unwrap_or(300.0)});
+    // absent unless stated, so contracts frozen without it keep their id
+    match inv.get("collection_errors").filter(|v| !v.is_null()) {
+        None => {}
+        Some(Value::String(s)) if s == "tolerate" && format == "pytest" => {
+            out["collection_errors"] = json!("tolerate");
+        }
+        Some(_) => {
+            return Err(
+                "verification.inventory.collection_errors must be tolerate, with format pytest"
+                    .into(),
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// What added test-runner configuration does (`verification.runner_config`):

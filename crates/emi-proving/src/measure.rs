@@ -228,7 +228,20 @@ impl Context<'_> {
             let pristine = s.tree("baseline-list", &self.base)?;
             s.list(&pristine, "baseline")?
         };
-        let added = pytest::added_ids(&at_candidate, &at_baseline, &self.renames()?);
+        // a file the baseline already could not collect is no news; one
+        // only the candidate cannot collect hides its tests from this
+        // measurement, so nothing can be said
+        if at_candidate
+            .broken
+            .difference(&at_baseline.broken)
+            .next()
+            .is_some()
+        {
+            return Err(at_candidate.problem.unwrap_or_else(|| {
+                "the candidate has a test file that cannot be collected".to_owned()
+            }));
+        }
+        let added = pytest::added_ids(&at_candidate.ids, &at_baseline.ids, &self.renames()?);
         if added.is_empty() {
             return Ok(Classified::default());
         }

@@ -33,6 +33,16 @@ pub struct Session<'a> {
     isolations: RefCell<BTreeSet<String>>,
 }
 
+/// What the test command lists at one revision.
+#[derive(Clone, Debug, Default)]
+pub struct Listing {
+    pub ids: BTreeSet<String>,
+    /// Test files the listing could not collect.
+    pub broken: BTreeSet<String>,
+    /// What the listing said went wrong, when it exited nonzero.
+    pub problem: Option<String>,
+}
+
 /// How a run ended, in words for the receipt. Nothing in the words varies
 /// from one run of the same inputs to the next (no durations, no scratch
 /// paths): the receipt is deterministic.
@@ -145,23 +155,58 @@ impl<'a> Session<'a> {
     }
 
     /// The node ids the test command lists in `copy`, or why it could not.
-    pub fn list(&self, copy: &Copy, what: &str) -> Result<BTreeSet<String>, String> {
+    /// A test file that cannot be imported makes the listing exit 1 or 2
+    /// and still name every test of the files that can: those files are
+    /// returned as `broken`, with what the listing said about them, so the
+    /// caller can tell a file the baseline already could not collect from
+    /// one the candidate broke.
+    pub fn list(&self, copy: &Copy, what: &str) -> Result<Listing, String> {
         let o = self.run(copy, &self.command.list_argv());
-        match exit_of(&o, self.runner.timeout) {
-            // the executor keeps a bounded amount of output: a longer list
-            // would silently lose its tail, and with it added tests
-            RunExit::Code(0) if o.stdout_bytes > o.stdout.len() as u64 => Err(format!(
+        let exit = exit_of(&o, self.runner.timeout);
+        let code = match exit {
+            RunExit::Code(code @ 0..=2) => code,
+            RunExit::Code(code) => {
+                return Err(format!(
+                    "listing the tests at the {what} exited {code}{}",
+                    with(error_lines(&o.stdout, &copy.dir))
+                ));
+            }
+            RunExit::Failed(why) => return Err(format!("listing the tests at the {what} {why}")),
+        };
+        // the executor keeps a bounded amount of output: a longer list
+        // would silently lose its tail, and with it added tests
+        if o.stdout_bytes > o.stdout.len() as u64 {
+            return Err(format!(
                 "listing the tests at the {what} printed more than {} bytes, which is more than is kept",
                 o.stdout.len()
-            )),
-            RunExit::Code(0) => pytest::parse_listing(&o.stdout)
-                .map_err(|e| format!("listing the tests at the {what}: {e}")),
-            RunExit::Code(code) => Err(format!(
+            ));
+        }
+        let dir = copy.dir.to_string_lossy();
+        // a test parametrized by a path under its own checkout is named
+        // after the copy it was listed in: without the copy's path it has
+        // one name at both revisions
+        let ids = pytest::parse_listing(&o.stdout)
+            .map_err(|e| format!("listing the tests at the {what}: {e}"))?
+            .iter()
+            .map(|id| id.replace(dir.as_ref(), "<workspace>"))
+            .collect();
+        let broken = pytest::uncollected_files(&o.stdout);
+        let problem = (code != 0).then(|| {
+            format!(
                 "listing the tests at the {what} exited {code}{}",
                 with(error_lines(&o.stdout, &copy.dir))
-            )),
-            RunExit::Failed(why) => Err(format!("listing the tests at the {what} {why}")),
+            )
+        });
+        if code != 0 && broken.is_empty() {
+            // nonzero without naming a file it could not collect: not a
+            // listing this reader understands
+            return Err(problem.unwrap_or_default());
         }
+        Ok(Listing {
+            ids,
+            broken,
+            problem,
+        })
     }
 
     /// Run exactly `ids` in `copy` and say what each did. `tag` keeps the

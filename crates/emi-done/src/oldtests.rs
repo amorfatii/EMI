@@ -102,6 +102,23 @@ fn kind_of(what: What, change: &str) -> Option<Kind> {
     }
 }
 
+/// Whether `rev` only added lines to `path`: every line the baseline had is
+/// still there, in order. Tests appended to an old test file rewrite
+/// nothing, so there is nothing for a person to decide; the file still
+/// runs in its baseline form as regression evidence, and the added tests
+/// are judged as change evidence. Anything git cannot count (a binary
+/// file) is not an addition.
+fn only_adds(view: &Path, baseline: &str, rev: &str, path: &str) -> bool {
+    let Ok(out) = emi_git::run(view, &["diff", "--numstat", baseline, rev, "--", path]) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out);
+    let mut fields = text.split_whitespace();
+    let added = fields.next().and_then(|n| n.parse::<u64>().ok());
+    let deleted = fields.next().and_then(|n| n.parse::<u64>().ok());
+    matches!((added, deleted), (Some(a), Some(0)) if a > 0)
+}
+
 /// The files `rev` changed that need a decision, sorted by path: baseline
 /// test files (matching `globs`) it modified or deleted, and test-runner
 /// configuration it modified, deleted or added. `view` is a clean view of
@@ -125,6 +142,10 @@ pub fn find(
         let Some(kind) = kind_of(what, change) else {
             continue;
         };
+        if what == What::OldTest && kind == Kind::Modified && only_adds(view, baseline, rev, &path)
+        {
+            continue;
+        }
         let content = if kind == Kind::Deleted {
             DELETED.to_owned()
         } else {

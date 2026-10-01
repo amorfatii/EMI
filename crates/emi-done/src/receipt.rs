@@ -142,7 +142,7 @@ pub fn not_verified(l: &Limits) -> Vec<String> {
             .to_owned(),
         "The baseline's tests are taken as correct, and they ran once: a flaky test could change the result."
             .to_owned(),
-        "Pytest skips and expected-failure outcomes leave regression evidence incomplete; passing tests alone do not establish untested behaviour."
+        "Tests the baseline already skipped, expected to fail, could not collect or failed are not regression evidence: nothing is known about the behaviour they cover."
             .to_owned(),
         "Guardrail heuristics (secret files, CI edits, test suppressions) were not run.".to_owned(),
     ];

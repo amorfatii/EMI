@@ -155,7 +155,18 @@ impl Command {
         argv.extend(self.selectors.clone());
         // the classic style ends each line at the outcome, with no progress
         // column to grow the report
-        argv.extend(["-v", "--tb=no", "-o", "console_output_style=classic"].map(str::to_owned));
+        // a file that cannot be imported must not keep the others from
+        // running: its error is one outcome among the rest
+        argv.extend(
+            [
+                "-v",
+                "--tb=no",
+                "--continue-on-collection-errors",
+                "-o",
+                "console_output_style=classic",
+            ]
+            .map(str::to_owned),
+        );
         argv
     }
 
@@ -225,6 +236,18 @@ fn is_file_count(line: &str) -> bool {
             && n.bytes().all(|b| b.is_ascii_digit())
             && !n.is_empty()
     })
+}
+
+/// The test files a listing or a run could not collect, from its short
+/// summary (`ERROR tests/test_a.py - ImportError: ...`).
+pub fn uncollected_files(stdout: &str) -> BTreeSet<String> {
+    stdout
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("ERROR "))
+        .map(|rest| rest.split(" - ").next().unwrap_or(rest).trim())
+        .filter(|f| f.ends_with(".py") && !f.contains("::") && !f.contains(char::is_whitespace))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The node ids in the output of `pytest --collect-only -q`.

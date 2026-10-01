@@ -107,9 +107,18 @@ fn done_exits_with_the_action_and_prints_canonical_json() {
     fx.write("app.py", project::APP);
     let old = std::fs::read_to_string(fx.path().join("tests/test_app.py"))
         .unwrap_or_else(|e| panic!("{e}"));
+    // lines appended to an old test file rewrite nothing: no question
     fx.write(
         "tests/test_app.py",
-        &format!("{old}\n# clarify the old test\n"),
+        &format!("{old}\n# a note after the old tests\n"),
+    );
+    let (code, appended) = fx.done(&[]);
+    assert_eq!(code, 0, "{appended}");
+    assert_eq!(appended["changed_old_tests"], serde_json::json!([]));
+    // an old test rewritten is a question for a person
+    fx.write(
+        "tests/test_app.py",
+        &old.replace("assert add(1, 2) == 3", "assert add(2, 1) == 3"),
     );
     let ask = fx.emi(&["done", "--format", "text"], None);
     assert_eq!(ask.status.code(), Some(4), "{ask:?}");

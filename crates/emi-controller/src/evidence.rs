@@ -18,6 +18,10 @@
 
 use std::collections::BTreeSet;
 
+/// The version of this reader, recorded with what it read: a record kept
+/// from an older reader may name tests differently and is not comparable.
+pub const READER: u64 = 3;
+
 /// How the run reported its tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
@@ -53,19 +57,23 @@ pub enum Verdict {
     Fail(String),
 }
 
-/// The outcome word of a per-test line, uppercased by the caller.
-fn line_outcome(word: &str) -> Option<Outcome> {
-    match word {
-        "PASSED" | "PASS" => Some(Outcome::Passed),
-        "FAILED" | "FAIL" => Some(Outcome::Failed),
-        "ERROR" | "ERRORED" => Some(Outcome::Errored),
-        "SKIPPED" | "SKIP" | "XFAIL" | "XFAILED" => Some(Outcome::Skipped),
-        // an unexpected pass is not a clean pass either: the test did not
-        // run to its written expectation
-        "XPASS" | "XPASSED" => Some(Outcome::Skipped),
-        _ => None,
-    }
-}
+/// The words a per-test line ends its test id with.
+const OUTCOME_WORDS: &[(&str, Outcome)] = &[
+    ("PASSED", Outcome::Passed),
+    ("PASS", Outcome::Passed),
+    ("FAILED", Outcome::Failed),
+    ("FAIL", Outcome::Failed),
+    ("ERRORED", Outcome::Errored),
+    ("ERROR", Outcome::Errored),
+    ("SKIPPED", Outcome::Skipped),
+    ("SKIP", Outcome::Skipped),
+    ("XFAILED", Outcome::Skipped),
+    ("XFAIL", Outcome::Skipped),
+    // an unexpected pass is not a clean pass either: the test did not run
+    // to its written expectation
+    ("XPASSED", Outcome::Skipped),
+    ("XPASS", Outcome::Skipped),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
@@ -75,27 +83,48 @@ enum Outcome {
     Skipped,
 }
 
-/// One per-test outcome from a line shaped `<id> <OUTCOME> ...`: the id is
-/// the first whitespace-separated token and holds `::` (a warning or
-/// summary line has none, or a space before it). Returns the id and its
-/// outcome, or `None` when the line is not a per-test outcome.
+/// Where `word` stands alone in `line` at or after `from`: a space before
+/// it, and a space or the end of the line after it.
+fn standalone(line: &str, word: &str, from: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(i) = line[at..].find(word) {
+        let start = at + i;
+        let rest = &line[start + word.len()..];
+        if line[..start].ends_with(' ') && (rest.is_empty() || rest.starts_with(' ')) {
+            return Some(start);
+        }
+        at = start + word.len();
+    }
+    None
+}
+
+/// One per-test outcome from a line shaped `<id> <OUTCOME> ...`. The id
+/// starts the line, its file path holds no space (a summary line such as
+/// `FAILED tests/a.py::t - why` has one before the `::`), and it runs up
+/// to the first outcome word that stands alone: a parametrized id may hold
+/// spaces (`test_x[a b]`), and a skip reason after the outcome may hold
+/// anything. Returns the id and its outcome, or `None` when the line is
+/// not a per-test outcome.
 fn parse_line(line: &str) -> Option<(&str, Outcome)> {
-    let mut words = line.split_whitespace();
-    let id = words.next()?;
-    let outcome = words.next()?;
-    if !id.contains("::") {
+    let path_end = line.find("::")?;
+    if line[..path_end].contains(char::is_whitespace) {
         return None;
     }
-    // parametrized ids hold brackets and spaces (`test_x[1 - 2]`); the
-    // outcome word still follows the id's closing bracket, so rejoin when
-    // the second token opens one
-    if outcome.starts_with('[') {
-        let rest = line[id.len()..].trim_start();
-        let after = rest.find(']')?;
-        let word = rest[after + 1..].split_whitespace().next()?;
-        return line_outcome(word.to_uppercase().as_str()).map(|o| (id, o));
-    }
-    line_outcome(outcome.to_uppercase().as_str()).map(|o| (id, o))
+    let (at, outcome) = OUTCOME_WORDS
+        .iter()
+        .filter_map(|(word, outcome)| standalone(line, word, path_end).map(|at| (at, *outcome)))
+        .min_by_key(|(at, _)| *at)?;
+    Some((line[..at].trim_end(), outcome))
+}
+
+/// The file named by a short-summary line for a test file that could not
+/// be collected (`ERROR tests/test_a.py - ImportError: ...`): none of its
+/// tests ran. A test's own error line names an id with `::` and is read
+/// from its outcome line instead.
+fn collection_error(line: &str) -> Option<&str> {
+    let file = id_of(line.strip_prefix("ERROR ")?);
+    (!file.contains("::") && !file.contains(char::is_whitespace) && file.ends_with(".py"))
+        .then_some(file)
 }
 
 /// Per-test outcomes in `stdout`, or `None` when it holds no per-test
@@ -108,6 +137,10 @@ fn parse_lines(stdout: &str) -> Option<Evidence> {
     // an id observed both passing and otherwise did not cleanly pass
     let mut bad: BTreeSet<String> = BTreeSet::new();
     for line in stdout.lines() {
+        if let Some(file) = collection_error(line.trim()) {
+            ev.errored.insert(file.to_owned());
+            continue;
+        }
         let Some((id, outcome)) = parse_line(line.trim()) else {
             continue;
         };
@@ -330,6 +363,32 @@ mod tests {
             "tests/test_a.py::test_x PASSED [ 33%]\ntests/test_a.py::test_y FAILED [ 66%]\n",
         );
         assert_eq!(ev.kind, Kind::Lines);
+        assert!(matches!(judge(&ev), Verdict::Fail(_)));
+    }
+
+    #[test]
+    fn an_id_with_spaces_is_read_whole_and_a_skip_reason_is_not_part_of_it() {
+        let ev = parsed(
+            "tests/t.py::test_p[a b] PASSED\ntests/t.py::test_p[a c] PASSED\ntests/t.py::test_s SKIPPED (FAILED before, see PASSED)\ntests/t.py::test_f[x - y] FAILED [ 50%]\n",
+        );
+        assert_eq!(ev.passed.len(), 2, "{ev:?}");
+        assert!(ev.skipped.contains("tests/t.py::test_s"), "{ev:?}");
+        assert!(ev.failed.contains("tests/t.py::test_f[x - y]"), "{ev:?}");
+    }
+
+    #[test]
+    fn a_short_summary_line_is_not_a_per_test_outcome() {
+        assert!(parse_line("FAILED tests/t.py::test_x - assert 1 == 2").is_none());
+        assert!(parse_line("tests/t.py::test_x").is_none());
+    }
+
+    #[test]
+    fn a_file_that_could_not_be_collected_is_an_error_of_that_file() {
+        let ev = parsed(
+            "tests/test_a.py::test_x PASSED\nERROR tests/test_b.py - ImportError: no module\nERROR tests/test_a.py::test_y - boom\n",
+        );
+        assert_eq!(ev.kind, Kind::Lines);
+        assert_eq!(ev.errored.iter().collect::<Vec<_>>(), ["tests/test_b.py"]);
         assert!(matches!(judge(&ev), Verdict::Fail(_)));
     }
 
