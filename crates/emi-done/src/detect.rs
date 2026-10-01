@@ -123,6 +123,47 @@ fn python_path(files: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Most generated files `emi init` links one by one.
+const MAX_GENERATED: usize = 20;
+
+/// Files git ignores that the tests import all the same: a generated
+/// version module, a compiled extension. EMI checks a copy of what git
+/// holds, so without them the copy does not import. They are the ignored
+/// `.py`, `.so` and `.pyd` files inside the project's own code (an import
+/// root, or a top-level package), as they are on disk now.
+fn generated(repo: &Path, files: &[String], python_path: &[String]) -> Result<Vec<String>, Error> {
+    let raw = emi_git::run(
+        repo,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        ],
+    )
+    .map_err(|e| Error::Usage(format!("cannot list the repository's ignored files: {e}")))?;
+    let mut own: Vec<String> = python_path.iter().map(|r| format!("{r}/")).collect();
+    own.extend(
+        files
+            .iter()
+            .filter(|f| f.ends_with("/__init__.py") && f.matches('/').count() == 1)
+            .filter_map(|f| top_dir(f))
+            .filter(|d| !NOT_SOURCE.contains(d))
+            .map(|d| format!("{d}/")),
+    );
+    let importable = |p: &str| [".py", ".so", ".pyd"].iter().any(|ext| p.ends_with(ext));
+    let mut found: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .filter(|p| importable(p) && !p.contains("__pycache__/"))
+        .filter(|p| own.iter().any(|dir| p.starts_with(dir.as_str())))
+        .collect();
+    found.sort();
+    Ok(found)
+}
+
 /// Globs covering the repository's test files, derived from where they are.
 fn test_globs(files: &[String]) -> Result<Vec<String>, Error> {
     let tests: Vec<&String> = files
@@ -230,70 +271,100 @@ fn has_pytest(repo: &Path, python: &str) -> bool {
     outcome.status == emi_exec::Status::Exited && outcome.exit_code == Some(0)
 }
 
+/// `a, b` or `fallback` when there is nothing to list.
+fn listed(items: &[String], fallback: &str) -> String {
+    if items.is_empty() {
+        fallback.to_owned()
+    } else {
+        items.join(", ")
+    }
+}
+
+/// What the person should know before confirming.
+fn warnings(repo: &Path, python: &str, generated: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if generated.len() > MAX_GENERATED {
+        out.push(format!(
+            "{} ignored files inside the project's code look generated; only the first {MAX_GENERATED} are linked. Add the rest to `link` if the tests import them",
+            generated.len()
+        ));
+    }
+    if generated.iter().any(|g| !g.ends_with(".py")) {
+        out.push(
+            "compiled extensions are linked as they are built now: a change to their sources is not rebuilt for a check"
+                .to_owned(),
+        );
+    }
+    if !has_pytest(repo, python) {
+        out.push(format!(
+            "{python} cannot import pytest; install it there before running `emi done`"
+        ));
+    }
+    out
+}
+
+/// What was detected, in the words `emi init` prints.
+fn notes(config: &Config, generated: &[String]) -> Vec<String> {
+    vec![
+        "language: python".to_owned(),
+        format!("source directory: {}", config.source),
+        format!("default branch: {}", config.default_branch),
+        format!("test command: {}", config.tests.command.join(" ")),
+        format!("test files: {}", config.tests.globs.join(", ")),
+        format!(
+            "linked dependency directories: {}",
+            listed(&config.link, "none")
+        ),
+        format!(
+            "generated files the tests need (ignored by git, linked as they are): {}",
+            listed(generated, "none")
+        ),
+        format!(
+            "own code is imported from: {}",
+            listed(&config.python_path, "the repository root")
+        ),
+    ]
+}
+
 /// Propose a configuration for the repository at `repo`.
 pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Detected, Error> {
     let files = files(repo)?;
     language(&files)?;
     let python = python(repo)?;
-    let source = source(&files);
-    let globs = test_globs(&files)?;
     let python_path = python_path(&files);
     let branch = match default_branch_override {
         Some(b) => b.to_owned(),
         None => default_branch(repo)?,
     };
-    let link: Vec<String> = VENVS
+    let mut link: Vec<String> = VENVS
         .iter()
         .filter(|v| repo.join(v).is_dir())
         .map(|v| (*v).to_owned())
         .collect();
+    let generated = generated(repo, &files, &python_path)?;
+    let linked: Vec<String> = generated.iter().take(MAX_GENERATED).cloned().collect();
+    link.extend(linked.iter().cloned());
     let command: Vec<String> = [python.as_str(), "-m", "pytest", "-q"]
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
-    let mut warnings = Vec::new();
-    if !has_pytest(repo, &python) {
-        warnings.push(format!(
-            "{python} cannot import pytest; install it there before running `emi done`"
-        ));
-    }
-    let notes = vec![
-        "language: python".to_owned(),
-        format!("source directory: {source}"),
-        format!("default branch: {branch}"),
-        format!("test command: {}", command.join(" ")),
-        format!("test files: {}", globs.join(", ")),
-        format!(
-            "linked dependency directories: {}",
-            if link.is_empty() {
-                "none".to_owned()
-            } else {
-                link.join(", ")
-            }
-        ),
-        format!(
-            "own code is imported from: {}",
-            if python_path.is_empty() {
-                "the repository root".to_owned()
-            } else {
-                python_path.join(", ")
-            }
-        ),
-    ];
     let config = Config {
         language: "python".to_owned(),
-        source,
+        source: source(&files),
         default_branch: branch,
-        tests: Tests { command, globs },
+        tests: Tests {
+            command,
+            globs: test_globs(&files)?,
+        },
         link,
         python_path,
         repair_rounds: DEFAULT_REPAIR_ROUNDS,
         on_unproven: OnUnproven::Report,
     };
     Ok(Detected {
+        notes: notes(&config, &linked),
+        warnings: warnings(repo, &python, &generated),
         config,
-        notes,
-        warnings,
     })
 }
 
@@ -357,6 +428,36 @@ mod tests {
             "what it proposes is valid"
         );
         assert!(d.notes.iter().any(|n| n.contains("default branch: main")));
+    }
+
+    #[test]
+    fn a_src_layout_and_its_generated_files_are_found() {
+        let dir = fixture();
+        commit_file(
+            dir.path(),
+            ".gitignore",
+            "_version.py\n*.so\n__pycache__/\n",
+            "ignore",
+        );
+        // generated at install time and ignored by git, but imported
+        std::fs::write(dir.path().join("src/app/_version.py"), "v = '1'\n").unwrap_or_default();
+        std::fs::create_dir_all(dir.path().join("src/app/__pycache__")).unwrap_or_default();
+        std::fs::write(dir.path().join("src/app/__pycache__/x.py"), "").unwrap_or_default();
+        // ignored, but not inside the project's own code
+        std::fs::create_dir_all(dir.path().join("build")).unwrap_or_default();
+        std::fs::write(dir.path().join("build/_version.py"), "").unwrap_or_default();
+        let d = detect(dir.path(), None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(d.config.python_path, ["src"]);
+        assert_eq!(d.config.link, ["src/app/_version.py"]);
+        assert!(
+            d.notes
+                .iter()
+                .any(|n| n.contains("own code is imported from: src"))
+        );
+        assert_eq!(
+            Config::from_value(&d.config.to_value()).ok().as_ref(),
+            Some(&d.config)
+        );
     }
 
     #[test]

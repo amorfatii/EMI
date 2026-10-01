@@ -136,6 +136,13 @@ check confirms that the project's own packages resolve inside the copy. If
 they would not, the action is `incomplete` and the receipt names the package
 and where it would have come from.
 
+The copy holds what git holds, plus what `link` names. Files git ignores
+that the tests import all the same (a version module generated at install
+time, a compiled extension) are not in it, and without them the copy does
+not import. `emi init` finds such files inside the project's own code and
+adds them to `link`, as they are on disk. A linked compiled extension is not
+rebuilt for a check: a change to its sources is not measured.
+
 Regression evidence is a comparison, test by test, with the baseline's own
 run. The test command runs once on the baseline (the result is kept and
 reused for every later check of the same baseline, configuration and

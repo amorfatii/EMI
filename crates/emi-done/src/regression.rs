@@ -154,6 +154,8 @@ fn all_verified(decision: &Value) -> bool {
 /// What the check printed and how far to trust it.
 struct Run<'a> {
     output: &'a str,
+    /// The kept end of what the command wrote to its error stream.
+    errors: &'a str,
     /// The kept output is the whole of it: the summary at its end is the
     /// real one.
     reliable: bool,
@@ -166,10 +168,32 @@ impl<'a> Run<'a> {
             output: check
                 .and_then(|c| c["stdout_tail"].as_str())
                 .unwrap_or_default(),
+            errors: check
+                .and_then(|c| c["stderr_tail"].as_str())
+                .unwrap_or_default(),
             reliable: check.is_some_and(|c| c["output_truncated"] == false),
             code: check.and_then(|c| c["exit_code"].as_i64()),
         }
     }
+}
+
+/// Why there is no result to read: the run's last error line, when it left
+/// one (an import that failed, a plugin that would not load), without the
+/// scratch directory the run happened in, which differs from run to run.
+fn no_summary(errors: &str) -> String {
+    let base = "pytest execution has no complete readable result summary";
+    let Some(last) = errors.lines().rev().find(|l| !l.trim().is_empty()) else {
+        return base.to_owned();
+    };
+    let stable: String = last
+        .split_whitespace()
+        .map(|word| match word.find("/emi-verify-") {
+            Some(_) => word.rsplit('/').next().unwrap_or(word),
+            None => word,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{base}: {}", stable.chars().take(300).collect::<String>())
 }
 
 fn counted(n: usize, what: &str) -> Option<String> {
@@ -204,9 +228,7 @@ pub fn from_decision(
     let summary = run.reliable.then(|| pytest::summary(run.output)).flatten();
     if pytest {
         let Some(summary) = summary else {
-            return Regression::unknown(vec![
-                "pytest execution has no complete readable result summary".into(),
-            ]);
+            return Regression::unknown(vec![no_summary(run.errors)]);
         };
         if summary.skipped != 0 || summary.xfailed != 0 || summary.xpassed != 0 {
             return Regression::unknown(vec!["pytest skipped tests or used expected-failure outcomes; regression execution is not fully established".into()]);
@@ -596,6 +618,25 @@ mod tests {
         let mut cut = run(0, "5 passed in 1s\n");
         cut["output_truncated"] = json!(true);
         assert_eq!(judge(&d, &cut, &Scope::default()).status, Status::Unknown);
+    }
+
+    #[test]
+    fn a_run_without_a_summary_says_what_the_run_last_complained_of() {
+        let mut check = run(1, "");
+        check["stderr_tail"] = json!(
+            "Traceback\n  File \"/tmp/emi-verify-12-34/run-0/src/a.py\", line 3\nImportError: no module named x\n"
+        );
+        let r = judge(&decision("rejected", "failed"), &check, &Scope::default());
+        assert_eq!(r.status, Status::Unknown);
+        assert!(
+            r.reasons[0].ends_with("ImportError: no module named x"),
+            "{r:?}"
+        );
+        // a line that names the scratch directory keeps only the file
+        assert_eq!(
+            no_summary("x /tmp/emi-verify-1-2/run-0/src/a.py y"),
+            "pytest execution has no complete readable result summary: x a.py y"
+        );
     }
 
     #[test]

@@ -71,8 +71,15 @@ fn linked(execution: &Value) -> Vec<String> {
 
 fn state_of(repo: &Path, rel: &str) -> Result<String> {
     let path = repo.join(rel);
-    if path.symlink_metadata().is_err() {
+    let Ok(meta) = path.symlink_metadata() else {
         return Ok(ABSENT.to_owned());
+    };
+    // a single linked file (a generated module the tests import) is pinned
+    // by its own content and mode
+    if meta.is_file() {
+        let bytes = std::fs::read(&path).map_err(|e| format!("cannot pin linked {rel}: {e}"))?;
+        let line = format!("f {} {}\n", mode(&meta), emi_ir::pytext::sha256_hex(&bytes));
+        return Ok(emi_ir::pytext::sha256_hex(line.as_bytes()));
     }
     tree_digest(&path).map_err(|e| format!("cannot pin linked {rel}: {e}"))
 }
@@ -123,4 +130,24 @@ pub fn gate(repo: &Path, contract: &Value, before: Vec<String>) -> Value {
         "unverified"
     };
     json!({"state": state, "pinned": contract["dependencies"], "changed": changed})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_linked_file_is_pinned_by_its_content() {
+        let dir = std::env::temp_dir().join(format!("emi-deps-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap_or_default();
+        std::fs::write(dir.join("_version.py"), "v = '1'\n").unwrap_or_default();
+        let execution = json!({"link": ["_version.py", "gone.py"]});
+        let first = pin(&dir, &execution).unwrap_or_default();
+        std::fs::write(dir.join("_version.py"), "v = '2'\n").unwrap_or_default();
+        let second = pin(&dir, &execution).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        let (first, second) = (first.unwrap_or_default(), second.unwrap_or_default());
+        assert_ne!(first["_version.py"], second["_version.py"]);
+        assert_eq!(first["gone.py"], ABSENT);
+    }
 }
