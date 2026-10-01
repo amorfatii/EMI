@@ -83,6 +83,9 @@ pub struct Receipt {
     pub verified_clean: bool,
     /// `read_only` paths were mounted read-only (bubblewrap only).
     pub read_only_enforced: bool,
+    /// A crash of the command is not handed to the system's crash handler
+    /// (the core limit its processes inherit is one byte).
+    pub cores_quiet: bool,
     /// `hidden` paths were replaced by empty directories (bubblewrap only).
     pub hidden_enforced: bool,
 }
@@ -290,6 +293,7 @@ pub fn run(spec: &Spec) -> Outcome {
         pid_namespace: bwrap.is_some(),
         network: bwrap.is_none_or(|n| n),
         subreaper,
+        cores_quiet: platform::quiet_cores(),
         ..Receipt::default()
     };
     if spec.argv.is_empty() {
@@ -368,13 +372,39 @@ mod platform {
     use std::sync::OnceLock;
 
     use rustix::process::{
-        Pid, Signal, WaitOptions, getpid, kill_process, kill_process_group,
-        test_kill_process_group, waitpid,
+        Pid, Resource, Rlimit, Signal, WaitOptions, getpid, getrlimit, kill_process,
+        kill_process_group, setrlimit, test_kill_process_group, waitpid,
     };
 
     pub fn enable_subreaper() -> bool {
         static ON: OnceLock<bool> = OnceLock::new();
         *ON.get_or_init(|| rustix::process::set_child_subreaper(Some(getpid())).is_ok())
+    }
+
+    /// Keep the commands' crashes out of the system's crash reports. Test
+    /// suites crash child processes on purpose, and each one would
+    /// otherwise be recorded by the crash handler and shown to the person
+    /// as a crashed program. The kernel skips a piped crash handler only
+    /// when the core limit is exactly one byte (zero still calls it), so
+    /// this process sets its own soft limit to one, once, and every command
+    /// it starts inherits that. The hard limit is left alone.
+    pub fn quiet_cores() -> bool {
+        static DONE: OnceLock<bool> = OnceLock::new();
+        *DONE.get_or_init(|| {
+            let now = getrlimit(Resource::Core);
+            // a hard limit of zero cannot be raised to one: nothing to do
+            if now.maximum == Some(0) {
+                return false;
+            }
+            setrlimit(
+                Resource::Core,
+                Rlimit {
+                    current: Some(1),
+                    maximum: now.maximum,
+                },
+            )
+            .is_ok()
+        })
     }
 
     pub fn kill_group(pgid: i32) -> bool {
@@ -489,6 +519,9 @@ mod platform {
 #[cfg(not(target_os = "linux"))]
 mod platform {
     pub fn enable_subreaper() -> bool {
+        false
+    }
+    pub fn quiet_cores() -> bool {
         false
     }
     pub fn kill_group(_pgid: i32) -> bool {

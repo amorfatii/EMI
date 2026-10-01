@@ -233,3 +233,16 @@ fn a_command_cannot_disown_its_launch() {
     assert_eq!(run(&missing).status, Status::NotLaunched);
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn a_crashing_command_is_not_handed_to_the_systems_crash_handler() {
+    // the kernel skips a piped crash handler only at a core limit of
+    // exactly one byte, so that is what the command must inherit
+    let limits = run(&sh("grep 'Max core file size' /proc/self/limits"));
+    let soft = limits.stdout.split_whitespace().nth(4).unwrap_or("");
+    assert_eq!(soft, "1", "{}", limits.stdout);
+    assert!(limits.receipt.cores_quiet, "{:?}", limits.receipt);
+    let crashed = run(&sh("kill -ABRT $$"));
+    assert_eq!(crashed.signal, Some(6), "{crashed:?}");
+    assert!(crashed.receipt.cores_quiet);
+}
