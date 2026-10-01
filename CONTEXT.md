@@ -66,11 +66,11 @@ Evidence that the behaviour the task asked for exists in the candidate.
 _Avoid_: feature works, new tests pass
 
 **Proving test**:
-A test the candidate adds that fails at the baseline and passes on the candidate.
+A test the candidate adds that fails at the baseline, passes on the candidate, and executes code the candidate changed.
 _Avoid_: fail-to-pass test, new test
 
 **Redundant test**:
-A test the candidate adds that already passes at the baseline.
+A test the candidate adds that would not notice the change: it passes at the baseline, or it executes none of the changed code.
 _Avoid_: useless test, extra test, low-quality test
 
 **Unproven function**:
