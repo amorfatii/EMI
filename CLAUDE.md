@@ -1,10 +1,10 @@
 # EMI — rules for agents working in this repository
 
-EMI measures structural maintenance burden and gates code changes (see
-README.md). Until the parity phases finish, the Python tool at
-`~/Projects/emi-v0.4` (tag `phase0-oracle`) is the reference: every
-measurement this engine produces must match it, except for the documented
-divergences in `docs/parity.md`.
+EMI verifies code changes made by AI coding agents (see README.md; the
+vocabulary is in CONTEXT.md and the decisions in `docs/adr/`). The structural
+burden measurements are frozen: the golden corpus check keeps them from
+changing by accident, and the Python tool at `~/Projects/emi-v0.4` is no
+longer the reference (docs/adr/0002).
 
 ## Before you commit
 - Run `scripts/check.sh` (fmt, clippy -D warnings, tests, release build,
