@@ -340,6 +340,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "shlex",
+ "tempfile",
 ]
 
 [[package]]
