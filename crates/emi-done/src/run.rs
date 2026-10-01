@@ -9,7 +9,7 @@ use crate::baseline::Baseline;
 use crate::candidate::{self, Candidate};
 use crate::change::ChangeEvidence;
 use crate::config::Config;
-use crate::oldtests::{self, Changed};
+use crate::oldtests::{self, Changed, Entry};
 use crate::regression::{self, Regression};
 use crate::state::{self, Approval};
 use crate::{ChangeContext, Error, Outcome, Request, Setting, derived, receipt};
@@ -33,15 +33,23 @@ fn try_measure(
     view: &Path,
     req: &Request,
     (config, baseline, cand): (&Config, &Baseline, &Candidate),
+    entries: &[Entry],
 ) -> Result<Measured, String> {
-    let contract = derived::contract(repo, config, &baseline.sha).map_err(|e| e.to_string())?;
+    let trusted = derived::trusted(
+        view,
+        &baseline.sha,
+        &config.tests.globs,
+        &oldtests::approved_paths(entries),
+    )
+    .map_err(|e| e.to_string())?;
+    let spec = derived::spec(repo, config, &baseline.sha, &trusted);
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
-    let store = derived::open(&authority, repo, &contract)?;
+    let store = derived::open(&authority, repo, &baseline.sha, &spec).map_err(|e| e.to_string())?;
     let subject = match req.candidate {
         candidate::Spec::Worktree => Subject::Worktree,
         candidate::Spec::Ref(_) => Subject::Ref(cand.id.clone()),
     };
-    let verified = derived::run(&store, &subject)?;
+    let verified = derived::run(&store, &subject, req.setting == Setting::Cooperative)?;
     let isolation = verified.decision["assurance"]["isolation"]
         .as_str()
         .unwrap_or("unknown")
@@ -57,8 +65,14 @@ fn try_measure(
         });
     }
     let pytest = derived::is_pytest(&config.tests.command);
+    let scope = oldtests::scope(entries);
     Ok(Measured {
-        regression: regression::from_decision(&verified.decision, verified.check.as_ref(), pytest),
+        regression: regression::from_decision(
+            &verified.decision,
+            verified.check.as_ref(),
+            pytest,
+            &scope,
+        ),
         isolation,
     })
 }
@@ -85,7 +99,8 @@ fn approve(
         let Some(c) = changed.iter().find(|c| &c.item() == item) else {
             let known: Vec<String> = changed.iter().map(Changed::item).collect();
             return Err(Error::Usage(format!(
-                "{item} is not a changed old test of this candidate (changed: {})",
+                "{item} is not a changed old test or test-runner configuration file of this candidate \
+                 (changed: {})",
                 if known.is_empty() {
                     "none".to_owned()
                 } else {
@@ -152,11 +167,12 @@ pub fn check(
     let changed = oldtests::find(view, &baseline.sha, &cand.rev, &config.tests.globs)?;
     approve(req, &repo_dir, &changed, baseline)?;
     let (approvals, approval_fault) = approvals(req, &repo_dir, &changed);
-    let measured = match try_measure(repo, view, req, (config, baseline, cand)) {
+    let mut old_tests = oldtests::mark(changed, &approvals, &baseline.sha);
+    let measured = match try_measure(repo, view, req, (config, baseline, cand), &old_tests) {
         Ok(m) => m,
         Err(e) => measured_unknown(e),
     };
-    let old_tests = oldtests::entries(changed, &measured.regression, &approvals, &baseline.sha);
+    oldtests::settle(&mut old_tests, &measured.regression);
     let change = change(&ChangeContext {
         repo,
         config,

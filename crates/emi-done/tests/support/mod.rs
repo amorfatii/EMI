@@ -29,6 +29,11 @@ pub const CONFIG: &str = r#"{
 }
 "#;
 
+pub const OTHER: &str = "def neg(x):\n    return -x\n";
+pub const BROKEN_OTHER: &str = "def neg(x):\n    return x\n";
+pub const TEST_OTHER: &str =
+    "from other import neg\n\n\ndef test_neg():\n    assert neg(1) == -1\n";
+pub const PYPROJECT: &str = "[project]\nname = \"demo\"\ndependencies = []\n";
 pub const BROKEN_APP: &str = "def add(a, b):\n    return a - b\n";
 pub const APP: &str = "def add(a, b):\n    return a + b\n";
 pub const TEST_APP: &str = "from app import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\ndef test_zero():\n    assert add(0, 0) == 0\n";
@@ -92,6 +97,9 @@ impl Fixture {
         fx.write(".gitignore", ".venv/\n__pycache__/\n");
         fx.write("app.py", APP);
         fx.write("tests/test_app.py", TEST_APP);
+        fx.write("other.py", OTHER);
+        fx.write("tests/test_other.py", TEST_OTHER);
+        fx.write("pyproject.toml", PYPROJECT);
         fx.write(".emi/config.json", CONFIG);
         git(fx.path(), &["add", "-A"]);
         git(fx.path(), &["commit", "-q", "-m", "base"]);

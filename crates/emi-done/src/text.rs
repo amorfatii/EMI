@@ -62,28 +62,38 @@ fn change_line(c: &Value) -> String {
     }
 }
 
+/// One changed file: what happened to it and what the person is asked.
+fn old_test_line(t: &Value) -> String {
+    let path = t["path"].as_str().unwrap_or("?");
+    let item = t["item"].as_str().unwrap_or("?");
+    let kind = t["kind"].as_str().unwrap_or("changed");
+    if t["approved"] == true {
+        return format!("  {path} ({kind}): approved");
+    }
+    let ask = format!("emi done --approve {item}");
+    if t["type"] == "runner-config" {
+        return format!("  {path} ({kind} test-runner configuration): needs approval: {ask}");
+    }
+    match t["restored_result"].as_str() {
+        Some("fails") => format!(
+            "  {path} ({kind}): this old test fails as it was at the baseline; the proposer \
+             rewrote it. Approve with `{ask}`, or reject the change."
+        ),
+        Some("passes") => {
+            format!("  {path} ({kind}; its baseline version passes): needs approval: {ask}")
+        }
+        _ => format!(
+            "  {path} ({kind}; whether its baseline version passes is unknown): needs approval: {ask}"
+        ),
+    }
+}
+
 fn old_test_lines(tests: &[Value]) -> Vec<String> {
     let mut out = Vec::new();
     if !tests.is_empty() {
-        out.push("Changed old tests:".to_owned());
+        out.push("Changed old tests and test-runner configuration:".to_owned());
     }
-    for t in tests {
-        let path = t["path"].as_str().unwrap_or("?");
-        let item = t["item"].as_str().unwrap_or("?");
-        let kind = t["kind"].as_str().unwrap_or("changed");
-        let restored = match t["restored_result"].as_str() {
-            Some("passes") => "its original version passes on the candidate",
-            Some("fails") => "its original version FAILS on the candidate",
-            _ => "whether its original version passes is unknown",
-        };
-        if t["approved"] == true {
-            out.push(format!("  {path} ({kind}; {restored}): approved"));
-        } else {
-            out.push(format!(
-                "  {path} ({kind}; {restored}): needs approval: emi done --approve {item}"
-            ));
-        }
-    }
+    out.extend(tests.iter().map(old_test_line));
     out
 }
 
@@ -156,23 +166,23 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_old_test_shows_the_exact_approve_argument() {
+    fn changed_files_say_what_is_asked_and_show_the_exact_approve_argument() {
         let mut r = receipt();
         r["changed_old_tests"] = json!([
-            {"item": "old-test:tests/t.py", "path": "tests/t.py", "kind": "modified", "restored_result": "passes", "approved": false},
-            {"item": "old-test:tests/u.py", "path": "tests/u.py", "kind": "deleted", "restored_result": "fails", "approved": true}]);
+            {"item": "old-test:tests/t.py", "type": "old-test", "path": "tests/t.py", "kind": "modified", "restored_result": "passes", "approved": false},
+            {"item": "old-test:tests/f.py", "type": "old-test", "path": "tests/f.py", "kind": "modified", "restored_result": "fails", "approved": false},
+            {"item": "runner-config:pyproject.toml", "type": "runner-config", "path": "pyproject.toml", "kind": "modified", "restored_result": "unknown", "approved": false},
+            {"item": "old-test:tests/u.py", "type": "old-test", "path": "tests/u.py", "kind": "deleted", "restored_result": "unknown", "approved": true}]);
         r["action"] = json!("ask_person");
         let text = render(&r);
-        assert!(
-            text.contains("emi done --approve old-test:tests/t.py"),
-            "{text}"
-        );
-        assert!(
-            text.contains(
-                "tests/u.py (deleted; its original version FAILS on the candidate): approved"
-            ),
-            "{text}"
-        );
+        for want in [
+            "tests/t.py (modified; its baseline version passes): needs approval: emi done --approve old-test:tests/t.py",
+            "tests/f.py (modified): this old test fails as it was at the baseline; the proposer rewrote it. Approve with `emi done --approve old-test:tests/f.py`, or reject the change.",
+            "pyproject.toml (modified test-runner configuration): needs approval: emi done --approve runner-config:pyproject.toml",
+            "tests/u.py (deleted): approved",
+        ] {
+            assert!(text.contains(want), "{want}\n{text}");
+        }
         assert!(!text.contains("--approve old-test:tests/u.py"));
     }
 

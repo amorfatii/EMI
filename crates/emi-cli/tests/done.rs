@@ -114,7 +114,7 @@ fn done_exits_with_the_action_and_prints_canonical_json() {
     assert_eq!(ask.code, 4, "{}", ask.stdout);
     assert!(
         ask.stdout
-            .starts_with("Regression: held (2 tests ran).\nNew behaviour: not measured.\n"),
+            .starts_with("Regression: held (3 tests ran).\nNew behaviour: not measured.\n"),
         "{}",
         ask.stdout
     );

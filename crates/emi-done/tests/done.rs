@@ -5,7 +5,7 @@ mod support;
 use emi_done::candidate::Spec;
 use emi_done::{Action, Error, Given, Setting};
 use serde_json::json;
-use support::{APP, BROKEN_APP, CONFIG, Fixture, TEST_APP, git, strs};
+use support::{APP, BROKEN_APP, BROKEN_OTHER, CONFIG, Fixture, TEST_APP, git, strs};
 
 #[test]
 fn a_clean_change_holds_and_the_receipt_is_deterministic() {
@@ -17,9 +17,9 @@ fn a_clean_change_holds_and_the_receipt_is_deterministic() {
     let first = fx.check();
     let r = &first.receipt;
     assert_eq!(first.action, Action::Stop, "{r}");
-    assert_eq!(r["schema"], "emi-done-receipt-0.1");
+    assert_eq!(r["schema"], "emi-done-receipt-0.2");
     assert_eq!(r["regression"]["status"], "held", "{r}");
-    assert_eq!(r["regression"]["tests_run"], 2, "{r}");
+    assert_eq!(r["regression"]["tests_run"], 3, "{r}");
     assert_eq!(r["regression"]["failed"], json!([]));
     assert_eq!(r["baseline"]["source"], "merge-base:main");
     assert_eq!(r["candidate"]["id"], "worktree");
@@ -53,36 +53,99 @@ fn a_broken_regression_repairs_naming_the_first_failing_test() {
         r["regression"]["failed"],
         json!(["tests/test_app.py::test_add"])
     );
-    assert_eq!(r["regression"]["tests_run"], 2);
+    assert_eq!(r["regression"]["tests_run"], 3);
     assert_eq!(strs(&r["repair"]).len(), 1, "one short line: {r}");
     assert!(strs(&r["repair"])[0].contains("tests/test_app.py::test_add"));
 }
 
+const HIDING_TEST: &str = "from app import add\n\n\ndef test_add():\n    assert add(1, 2) == -1\n\n\ndef test_zero():\n    assert add(0, 0) == 0\n";
+
+fn approve(fx: &Fixture, items: &[&str]) -> emi_done::Outcome {
+    let items: Vec<String> = items.iter().map(|i| (*i).to_owned()).collect();
+    fx.run(&fx.request(&items))
+}
+
 #[test]
-fn an_old_test_edited_to_hide_a_bug_is_run_in_its_original_form() {
+fn an_old_test_edited_to_hide_a_bug_asks_a_person_and_their_approval_lets_the_edit_decide() {
     let fx = Fixture::new();
     fx.write("app.py", BROKEN_APP);
-    fx.write(
-        "tests/test_app.py",
-        "from app import add\n\n\ndef test_add():\n    assert add(1, 2) == -1\n\n\ndef test_zero():\n    assert add(0, 0) == 0\n",
-    );
+    fx.write("tests/test_app.py", HIDING_TEST);
     let out = fx.check();
     let r = &out.receipt;
+    assert_eq!(out.action, Action::AskPerson, "{r}");
     assert_eq!(
-        out.action,
-        Action::Repair,
-        "the table puts a broken regression before asking a person: {r}"
+        r["regression"]["status"], "held",
+        "the tests the candidate left alone hold: {r}"
     );
+    assert_eq!(r["regression"]["failed"], json!([]));
+    let old = &r["changed_old_tests"][0];
+    assert_eq!(old["item"], "old-test:tests/test_app.py");
+    assert_eq!(
+        (old["type"].as_str(), old["kind"].as_str()),
+        (Some("old-test"), Some("modified"))
+    );
+    assert_eq!(old["restored_result"], "fails", "{r}");
+    assert_eq!(old["approved"], false);
+    let text = emi_done::text::render(r);
+    assert!(
+        text.contains("fails as it was at the baseline; the proposer rewrote it"),
+        "{text}"
+    );
+
+    let approved = approve(&fx, &["old-test:tests/test_app.py"]);
+    assert_eq!(
+        approved.action,
+        Action::Stop,
+        "the candidate's version is what decides now: {}",
+        approved.receipt
+    );
+    assert_eq!(approved.receipt["changed_old_tests"][0]["approved"], true);
+    assert_eq!(approved.receipt["regression"]["status"], "held");
+}
+
+#[test]
+fn an_approved_test_whose_own_version_fails_is_a_broken_regression() {
+    let fx = Fixture::new();
+    fx.write("tests/test_app.py", &TEST_APP.replace("== 3", "== 4"));
+    let before = fx.check();
+    assert_eq!(
+        before.action,
+        Action::AskPerson,
+        "the baseline form passes: {}",
+        before.receipt
+    );
+    assert_eq!(
+        before.receipt["changed_old_tests"][0]["restored_result"],
+        "passes"
+    );
+    let after = approve(&fx, &["old-test:tests/test_app.py"]);
+    assert_eq!(after.action, Action::Repair, "{}", after.receipt);
+    assert_eq!(
+        after.receipt["regression"]["failed"],
+        json!(["tests/test_app.py::test_add"])
+    );
+}
+
+#[test]
+fn an_unrelated_failure_beside_an_edited_test_is_repaired_first() {
+    let fx = Fixture::new();
+    fx.write(
+        "tests/test_app.py",
+        &format!("{TEST_APP}\n\ndef test_more():\n    assert add(2, 2) == 4\n"),
+    );
+    fx.write("other.py", BROKEN_OTHER);
+    let out = fx.check();
+    let r = &out.receipt;
+    assert_eq!(out.action, Action::Repair, "{r}");
     assert_eq!(r["regression"]["status"], "broken");
     assert_eq!(
         r["regression"]["failed"],
-        json!(["tests/test_app.py::test_add"])
+        json!(["tests/test_other.py::test_neg"])
     );
-    let old = &r["changed_old_tests"][0];
-    assert_eq!(old["item"], "old-test:tests/test_app.py");
-    assert_eq!(old["kind"], "modified");
-    assert_eq!(old["restored_result"], "fails", "{r}");
-    assert_eq!(old["approved"], false);
+    assert_eq!(
+        r["changed_old_tests"][0]["restored_result"], "passes",
+        "the edited file is not the one that fails"
+    );
 }
 
 #[test]
@@ -136,7 +199,7 @@ fn a_deleted_old_test_is_restored_for_the_run_and_approved_as_a_deletion() {
         r["regression"]["status"], "held",
         "the deleted tests still ran: {r}"
     );
-    assert_eq!(r["regression"]["tests_run"], 2);
+    assert_eq!(r["regression"]["tests_run"], 3);
     assert_eq!(r["changed_old_tests"][0]["kind"], "deleted");
     let item = vec!["old-test:tests/test_app.py".to_owned()];
     assert_eq!(fx.run(&fx.request(&item)).action, Action::Stop);
@@ -298,14 +361,104 @@ fn enforced_needs_a_baseline_and_refuses_local_approvals() {
 }
 
 #[test]
-fn an_added_conftest_is_not_a_pass() {
+fn a_runner_configuration_edit_is_a_question_for_a_person_never_a_break() {
+    let fx = Fixture::new();
+    fx.write(
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\ndependencies = [\"requests\"]\n",
+    );
+    let out = fx.check();
+    let r = &out.receipt;
+    assert_eq!(out.action, Action::AskPerson, "{r}");
+    assert_eq!(r["regression"]["status"], "held");
+    let entry = &r["changed_old_tests"][0];
+    assert_eq!(entry["item"], "runner-config:pyproject.toml");
+    assert_eq!(
+        (entry["type"].as_str(), entry["kind"].as_str()),
+        (Some("runner-config"), Some("modified"))
+    );
+    assert_eq!(entry["restored_result"], "passes");
+    let text = emi_done::text::render(r);
+    assert!(
+        text.contains("emi done --approve runner-config:pyproject.toml"),
+        "{text}"
+    );
+    let approved = approve(&fx, &["runner-config:pyproject.toml"]);
+    assert_eq!(approved.action, Action::Stop, "{}", approved.receipt);
+}
+
+#[test]
+fn an_added_conftest_is_an_item_for_a_person_and_says_it_ran() {
     let fx = Fixture::new();
     fx.write("tests/conftest.py", "# would rewrite outcomes\n");
     let out = fx.check();
-    assert_eq!(out.action, Action::Repair, "{}", out.receipt);
-    assert_eq!(out.receipt["regression"]["status"], "broken");
-    let reasons = strs(&out.receipt["regression"]["reasons"]).join(" ");
-    assert!(reasons.contains("conftest.py"), "{reasons}");
+    let r = &out.receipt;
+    assert_eq!(out.action, Action::AskPerson, "{r}");
+    let entry = &r["changed_old_tests"][0];
+    assert_eq!(entry["item"], "runner-config:tests/conftest.py");
+    assert_eq!(entry["kind"], "added");
+    let reasons = strs(&r["regression"]["reasons"]).join(" ");
+    assert!(
+        reasons.contains("tests/conftest.py"),
+        "the run included it, and the receipt says so: {reasons}"
+    );
+    assert_eq!(
+        approve(&fx, &["runner-config:tests/conftest.py"]).action,
+        Action::Stop
+    );
+}
+
+#[test]
+fn a_branch_cut_from_the_default_branch_needs_no_baseline_for_uncommitted_work() {
+    let fx = Fixture::new();
+    git(fx.path(), &["checkout", "-q", "-b", "fresh", "main"]);
+    fx.write(
+        "app.py",
+        &format!("{APP}\n\ndef mul(a, b):\n    return a * b\n"),
+    );
+    let out = fx.check();
+    assert_eq!(out.action, Action::Stop, "{}", out.receipt);
+    assert_eq!(out.receipt["baseline"]["source"], "merge-base:main");
+}
+
+/// A change to the linked virtualenv between checks.
+fn touch_venv(fx: &Fixture) {
+    let venv = fx.path().join(".venv");
+    std::fs::write(venv.join("installed-later.txt"), "a new package\n")
+        .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn dependencies_that_changed_between_checks_are_pinned_again_when_cooperative_and_refused_when_enforced()
+ {
+    let fx = Fixture::new();
+    assert_eq!(fx.check().action, Action::Stop);
+    touch_venv(&fx);
+    let again = fx.check();
+    assert_eq!(
+        again.action,
+        Action::Stop,
+        "a person's environment changes between checks: {}",
+        again.receipt
+    );
+
+    let enforced = emi_done::Request {
+        setting: Setting::Enforced,
+        ..fx.check_against("main", Given::Explicit)
+    };
+    assert_eq!(
+        fx.run(&enforced).action,
+        Action::Stop,
+        "frozen on first use"
+    );
+    std::fs::write(fx.path().join(".venv/installed-again.txt"), "x\n").unwrap_or_default();
+    let refused = fx.run(&enforced);
+    assert_eq!(refused.action, Action::Incomplete, "{}", refused.receipt);
+    assert!(
+        strs(&refused.receipt["regression"]["reasons"])
+            .join(" ")
+            .contains("dependency directories differ")
+    );
 }
 
 #[test]

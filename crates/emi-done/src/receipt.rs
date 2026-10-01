@@ -1,4 +1,4 @@
-//! The receipt (`emi-done-receipt-0.1`): the two evidence parts, the
+//! The receipt (`emi-done-receipt-0.2`): the two evidence parts, the
 //! changed old tests, the action, and what none of it establishes. The
 //! change part arrives as a value ([`ChangeEvidence`]); everything else is
 //! assembled from what this crate measured.
@@ -16,7 +16,7 @@ use crate::config::OnUnproven;
 use crate::oldtests::Entry;
 use crate::regression::{Regression, Status};
 
-pub const SCHEMA: &str = "emi-done-receipt-0.1";
+pub const SCHEMA: &str = "emi-done-receipt-0.2";
 
 /// Everything a receipt is made of.
 pub struct Parts<'a> {
@@ -172,7 +172,7 @@ pub fn not_verified(l: &Limits) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oldtests::{Changed, Kind};
+    use crate::oldtests::{Changed, Kind, What};
     use crate::regression::Restored;
 
     fn held() -> Regression {
@@ -182,6 +182,7 @@ mod tests {
             failed: Vec::new(),
             missing: Vec::new(),
             reasons: Vec::new(),
+            attributed: Vec::new(),
             complete: true,
         }
     }
@@ -190,6 +191,7 @@ mod tests {
         Entry {
             changed: Changed {
                 path: "tests/t.py".into(),
+                what: What::OldTest,
                 kind: Kind::Modified,
                 content: "c".repeat(40),
             },
