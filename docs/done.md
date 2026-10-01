@@ -135,6 +135,16 @@ dependencies) and once on the candidate:
 - a test the candidate added counts when it fails, not when it is skipped
   (the change evidence reports that).
 
+A test file the baseline already cannot import is tolerated the same way: the
+run continues past it and its tests are not regression evidence. A file only
+the candidate cannot collect is a break, or, for an added test file, leaves
+the change evidence unknown.
+
+Tests appended to an old test file need no approval: every line the baseline
+had is still there, so nothing was rewritten. The file still runs in its
+baseline form as regression evidence, and the appended tests are judged as
+change evidence. A file with removed or changed lines asks a person.
+
 The first check of a baseline therefore runs the suite twice. An empty
 suite, a report that names fewer tests than were collected, an exit status
 that disagrees with the report, and a cut or unreadable report are
