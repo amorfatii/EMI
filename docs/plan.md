@@ -169,8 +169,24 @@ Evaluated top to bottom; the first match wins.
 | `regression.status` is `broken` | `repair` |
 | `change.redundant_tests` is not empty | `repair` |
 | `on_unproven` is `repair` and a function is `unproven` | `repair` |
-| A changed old test is not approved | `ask_person` |
+| A changed old test or changed runner configuration is not approved | `ask_person` |
 | Otherwise | `stop` |
+
+How `regression.status` is computed decides whether decision 9 works, so it
+is fixed here:
+
+- Old tests and runner configuration the candidate did not touch are the
+  regression evidence. A failure among them is `broken`.
+- An old test file the candidate modified or deleted is run in its baseline
+  form. If that form fails, the failure is **not** `broken`: it is the
+  question for the person ("this old test fails as it was; the proposer
+  rewrote it"). The entry carries `restored_result: fails`.
+- Once the person approves the item, the candidate's version of that file is
+  used instead of the restored one, and its tests count as regression
+  evidence like any other.
+- A modified runner configuration file is handled the same way: restored for
+  the run, listed as an item `runner-config:PATH`, approved by a person.
+  Editing it never makes the status `broken` by itself.
 
 ### The hook
 
