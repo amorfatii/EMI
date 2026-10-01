@@ -146,6 +146,19 @@ impl Command {
         argv
     }
 
+    /// Run what the configured command runs, printing one outcome line per
+    /// test (`<id> PASSED`) and no tracebacks: the form a reader can
+    /// compare test by test with another run.
+    pub fn report_argv(&self) -> Vec<String> {
+        let mut argv = self.launcher.clone();
+        argv.extend(self.without(&[VERBOSITY, &["--tb"]]));
+        argv.extend(self.selectors.clone());
+        // the classic style ends each line at the outcome, with no progress
+        // column to grow the report
+        argv.extend(["-v", "--tb=no", "-o", "console_output_style=classic"].map(str::to_owned));
+        argv
+    }
+
     /// Everything before the ids of a run of chosen tests.
     fn run_prefix(&self, junit: &str) -> Vec<String> {
         let mut argv: Vec<String> = Vec::new();

@@ -541,6 +541,7 @@ fn verification_gate(
         match (base_ids, candidate_ids) {
             (Ok(base), Ok(cand)) => {
                 let missing: Vec<&String> = base.difference(&cand).collect();
+                let added: Vec<&String> = cand.difference(&base).collect();
                 if !missing.is_empty() {
                     state = "fail";
                 }
@@ -552,7 +553,8 @@ fn verification_gate(
                     (true, false) => "pass",
                 };
                 gate["inventory"] = json!({"state": inventory_state,
-                    "baseline": base.len(), "candidate": cand.len(), "missing": missing});
+                    "baseline": base.len(), "candidate": cand.len(), "missing": missing,
+                    "added": added});
             }
             (Err(e), _) | (_, Err(e)) => {
                 if state != "fail" {
@@ -651,10 +653,16 @@ fn run_check_within(
             "the check states no usable success.exit_code".into(),
         );
     };
-    let spec = match exec_spec(&def["command"], workspace, execution, timeout, mounts) {
+    let mut spec = match exec_spec(&def["command"], workspace, execution, timeout, mounts) {
         Ok(spec) => spec,
         Err(e) => return refused_run(id, def, e),
     };
+    let declares_evidence = def.get("evidence").is_some_and(|v| !v.is_null());
+    if declares_evidence {
+        // a report with one line per test outgrows the default limit on a
+        // large suite, and a cut report is no evidence at all
+        spec.output_limit = EVIDENCE_OUTPUT_LIMIT;
+    }
     let o = emi_exec::run(&spec);
     let unsandboxed = sandbox_required(execution) && o.receipt.isolation != "bwrap";
     let (status, attribution) = match o.status {
@@ -672,11 +680,14 @@ fn run_check_within(
     // the verdict rests on the exit status, which output limits cannot cut,
     // but the retained output is the first bytes: say when it is not all
     let limit = spec.output_limit as u64;
-    let (status, attribution, evidence) = if with_evidence {
+    let (status, attribution, mut evidence) = if with_evidence {
         apply_evidence(def, &o, limit, status, attribution)
     } else {
         (status.to_owned(), attribution.to_owned(), Value::Null)
     };
+    if evidence.is_object() {
+        evidence["outcomes"] = outcomes(&o, limit);
+    }
     let record = json!({
         "check_id": id, "check_definition_id": digest("check-definition", def),
         "status": status, "attribution": attribution, "exit_code": o.exit_code, "signal": o.signal,
@@ -742,6 +753,32 @@ fn apply_evidence(
             "candidate".to_owned(),
             json!({"format": "pytest", "state": "fail", "reason": why}),
         ),
+    }
+}
+
+/// Output kept from a check that declares execution evidence.
+const EVIDENCE_OUTPUT_LIMIT: usize = 32 << 20;
+
+/// Which tests the run itself named as not passing, whatever its exit
+/// status: what a caller needs to compare one run with another (a test
+/// already skipped at the baseline is not a regression). `null` unless the
+/// whole output was kept and it holds one outcome line per test.
+fn outcomes(o: &emi_exec::Outcome, limit: u64) -> Value {
+    if o.stdout_bytes > limit || o.stderr_bytes > limit {
+        return Value::Null;
+    }
+    match crate::evidence::parse(&o.stdout) {
+        Ok(ev) if ev.kind == crate::evidence::Kind::Lines => {
+            let failed: std::collections::BTreeSet<&String> =
+                ev.failed.iter().chain(&ev.errored).collect();
+            let skipped: Vec<&String> = ev
+                .skipped
+                .iter()
+                .filter(|id| !failed.contains(id))
+                .collect();
+            json!({"passed": ev.passed.len(), "failed": failed, "skipped": skipped})
+        }
+        _ => Value::Null,
     }
 }
 

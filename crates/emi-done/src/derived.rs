@@ -75,16 +75,14 @@ pub fn trusted(
 /// cannot be restored, so it is a review item, which the receipt turns
 /// into a question for a person.
 pub fn spec(repo: &Path, config: &Config, baseline: &str, trusted: &[String]) -> Value {
-    let pytest = is_pytest(&config.tests.command);
     let mut command = config.tests.command.clone();
-    if pytest {
-        // failures are named in the short summary; tracebacks would only
-        // push those lines out of the output the controller keeps
-        command.push("--tb=no".to_owned());
-    }
     let mut verification = json!({"trusted": trusted, "runner_config": "review"});
     let mut evidence = Value::Null;
     if let Ok(pytest) = emi_proving::pytest::Command::parse(&config.tests.command) {
+        // one outcome line per test, so this run can be compared test by
+        // test with the baseline's: a test the baseline already skipped is
+        // not a regression, one that stopped running is
+        command = pytest.report_argv();
         // Two quiet flags make real pytest print counts by file, not ids.
         // Share the normalizer used by the proving measurement.
         let inventory = pytest.list_argv();
@@ -142,6 +140,20 @@ pub fn open(authority: &Path, repo: &Path, baseline: &str, spec: &Value) -> Resu
 pub struct Verified {
     pub decision: Value,
     pub check: Option<Value>,
+}
+
+/// The recorded run of the test check on the baseline itself, under the
+/// task's current contract: what the candidate's run is compared with. The
+/// baseline's outcomes do not change, so one run serves every later check
+/// of the same task; a contract revision (new dependencies) runs it again.
+pub fn baseline_check(store: &Store, baseline: &str) -> Result<Option<Value>, String> {
+    let contract = store.contract()?;
+    let id = contract["contract_id"].as_str().unwrap_or("");
+    let decision = match store.latest_decision(baseline, id)? {
+        Some(known) => known,
+        None => verify(store, &Candidate::Ref(baseline.to_owned()))?,
+    };
+    recorded_check(store, &decision)
 }
 
 fn recorded_check(store: &Store, decision: &Value) -> Result<Option<Value>, String> {
@@ -231,8 +243,16 @@ mod tests {
             ])
         );
         assert_eq!(
-            spec["checks"]["tests"]["command"].as_array().map(Vec::len),
-            Some(5)
+            spec["checks"]["tests"]["command"],
+            json!([
+                ".venv/bin/python",
+                "-m",
+                "pytest",
+                "-v",
+                "--tb=no",
+                "-o",
+                "console_output_style=classic"
+            ])
         );
         assert!(
             spec.get("budgets").is_none(),

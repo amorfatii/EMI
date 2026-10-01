@@ -151,3 +151,44 @@ fn skipped_regressions_and_unmeasurable_added_tests_are_incomplete() {
         "tests/test_new.py::test_future"
     );
 }
+
+#[test]
+fn old_skips_and_old_failures_do_not_block_but_a_test_that_stops_running_does() {
+    let p = Project::new();
+    p.write("flags.py", "SLOW = False\n");
+    p.write(
+        "tests/test_env.py",
+        "import pytest\nimport flags\n\n@pytest.mark.skip(reason='needs a database')\ndef test_db():\n    assert False\n\n@pytest.mark.xfail(reason='known')\ndef test_known():\n    assert False\n\ndef test_legacy():\n    assert False\n\ndef test_fast():\n    if flags.SLOW:\n        pytest.skip('slow machine')\n    assert True\n",
+    );
+    p.commit("a baseline with a skip, an expected failure and a failing test");
+
+    p.write(
+        "app.py",
+        "def add(a, b):\n    if a is None:\n        return b\n    return a + b\n",
+    );
+    p.write(
+        "tests/test_new.py",
+        "from app import add\n\ndef test_none():\n    assert add(None, 2) == 2\n",
+    );
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    assert!(
+        receipt["regression"]["reasons"][0]
+            .as_str()
+            .expect("note")
+            .contains("already failed at the baseline"),
+        "{receipt}"
+    );
+    assert_eq!(receipt["change"]["status"], "proven", "{receipt}");
+
+    p.write("flags.py", "SLOW = True\n");
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "broken", "{receipt}");
+    assert_eq!(
+        receipt["regression"]["failed"],
+        json!(["tests/test_env.py::test_fast"]),
+        "{receipt}"
+    );
+}

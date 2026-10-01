@@ -288,6 +288,13 @@ inventory flag that the stand-in runner had not caught.
   done` inherits it; this does not imply undeclared generic `emi task`
   checks gained per-test evidence.
 
+- Regression evidence compares each test with the baseline's own run
+  (2026-10-01, after the integration): a suite with skipped, expected-failure
+  or already-failing tests no longer makes every check `incomplete`. The
+  controller records which tests a run named as not passing; `emi done`
+  runs the check once on the baseline, keeps it, and counts against the
+  candidate only a test that did worse. Checked against real pytest.
+
 ### Experiment decision recorded, still unregistered
 
 `emi-lab/protocols/H1-completion-hook.md` is a **draft**, not a registered or

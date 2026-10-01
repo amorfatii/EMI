@@ -122,9 +122,26 @@ pinned again; enforced verification refuses them (`incomplete`).
   baseline has no `.emi/config.json` the action is `incomplete`. Local
    approvals are not read, so a changed old test stays a review item.
 
-Pytest skips, expected failures, empty suites and unreadable or truncated
-execution evidence are `incomplete`. This is stricter than ordinary pytest
-exit 0: collection alone is not proof the tests executed.
+Regression evidence is a comparison, test by test, with the baseline's own
+run. The test command runs once on the baseline (the result is kept and
+reused for every later check of the same baseline, configuration and
+dependencies) and once on the candidate:
+
+- a test the baseline already skipped, or expected to fail, may stay so;
+- a test that already failed at the baseline is not regression evidence,
+  and the receipt says how many there are;
+- a test that passed at the baseline and now fails, or no longer runs
+  (skipped by the candidate's code), is `broken`;
+- a test the candidate added counts when it fails, not when it is skipped
+  (the change evidence reports that).
+
+The first check of a baseline therefore runs the suite twice. An empty
+suite, a report that names fewer tests than were collected, an exit status
+that disagrees with the report, and a cut or unreadable report are
+`incomplete`: collection alone is not proof the tests executed. A run that
+does not print one outcome per test (for example under `pytest-xdist`)
+cannot be compared, and falls back to the strict rule: any skip or expected
+failure is `incomplete`.
 
 `enforced` describes which inputs EMI reads. It is **not yet a claim of
 adversarial security**: isolation-before-launch, sealed dependencies and

@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
+use crate::outcomes::Outcomes;
 use crate::pytest;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +247,93 @@ pub fn from_decision(
     verdict(base, decision, ok, scope)
 }
 
+/// The receipt's `regression` when both the baseline's run and the
+/// candidate's named their tests one by one: a test counts against the
+/// candidate only if it did worse than at the baseline. A test the baseline
+/// already skipped, or that already failed there, is not regression
+/// evidence; a test that passed there and no longer runs is a break, like
+/// one that now fails. Tests the candidate added count when they fail (the
+/// suite must be repaired) and not when they are skipped (the change
+/// evidence reports those).
+pub fn from_outcomes(
+    decision: &Value,
+    check: Option<&Value>,
+    (base, cand): (&Outcomes, &Outcomes),
+    scope: &Scope,
+) -> Regression {
+    if !matches!(
+        decision["decision"].as_str(),
+        Some("accepted" | "needs_review" | "rejected")
+    ) {
+        return Regression::unknown(strings(&decision["reasons"]));
+    }
+    match (Run::of(check).code, cand.failed.is_empty()) {
+        (Some(0), true) | (Some(1), false) => {}
+        (Some(0 | 1), _) => {
+            return Regression::unknown(vec![
+                "the test command's exit status disagrees with its own per-test report".into(),
+            ]);
+        }
+        // a collection error, or pytest saying it ran nothing: the
+        // per-test lines are not the whole story
+        _ => return from_decision(decision, check, true, scope),
+    }
+    let inventory = &decision["gates"]["verification"]["inventory"];
+    if let Some(collected) = inventory["candidate"]
+        .as_u64()
+        .filter(|n| cand.reported() < *n)
+    {
+        return Regression::unknown(vec![format!(
+            "{} of {collected} collected tests have no outcome in the run's own report",
+            collected - cand.reported()
+        )]);
+    }
+    let added: BTreeSet<String> = strings(&inventory["added"]).into_iter().collect();
+    let new_failures = cand.failed.iter().filter(|id| !base.failed.contains(*id));
+    let stopped: Vec<String> = cand
+        .skipped
+        .iter()
+        .filter(|id| !base.not_passing(id) && !added.contains(*id))
+        .cloned()
+        .collect();
+    let seen: Vec<String> = new_failures.cloned().chain(stopped.clone()).collect();
+    let missing_all = strings(&inventory["missing"]);
+    let touched = |id: &String, files: &BTreeSet<String>| files.contains(pytest::file_of(id));
+    let mut attributed: Vec<String> = seen.iter().cloned().chain(missing_all.clone()).collect();
+    attributed.sort();
+    attributed.dedup();
+    let draft = Regression {
+        status: Status::Held,
+        tests_run: Some(cand.passed + cand.failed.len() as u64),
+        failed: seen
+            .into_iter()
+            .filter(|id| !touched(id, &scope.restored))
+            .collect(),
+        missing: missing_all
+            .into_iter()
+            .filter(|id| !touched(id, &scope.approved))
+            .collect(),
+        reasons: Vec::new(),
+        complete: true,
+        attributed,
+    };
+    let mut r = verdict(draft, decision, all_verified(decision), scope);
+    let already_failing = cand.failed.intersection(&base.failed).count();
+    let note = match r.status {
+        Status::Broken => counted(
+            stopped.iter().filter(|id| r.failed.contains(*id)).count(),
+            "of them passed at the baseline and did not run on the candidate",
+        ),
+        Status::Held => counted(
+            already_failing,
+            "test(s) already failed at the baseline and are not regression evidence",
+        ),
+        Status::Unknown => None,
+    };
+    r.reasons.extend(note);
+    r
+}
+
 /// Settle the status from what was attributed.
 fn verdict(mut r: Regression, decision: &Value, ok: bool, scope: &Scope) -> Regression {
     let inventory_state = decision["gates"]["verification"]["inventory"]["state"].as_str();
@@ -325,6 +413,136 @@ mod tests {
 
     fn judge(d: &Value, c: &Value, s: &Scope) -> Regression {
         from_decision(d, Some(c), true, s)
+    }
+
+    fn outcomes(passed: u64, failed: &[&str], skipped: &[&str]) -> Outcomes {
+        let set = |l: &[&str]| l.iter().map(|s| (*s).to_owned()).collect();
+        Outcomes {
+            passed,
+            failed: set(failed),
+            skipped: set(skipped),
+        }
+    }
+
+    fn compare(d: &Value, code: i64, base: &Outcomes, cand: &Outcomes, s: &Scope) -> Regression {
+        from_outcomes(d, Some(&run(code, "")), (base, cand), s)
+    }
+
+    #[test]
+    fn tests_the_baseline_already_skipped_do_not_block_a_hold() {
+        // the controller rejects any run with a skip; the comparison explains it
+        let base = outcomes(4, &[], &["tests/a.py::test_s"]);
+        let r = compare(
+            &decision("rejected", "failed"),
+            0,
+            &base,
+            &base.clone(),
+            &Scope::default(),
+        );
+        assert_eq!((r.status, r.tests_run), (Status::Held, Some(4)));
+        assert_eq!(r.restored_result("tests/a.py"), Restored::Passes);
+    }
+
+    #[test]
+    fn a_test_that_passed_at_the_baseline_and_no_longer_runs_is_a_break() {
+        let base = outcomes(5, &[], &[]);
+        let cand = outcomes(4, &[], &["tests/a.py::test_x"]);
+        let r = compare(
+            &decision("rejected", "failed"),
+            0,
+            &base,
+            &cand,
+            &Scope::default(),
+        );
+        assert_eq!(
+            (r.status, r.failed.clone()),
+            (Status::Broken, vec!["tests/a.py::test_x".to_owned()])
+        );
+        assert!(r.reasons.iter().any(|m| m.contains("did not run")), "{r:?}");
+    }
+
+    #[test]
+    fn a_failure_the_baseline_already_had_is_noted_and_a_new_one_breaks() {
+        let base = outcomes(4, &["tests/a.py::test_old"], &[]);
+        let same = compare(
+            &decision("rejected", "failed"),
+            1,
+            &base,
+            &base.clone(),
+            &Scope::default(),
+        );
+        assert_eq!(same.status, Status::Held);
+        assert!(same.reasons[0].contains("already failed at the baseline"));
+        let cand = outcomes(3, &["tests/a.py::test_old", "tests/b.py::test_new"], &[]);
+        let worse = compare(
+            &decision("rejected", "failed"),
+            1,
+            &base,
+            &cand,
+            &Scope::default(),
+        );
+        assert_eq!(
+            (worse.status, worse.failed.clone()),
+            (Status::Broken, vec!["tests/b.py::test_new".to_owned()])
+        );
+    }
+
+    #[test]
+    fn an_added_test_that_is_skipped_is_not_a_regression_and_one_that_fails_is() {
+        let base = outcomes(5, &[], &[]);
+        let mut d = decision("rejected", "failed");
+        d["gates"]["verification"]["inventory"] = json!({"state": "pass", "baseline": 5,
+            "candidate": 6, "missing": [], "added": ["tests/n.py::test_new"]});
+        let skipped = outcomes(5, &[], &["tests/n.py::test_new"]);
+        assert_eq!(
+            compare(&d, 0, &base, &skipped, &Scope::default()).status,
+            Status::Held
+        );
+        let failing = outcomes(5, &["tests/n.py::test_new"], &[]);
+        assert_eq!(
+            compare(&d, 1, &base, &failing, &Scope::default()).status,
+            Status::Broken
+        );
+    }
+
+    #[test]
+    fn a_report_that_disagrees_with_the_exit_or_the_collection_is_unknown() {
+        let base = outcomes(5, &[], &[]);
+        let d = decision("rejected", "failed");
+        let failing = outcomes(4, &["tests/a.py::test_x"], &[]);
+        for (code, cand) in [(0, &failing), (1, &base)] {
+            assert_eq!(
+                compare(&d, code, &base, cand, &Scope::default()).status,
+                Status::Unknown,
+                "exit {code}"
+            );
+        }
+        // five collected, three reported: an early exit after collection
+        let short = outcomes(3, &[], &[]);
+        let r = compare(
+            &decision("accepted", "verified"),
+            0,
+            &base,
+            &short,
+            &Scope::default(),
+        );
+        assert_eq!(r.status, Status::Unknown);
+        assert!(r.reasons[0].contains("2 of 5"), "{r:?}");
+    }
+
+    #[test]
+    fn a_new_failure_in_a_restored_file_is_still_the_persons_question() {
+        let base = outcomes(5, &[], &[]);
+        let cand = outcomes(4, &["tests/a.py::test_x"], &[]);
+        let r = compare(
+            &decision("rejected", "failed"),
+            1,
+            &base,
+            &cand,
+            &scope(&["tests/a.py"], &[]),
+        );
+        assert_eq!(r.status, Status::Held);
+        assert_eq!(r.restored_result("tests/a.py"), Restored::Fails);
     }
 
     const FAIL_A: &str = "..F\nFAILED tests/a.py::test_x - assert\n1 failed, 4 passed in 1s\n";

@@ -10,6 +10,7 @@ use crate::candidate::{self, Candidate};
 use crate::change::ChangeEvidence;
 use crate::config::Config;
 use crate::oldtests::{self, Changed, Entry};
+use crate::outcomes::Outcomes;
 use crate::regression::{self, Regression};
 use crate::state::{self, Approval};
 use crate::{ChangeContext, Error, Outcome, Request, Setting, derived, receipt};
@@ -66,13 +67,24 @@ fn try_measure(
     }
     let pytest = derived::is_pytest(&config.tests.command);
     let scope = oldtests::scope(entries);
+    let check = verified.check.as_ref();
+    // when the candidate's run named its tests one by one, compare it with
+    // the baseline's own run instead of demanding a suite with no skips
+    let compared = match Outcomes::of(check) {
+        Some(cand) => {
+            let base = derived::baseline_check(&store, &baseline.sha)?;
+            Outcomes::of(base.as_ref()).map(|base| (base, cand))
+        }
+        None => None,
+    };
+    let regression = match &compared {
+        Some((base, cand)) => {
+            regression::from_outcomes(&verified.decision, check, (base, cand), &scope)
+        }
+        None => regression::from_decision(&verified.decision, check, pytest, &scope),
+    };
     Ok(Measured {
-        regression: regression::from_decision(
-            &verified.decision,
-            verified.check.as_ref(),
-            pytest,
-            &scope,
-        ),
+        regression,
         isolation,
     })
 }

@@ -20,6 +20,7 @@ pub mod config;
 pub mod derived;
 pub mod detect;
 pub mod oldtests;
+pub mod outcomes;
 pub mod pytest;
 pub mod receipt;
 pub mod regression;
