@@ -26,11 +26,15 @@ emi-controller.workspace = true
 emi-lsp.workspace = true
 emi-panel.workspace = true
 emi-profile.workspace = true
+emi-hook = { path = "../emi-hook" }
 anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
 shlex.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

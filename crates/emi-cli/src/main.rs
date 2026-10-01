@@ -190,6 +190,10 @@ enum Command {
         /// Source files; the extension picks the grammar.
         files: Vec<PathBuf>,
     },
+    /// Run the done check when a coding agent tries to stop (Claude Code,
+    /// opencode), and install or remove that hook.
+    #[command(subcommand)]
+    Hook(emi_hook::cli::Command),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
     /// Language server (stdio): rule diagnostics, erosion hints, burden-delta code lenses.
@@ -350,6 +354,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Panel { files } => panel(&files),
         Command::Explain(args) => explaincli::run(&args),
         Command::Profile(args) => profilecli::run(&args),
+        Command::Hook(cmd) => emi_hook::cli::run(&cmd),
         Command::Lsp => {
             emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)
