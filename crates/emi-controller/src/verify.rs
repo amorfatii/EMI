@@ -58,7 +58,11 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 /// `(path, kind)` of every change from the baseline, renames split into
 /// delete + add.
-fn changes(repo: &Path, baseline: &str, candidate: &str) -> Result<Vec<(String, &'static str)>> {
+pub fn changes(
+    repo: &Path,
+    baseline: &str,
+    candidate: &str,
+) -> Result<Vec<(String, &'static str)>> {
     let raw = git(
         repo,
         &[
