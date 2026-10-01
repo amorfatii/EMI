@@ -19,6 +19,26 @@ fn event(p: &Project, name: &str, session: &str) -> Value {
     }
 }
 
+/// The journal has the three checks the hook ran, and takes a label.
+fn journal_has_the_three_checks_and_takes_a_label(p: &Project) {
+    let report = p.emi(&["journal", "report", "--format", "json"], None);
+    assert!(report.status.success(), "{report:?}");
+    let s: Value = serde_json::from_slice(&report.stdout).expect("journal JSON");
+    assert_eq!(s["checks"], 3, "{s}");
+    assert_eq!(s["sent_back"], 2, "{s}");
+    assert_eq!(
+        s["rules"],
+        json!([["redundant_test", 1], ["regression", 1]]),
+        "{s}"
+    );
+    let id = s["unlabelled"][0]["id"].as_str().expect("an id").to_owned();
+    let labelled = p.emi(&["journal", "label", &id[..6], "useful"], None);
+    assert!(labelled.status.success(), "{labelled:?}");
+    let text = p.emi(&["journal", "report"], None);
+    let text = String::from_utf8_lossy(&text.stdout).into_owned();
+    assert!(text.contains("Labels: useful 1."), "{text}");
+}
+
 #[test]
 fn a_scripted_proposer_repairs_a_false_completion_then_removes_redundancy() {
     let p = Project::new();
@@ -74,6 +94,8 @@ fn a_scripted_proposer_repairs_a_false_completion_then_removes_redundancy() {
         event(&p, "stop", "repair").is_null(),
         "unchanged content is skipped"
     );
+
+    journal_has_the_three_checks_and_takes_a_label(&p);
 }
 
 #[test]

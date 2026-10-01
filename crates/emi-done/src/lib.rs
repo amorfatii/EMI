@@ -241,6 +241,7 @@ fn unconfigured(
         on_unproven: config::OnUnproven::Report,
         faults: Vec::new(),
         not_verified: receipt::not_verified(&limits),
+        this_run: receipt::this_run(&limits),
     };
     let (receipt, action) = receipt::assemble(&parts);
     Outcome { receipt, action }

@@ -17,7 +17,7 @@ fn a_clean_change_holds_and_the_receipt_is_deterministic() {
     let first = fx.check();
     let r = &first.receipt;
     assert_eq!(first.action, Action::Stop, "{r}");
-    assert_eq!(r["schema"], "emi-done-receipt-0.3");
+    assert_eq!(r["schema"], "emi-done-receipt-0.4");
     assert_eq!(r["regression"]["status"], "held", "{r}");
     assert_eq!(r["regression"]["tests_run"], 3, "{r}");
     assert_eq!(r["regression"]["failed"], json!([]));

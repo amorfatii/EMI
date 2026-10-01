@@ -53,3 +53,28 @@ This check requires OpenCode V2 installed; the ordinary suite skips it explicitl
 It confirms two repairs, round numbering, and a final queued receipt with no
 fourth provider call. That tests integration, not usefulness. The experiment and owner
 trial remain separate release evidence; see `docs/plan.md`.
+
+## The journal
+
+Every check the hook runs is appended to a journal outside the repository
+(under the user's state directory, one file per repository): when it ran, the
+session, the action, which rule it rested on, the repair round, how long it
+took, and the receipt in counts. Checks skipped because nothing changed are
+not recorded.
+
+```sh
+emi journal report                 # checks, interventions by rule, time, labels
+emi journal label 3f2a9c useful    # or: noise, wrong   [--note "why"]
+```
+
+An intervention is a check whose action was not `stop`. Labelling them is how
+a person records whether the hook was worth its time: `useful` (it caught
+something, or said something needed), `noise` (right, not worth the time),
+`wrong` (mistaken). The report lists the ones not labelled yet.
+
+## Crash reports
+
+Test suites crash child processes on purpose. EMI starts its commands with a
+core limit of one byte, which keeps those crashes out of the system's crash
+reports (and off the desktop); `emi` itself therefore leaves no core dump
+either.

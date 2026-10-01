@@ -42,7 +42,7 @@ part in a decision.
 | 8 | A test the candidate adds stays only if it is a proving test. A redundant test goes back to the proposer for removal. The stricter mutation rule is opt-in. |
 | 9 | A changed or deleted old test is shown to a person for one approval; in CI it is a review item. |
 | 10 | Three repair rounds by default, reset on each user message. When they run out the proposer stops and the person sees the receipt marked NOT VERIFIED. |
-| 11 | Tokens are not measured in the product. `max_tokens` leaves the contract. Feedback to the proposer names the first failing thing only. |
+| 11 | Tokens are not measured in the product. `max_tokens` leaves the contract. Feedback to the proposer names the first failing kind of thing: every item of it (up to five, then a count), each with what to do. One round can then settle them; one item per round cost two rounds for two tests in the first live pilot. |
 | 12 | Cooperative verification on the user's machine; enforced verification in CI. Every receipt states which. |
 | 13 | EMI reports a status and never merges (ADR 0001). |
 | 14 | Python with pytest first, then JavaScript/TypeScript. |
@@ -119,11 +119,11 @@ emi done [--repo .] [--baseline REF] [--setting cooperative|enforced]
 The top-level field is an `action`, not a verdict: the two evidence parts are
 the truth, and "stop" does not mean "correct".
 
-### Interface 3: the receipt (`emi-done-receipt-0.3`)
+### Interface 3: the receipt (`emi-done-receipt-0.4`)
 
 ```json
 {
-  "schema": "emi-done-receipt-0.3",
+  "schema": "emi-done-receipt-0.4",
   "repo": "/abs/path",
   "baseline": {"sha": "…", "source": "merge-base:main | session | explicit"},
   "candidate": {"id": "worktree | <sha>", "content_id": "<tree sha>"},
@@ -145,14 +145,15 @@ the truth, and "stop" does not mean "correct".
     "functions": [{"file": "src/a.py", "function": "f", "line": 10,
                    "status": "proven | unproven | unknown"}],
     "proving_tests": [{"id": "tests/test_a.py::test_new", "baseline_result": "failed | errored"}],
-    "redundant_tests": [{"id": "tests/test_a.py::test_extra"}],
+    "redundant_tests": [{"id": "tests/test_a.py::test_extra", "reason": "passes at the baseline | executes no changed line"}],
     "failing_tests": [{"id": "tests/test_a.py::test_wip", "candidate_result": "failed | errored"}],
     "unknown_tests": [{"id": "…", "reason": "…"}],
     "not_measured": ["…"]
   },
   "action": "stop | repair | ask_person | incomplete",
-  "repair": ["one short instruction: the first failing thing"],
-  "not_verified": ["everything this receipt does not establish"]
+  "repair": ["one short instruction per item of the first failing kind"],
+  "not_verified": ["everything this receipt does not establish"],
+  "this_run": ["the part of not_verified that is particular to this run"]
 }
 ```
 

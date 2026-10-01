@@ -14,6 +14,7 @@ pub mod cli;
 pub mod decision;
 pub mod done;
 pub mod install;
+pub mod journal;
 pub mod opencode;
 pub mod receipt;
 pub mod repo;
@@ -98,12 +99,51 @@ fn stop_checked(env: &Env, session: &str, cwd: &Path) -> Result<Reaction, String
         rounds_limit: config.repair_rounds,
         done_command: &done_command,
     };
-    let (decision, after) = decision::on_stop(&before, &input, || match &scope {
-        Ok(args) => done::run(&env.done, &root, args),
-        Err(why) => DoneResult::incomplete(why.clone()),
+    // what the check returned and how long it took, when it ran at all
+    let mut ran: Option<(DoneResult, f64)> = None;
+    let (decision, after) = decision::on_stop(&before, &input, || {
+        let started = std::time::Instant::now();
+        let result = match &scope {
+            Ok(args) => done::run(&env.done, &root, args),
+            Err(why) => DoneResult::incomplete(why.clone()),
+        };
+        ran = Some((result.clone(), started.elapsed().as_secs_f64()));
+        result
     });
     persist(&store, &before, &after)?;
-    Ok(decision.into())
+    let noted = ran.map(|(done, seconds)| {
+        journal::record(
+            &env.state_home,
+            &root,
+            &journal::Check {
+                session,
+                content_id: &content_id,
+                reaction: match decision {
+                    Decision::Block { .. } => "block",
+                    _ => "notify",
+                },
+                action: done.action.as_str(),
+                round: after.rounds_used,
+                limit: config.repair_rounds,
+                seconds,
+                repair: &done.repair,
+                evidence: &done.evidence,
+            },
+        )
+    });
+    Ok(with_journal_fault(decision.into(), noted))
+}
+
+/// A check that ran but could not be journaled still stands; the person is
+/// told the journal has a gap, when there is a message to tell it in.
+fn with_journal_fault(reaction: Reaction, noted: Option<Result<String, String>>) -> Reaction {
+    match (reaction, noted) {
+        (Reaction::Notify { message, tone }, Some(Err(why))) => Reaction::Notify {
+            message: format!("{message}\nEMI journal not written: {why}"),
+            tone,
+        },
+        (reaction, _) => reaction,
+    }
 }
 
 /// The arguments for `emi done`. When the agent works directly on the

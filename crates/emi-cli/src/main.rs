@@ -207,6 +207,10 @@ enum Command {
     /// opencode), and install or remove that hook.
     #[command(subcommand)]
     Hook(emi_hook::cli::Command),
+    /// What the hook did in this repository (checks, interventions, time),
+    /// and a person's labels of its interventions: useful, noise or wrong.
+    #[command(subcommand)]
+    Journal(emi_hook::journal::Command),
     /// Serve EMI's tools to agents over the Model Context Protocol (stdio).
     Mcp,
     /// Language server (stdio): rule diagnostics, erosion hints, burden-delta code lenses.
@@ -381,6 +385,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Init(args) => donecli::init(&args),
         Command::Done(args) => donecli::done(&args),
         Command::Hook(cmd) => emi_hook::cli::run(&cmd),
+        Command::Journal(cmd) => emi_hook::journal::run(&cmd),
         Command::Lsp => {
             emi_lsp::serve(std::io::stdin().lock(), std::io::stdout().lock())?;
             Ok(0)

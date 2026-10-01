@@ -50,7 +50,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use classify::BaselineResult;
-pub use evidence::{ChangeEvidence, FunctionEvidence, ProvingTest, Status, UnknownTest};
+pub use evidence::{
+    ChangeEvidence, FailingTest, FunctionEvidence, ProvingTest, RedundantTest, Status, UnknownTest,
+};
 pub use measure::{measure, measure_in};
 pub use proof::FnStatus;
 

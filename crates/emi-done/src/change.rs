@@ -19,16 +19,23 @@ pub enum ChangeEvidence {
     Failed(String),
 }
 
-/// What the action table reads from the change part.
+/// A redundant test and why it would not notice the change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Redundant {
+    pub id: String,
+    /// `passes at the baseline` or `executes no changed line`; empty when
+    /// the evidence did not say.
+    pub reason: String,
+}
+
+/// What the action table and the repair lines read from the change part.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     /// Tests the candidate adds that do not pass on it.
-    pub failing_tests: usize,
-    pub first_failing: Option<String>,
-    pub redundant_tests: usize,
-    pub unproven_functions: usize,
-    pub first_redundant: Option<String>,
-    pub first_unproven: Option<String>,
+    pub failing: Vec<String>,
+    pub redundant: Vec<Redundant>,
+    /// Changed functions no proving test executes, as `file:name (line n)`.
+    pub unproven: Vec<String>,
 }
 
 const STATUSES: &[&str] = &["proven", "partly_proven", "unproven", "none", "unknown"];
@@ -87,28 +94,26 @@ impl ChangeEvidence {
         if shape_error(v).is_some() {
             return Facts::default();
         }
-        let redundant = v["redundant_tests"]
-            .as_array()
-            .map_or(&[][..], Vec::as_slice);
-        let unproven: Vec<&Value> = v["functions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|f| f["status"] == "unproven")
-            .collect();
-        // absent in evidence measured before the list existed: none
-        let failing = v["failing_tests"].as_array().map_or(&[][..], Vec::as_slice);
+        let list = |key: &str| v[key].as_array().map_or(&[][..], Vec::as_slice);
+        let text = |t: &Value, key: &str| t[key].as_str().unwrap_or("").to_owned();
         Facts {
-            failing_tests: failing.len(),
-            first_failing: failing
-                .first()
-                .map(|t| t["id"].as_str().unwrap_or("?").to_owned()),
-            redundant_tests: redundant.len(),
-            unproven_functions: unproven.len(),
-            first_redundant: redundant
-                .first()
-                .map(|t| t["id"].as_str().unwrap_or("?").to_owned()),
-            first_unproven: unproven.first().map(|f| function_name(f)),
+            // absent in evidence measured before the list existed: none
+            failing: list("failing_tests")
+                .iter()
+                .map(|t| text(t, "id"))
+                .collect(),
+            redundant: list("redundant_tests")
+                .iter()
+                .map(|t| Redundant {
+                    id: text(t, "id"),
+                    reason: text(t, "reason"),
+                })
+                .collect(),
+            unproven: list("functions")
+                .iter()
+                .filter(|f| f["status"] == "unproven")
+                .map(function_name)
+                .collect(),
         }
     }
 }
@@ -168,7 +173,7 @@ mod tests {
             "failing_tests": [{"id": "tests/t.py::test_w", "candidate_result": "failed"}],
             "not_measured": ["src/a.py: f: an added test could not be classified"]}));
         assert_eq!(c.fault(), None);
-        assert_eq!(c.facts().failing_tests, 1);
+        assert_eq!(c.facts().failing.len(), 1);
     }
 
     #[test]
@@ -178,12 +183,12 @@ mod tests {
         assert_eq!(
             c.facts(),
             Facts {
-                failing_tests: 0,
-                first_failing: None,
-                redundant_tests: 1,
-                unproven_functions: 1,
-                first_redundant: Some("tests/t.py::test_extra".into()),
-                first_unproven: Some("src/a.py:g (line 20)".into()),
+                failing: Vec::new(),
+                redundant: vec![Redundant {
+                    id: "tests/t.py::test_extra".into(),
+                    reason: String::new(),
+                }],
+                unproven: vec!["src/a.py:g (line 20)".into()],
             }
         );
     }

@@ -64,6 +64,9 @@ pub struct DoneArgs {
     /// Default: text on a terminal, JSON otherwise.
     #[arg(long, value_enum)]
     format: Option<FormatArg>,
+    /// In the text form, list every standing limit instead of counting them.
+    #[arg(long)]
+    full: bool,
     /// Approve a changed old test, as named in the text receipt
     /// (`old-test:PATH`); repeatable.
     #[arg(long, value_name = "ITEM")]
@@ -170,7 +173,16 @@ pub fn done(a: &DoneArgs) -> anyhow::Result<u8> {
     };
     let mut out = std::io::stdout().lock();
     if text {
-        write!(out, "{}", emi_done::text::render(&outcome.receipt))?;
+        let detail = if a.full {
+            emi_done::text::Detail::Full
+        } else {
+            emi_done::text::Detail::Short
+        };
+        write!(
+            out,
+            "{}",
+            emi_done::text::render_with(&outcome.receipt, detail)
+        )?;
     } else {
         let mut json = String::new();
         emi_ledger::pyfmt::canonical(&outcome.receipt, &mut json);

@@ -29,7 +29,7 @@ keys and values of the wrong type are errors. `repair_rounds` (default 3) and
 
 ```sh
 emi done [--repo .] [--baseline REF [--baseline-source session]] [--candidate REF]
-         [--setting cooperative|enforced] [--format json|text] [--approve ITEM]...
+         [--setting cooperative|enforced] [--format json|text] [--full] [--approve ITEM]...
 ```
 
 The candidate is the working tree, or the commit given with `--candidate`.
@@ -52,8 +52,11 @@ pinned again; enforced verification refuses them (`incomplete`).
 
 ### The receipt
 
-`--format json` prints the receipt in canonical JSON (`emi-done-receipt-0.3`);
+`--format json` prints the receipt in canonical JSON (`emi-done-receipt-0.4`);
 `--format text` is the same in plain words and is the default on a terminal.
+The text shows what this run in particular did not establish and counts the
+limits every receipt has; `--full` lists those too. The JSON always holds all
+of them (`not_verified`), with this run's under `this_run`.
 
 - **Regression**: `held`, `broken` or `unknown`, with the tests run, the
   failed and missing test ids, and the reasons. It is computed over the old
@@ -105,7 +108,7 @@ pinned again; enforced verification refuses them (`incomplete`).
 | Exit | Action | Meaning |
 |---|---|---|
 | 0 | `stop` | Regression held, no redundant test or unapproved changed old test/runner configuration. |
-| 3 | `repair` | Something the proposer can fix; `repair` names the first failing thing. |
+| 3 | `repair` | Something the proposer can fix; `repair` names every item of the first failing kind (up to five, then a count), each with what to do. |
 | 4 | `ask_person` | A changed old test or runner configuration file waits for an approval. |
 | 5 | `incomplete` | EMI could not measure (no sandbox, no pytest, config absent at the baseline). Not a pass. |
 | 2 | | Usage or configuration error. |
@@ -139,6 +142,10 @@ A test file the baseline already cannot import is tolerated the same way: the
 run continues past it and its tests are not regression evidence. A file only
 the candidate cannot collect is a break, or, for an added test file, leaves
 the change evidence unknown.
+
+A redundant test carries why: it `passes at the baseline`, or it `executes
+no changed line`. The repair says which, and that the test may be fixed
+(made to fail on the old code, or to exercise the change) instead of removed.
 
 A test the candidate adds that fails on the candidate is listed in
 `change.failing_tests` and is a `repair`: the proposer is told which test,

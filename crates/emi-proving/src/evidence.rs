@@ -73,6 +73,18 @@ pub struct UnknownTest {
     pub reason: String,
 }
 
+/// Why a test the candidate adds would not notice the change.
+pub const PASSES_AT_BASELINE: &str = "passes at the baseline";
+pub const RUNS_NO_CHANGED_LINE: &str = "executes no changed line";
+
+/// A test the candidate adds that would not notice the change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedundantTest {
+    pub id: String,
+    /// [`PASSES_AT_BASELINE`] or [`RUNS_NO_CHANGED_LINE`].
+    pub reason: &'static str,
+}
+
 /// A test the candidate adds that does not pass on the candidate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailingTest {
@@ -87,7 +99,7 @@ pub struct ChangeEvidence {
     pub status: Status,
     pub functions: Vec<FunctionEvidence>,
     pub proving_tests: Vec<ProvingTest>,
-    pub redundant_tests: Vec<String>,
+    pub redundant_tests: Vec<RedundantTest>,
     pub failing_tests: Vec<FailingTest>,
     pub unknown_tests: Vec<UnknownTest>,
     /// Everything the measurement could not establish, and why.
@@ -119,7 +131,7 @@ impl ChangeEvidence {
         self.functions
             .sort_by(|a, b| (&a.file, a.line, &a.function).cmp(&(&b.file, b.line, &b.function)));
         self.proving_tests.sort_by(|a, b| a.id.cmp(&b.id));
-        self.redundant_tests.sort();
+        self.redundant_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.failing_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.unknown_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.not_measured.sort();
@@ -142,7 +154,7 @@ impl ChangeEvidence {
                 "baseline_result": t.baseline_result.as_str(),
             })).collect::<Vec<_>>(),
             "redundant_tests": self.redundant_tests.iter()
-                .map(|id| json!({"id": id})).collect::<Vec<_>>(),
+                .map(|t| json!({"id": t.id, "reason": t.reason})).collect::<Vec<_>>(),
             "failing_tests": self.failing_tests.iter()
                 .map(|t| json!({"id": t.id, "candidate_result": t.candidate_result}))
                 .collect::<Vec<_>>(),
@@ -208,8 +220,14 @@ mod tests {
                 baseline_result: BaselineResult::Errored,
             }],
             redundant_tests: vec![
-                "tests/test_a.py::test_z".into(),
-                "tests/test_a.py::test_a".into(),
+                RedundantTest {
+                    id: "tests/test_a.py::test_z".into(),
+                    reason: PASSES_AT_BASELINE,
+                },
+                RedundantTest {
+                    id: "tests/test_a.py::test_a".into(),
+                    reason: RUNS_NO_CHANGED_LINE,
+                },
             ],
             failing_tests: vec![FailingTest {
                 id: "tests/test_a.py::test_w".into(),
@@ -236,8 +254,8 @@ mod tests {
                     {"id": "tests/test_a.py::test_new", "baseline_result": "errored"},
                 ],
                 "redundant_tests": [
-                    {"id": "tests/test_a.py::test_a"},
-                    {"id": "tests/test_a.py::test_z"},
+                    {"id": "tests/test_a.py::test_a", "reason": "executes no changed line"},
+                    {"id": "tests/test_a.py::test_z", "reason": "passes at the baseline"},
                 ],
                 "failing_tests": [
                     {"id": "tests/test_a.py::test_w", "candidate_result": "failed"},

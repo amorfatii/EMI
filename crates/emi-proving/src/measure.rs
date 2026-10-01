@@ -10,8 +10,8 @@ use emi_diff::{hunks, snapshot};
 use emi_profile::sandbox::{Copy, Runner};
 
 use crate::classify::{Verdict, classify, failed_at_baseline};
-use crate::evidence::FailingTest;
 use crate::evidence::{ChangeEvidence, FunctionEvidence, ProvingTest, UnknownTest, status_of};
+use crate::evidence::{FailingTest, PASSES_AT_BASELINE, RUNS_NO_CHANGED_LINE, RedundantTest};
 use crate::exec::Session;
 use crate::junit::Observed;
 use crate::overlay::{TestFiles, Tree, overlay_tests};
@@ -92,7 +92,7 @@ struct Context<'a> {
 #[derive(Default)]
 struct Classified {
     proving: Vec<ProvingTest>,
-    redundant: Vec<String>,
+    redundant: Vec<RedundantTest>,
     failing: Vec<FailingTest>,
     unknown: Vec<UnknownTest>,
     coverage: Option<(Copy, crate::exec::Coverage)>,
@@ -301,7 +301,10 @@ impl Context<'_> {
                     id: id.clone(),
                     baseline_result,
                 }),
-                Verdict::Redundant => out.redundant.push(id.clone()),
+                Verdict::Redundant => out.redundant.push(RedundantTest {
+                    id: id.clone(),
+                    reason: PASSES_AT_BASELINE,
+                }),
                 Verdict::Failing(candidate_result) => out.failing.push(FailingTest {
                     id: id.clone(),
                     candidate_result,
@@ -394,7 +397,10 @@ impl Context<'_> {
                 for test in tests {
                     match self.reaches(changed, &tree, &report, &test.id) {
                         Ok(true) => c.proving.push(test),
-                        Ok(false) => c.redundant.push(test.id),
+                        Ok(false) => c.redundant.push(RedundantTest {
+                            id: test.id,
+                            reason: RUNS_NO_CHANGED_LINE,
+                        }),
                         Err(reason) => c.unknown.push(UnknownTest {
                             id: test.id,
                             reason,

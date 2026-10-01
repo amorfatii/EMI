@@ -203,6 +203,8 @@ pub fn check(
     };
     let mut not_verified = receipt::not_verified(&limits);
     not_verified.extend(approval_fault.clone());
+    let mut this_run = receipt::this_run(&limits);
+    this_run.extend(approval_fault.clone());
     let parts = receipt::Parts {
         repo,
         baseline,
@@ -215,6 +217,7 @@ pub fn check(
         on_unproven: config.on_unproven,
         faults: approval_fault.into_iter().collect(),
         not_verified,
+        this_run,
     };
     let (receipt, action) = receipt::assemble(&parts);
     Ok(Outcome { receipt, action })

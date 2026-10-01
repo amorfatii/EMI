@@ -14,6 +14,17 @@ pub enum Action {
     Incomplete,
 }
 
+impl Action {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Action::Stop => "stop",
+            Action::Repair => "repair",
+            Action::AskPerson => "ask_person",
+            Action::Incomplete => "incomplete",
+        }
+    }
+}
+
 /// The done check's result reduced to what the loop needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DoneResult {
@@ -25,6 +36,9 @@ pub struct DoneResult {
     pub summary: Vec<String>,
     /// Review items only a person can approve.
     pub approve: Vec<String>,
+    /// What the receipt showed, in counts, for the journal; `null` when
+    /// there was no receipt to read.
+    pub evidence: serde_json::Value,
 }
 
 impl DoneResult {
@@ -35,6 +49,7 @@ impl DoneResult {
             repair: Vec::new(),
             summary: vec![reason.into()],
             approve: Vec::new(),
+            evidence: serde_json::Value::Null,
         }
     }
 }
@@ -91,9 +106,9 @@ pub struct StopInput<'a> {
     pub done_command: &'a str,
 }
 
-/// Longest repair text sent back: the agent gets the first failing thing,
-/// not a report (a few short lines).
-const MAX_REPAIR_LINES: usize = 5;
+/// Longest repair text sent back: the agent gets the first failing kind of
+/// thing (up to five items and a count of the rest), not a report.
+const MAX_REPAIR_LINES: usize = 6;
 const MAX_LINE_CHARS: usize = 300;
 
 /// The first line of the message shown when repair rounds ran out.
@@ -217,6 +232,7 @@ mod tests {
             repair: vec!["tests/test_a.py::test_x fails".into()],
             summary: vec!["EMI receipt".into(), "Regression: held".into()],
             approve: vec!["old-test:tests/test_a.py".into()],
+            evidence: serde_json::Value::Null,
         }
     }
 
@@ -286,8 +302,9 @@ mod tests {
             panic!("expected a block")
         };
         assert!(!reason.contains("SECRET-RECEIPT-DETAIL"));
-        assert!(reason.contains("problem 5"));
-        assert!(!reason.contains("problem 6"));
+        // five items and the line that counts the rest
+        assert!(reason.contains("problem 6"));
+        assert!(!reason.contains("problem 7"));
     }
 
     #[test]

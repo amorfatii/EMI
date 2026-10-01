@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::decision::{Action, DoneResult};
 
 /// Current schema; the previous additive form remains readable.
-pub const SCHEMA: &str = "emi-done-receipt-0.3";
+pub const SCHEMA: &str = "emi-done-receipt-0.4";
 
 /// Items listed before the rest are only counted.
 const LIST_LIMIT: usize = 5;
@@ -152,6 +152,47 @@ fn parse(exit_action: Action, stdout: &str) -> Result<DoneResult, String> {
         repair: repair.unwrap_or_default(),
         summary: render(&receipt, exit_action, &not_verified.unwrap_or_default()),
         approve: approve.unwrap_or_default(),
+        evidence: evidence(&receipt, exit_action),
+    })
+}
+
+/// Which rule the receipt's action rests on, in the order of the action
+/// table: what the journal counts interventions by.
+fn rule(receipt: &Value, action: Action) -> &'static str {
+    let any = |v: &Value| v.as_array().is_some_and(|a| !a.is_empty());
+    let change = &receipt["change"];
+    match action {
+        Action::Stop => "none",
+        Action::Incomplete => "incomplete",
+        Action::AskPerson => "changed_old_test",
+        Action::Repair if receipt["regression"]["status"] == "broken" => "regression",
+        Action::Repair if any(&change["failing_tests"]) => "failing_test",
+        Action::Repair if any(&change["redundant_tests"]) => "redundant_test",
+        Action::Repair => "unproven",
+    }
+}
+
+/// The receipt in counts, for the journal.
+fn evidence(receipt: &Value, action: Action) -> Value {
+    let change = &receipt["change"];
+    let count = |v: &Value| v.as_array().map_or(0, Vec::len);
+    let functions = |status: &str| {
+        change["functions"]
+            .as_array()
+            .map_or(0, |f| f.iter().filter(|x| x["status"] == status).count())
+    };
+    serde_json::json!({
+        "kind": rule(receipt, action),
+        "regression": receipt["regression"]["status"],
+        "tests_run": receipt["regression"]["tests_run"],
+        "change": change["status"],
+        "functions_proven": functions("proven"),
+        "functions_unproven": functions("unproven"),
+        "functions_unknown": functions("unknown"),
+        "proving_tests": count(&change["proving_tests"]),
+        "redundant_tests": count(&change["redundant_tests"]),
+        "failing_tests": count(&change["failing_tests"]),
+        "changed_old_tests": count(&receipt["changed_old_tests"]),
     })
 }
 
@@ -280,16 +321,16 @@ fn render(receipt: &Value, action: Action, not_verified: &[String]) -> Vec<Strin
     lines.extend(regression_lines(receipt));
     lines.extend(changed_old_test_lines(receipt));
     lines.extend(change_lines(receipt));
-    lines.push("Not verified by this receipt:".to_owned());
-    for item in not_verified.iter().take(LIST_LIMIT * 2) {
-        lines.push(format!("  - {item}"));
+    // what this run in particular did not establish is read every time;
+    // the limits every receipt has are counted, not repeated
+    let particular = strings(&receipt["this_run"]);
+    for item in particular.iter().take(LIST_LIMIT * 2) {
+        lines.push(format!("Note: {item}"));
     }
-    if not_verified.len() > LIST_LIMIT * 2 {
-        lines.push(format!(
-            "  - and {} more",
-            not_verified.len() - LIST_LIMIT * 2
-        ));
-    }
+    lines.push(match not_verified.len().saturating_sub(particular.len()) {
+        1 => "1 standing limit applies (emi done --full lists it).".to_owned(),
+        n => format!("{n} standing limits apply (emi done --full lists them)."),
+    });
     lines
 }
 
@@ -313,7 +354,8 @@ mod tests {
                        "redundant_tests": [], "unknown_tests": [], "not_measured": []},
             "action": action,
             "repair": [],
-            "not_verified": ["behaviour no test exercises"]
+            "not_verified": ["behaviour no test exercises", "the baseline has no configuration"],
+            "this_run": ["the baseline has no configuration"]
         })
     }
 
@@ -332,7 +374,13 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Change evidence: unproven"), "{text}");
-        assert!(text.contains("behaviour no test exercises"), "{text}");
+        // this run's note is shown; the standing limit is counted
+        assert!(
+            text.contains("Note: the baseline has no configuration"),
+            "{text}"
+        );
+        assert!(text.contains("1 standing limit applies"), "{text}");
+        assert!(!text.contains("behaviour no test exercises"), "{text}");
     }
 
     #[test]

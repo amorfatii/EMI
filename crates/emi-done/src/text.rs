@@ -97,8 +97,40 @@ fn old_test_lines(tests: &[Value]) -> Vec<String> {
     out
 }
 
-/// The receipt as text.
+/// How much of the receipt's limits the text shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    /// What this run in particular did not establish, and how many
+    /// standing limits apply: what a person reads every time.
+    Short,
+    /// Every limit, spelled out.
+    Full,
+}
+
+/// The limits, as lines: all of them, or this run's and a count.
+fn limit_lines(receipt: &Value, detail: Detail) -> Vec<String> {
+    let all = strs(&receipt["not_verified"]);
+    let particular = strs(&receipt["this_run"]);
+    if detail == Detail::Full || !receipt["this_run"].is_array() {
+        let mut lines = vec!["Not verified:".to_owned()];
+        lines.extend(all.into_iter().map(|n| format!("  - {n}")));
+        return lines;
+    }
+    let mut lines: Vec<String> = particular.iter().map(|n| format!("Note: {n}")).collect();
+    lines.push(match all.len().saturating_sub(particular.len()) {
+        1 => "1 standing limit applies (emi done --full lists it).".to_owned(),
+        n => format!("{n} standing limits apply (emi done --full lists them)."),
+    });
+    lines
+}
+
+/// The receipt as text, short form.
 pub fn render(receipt: &Value) -> String {
+    render_with(receipt, Detail::Short)
+}
+
+/// The receipt as text.
+pub fn render_with(receipt: &Value, detail: Detail) -> String {
     let mut lines = vec![
         format!("Regression: {}", regression_line(&receipt["regression"])),
         format!("New behaviour: {}", change_line(&receipt["change"])),
@@ -130,12 +162,7 @@ pub fn render(receipt: &Value) -> String {
         receipt["assurance"]["setting"].as_str().unwrap_or("?"),
         receipt["assurance"]["isolation"].as_str().unwrap_or("?"),
     ));
-    lines.push("Not verified:".to_owned());
-    lines.extend(
-        strs(&receipt["not_verified"])
-            .into_iter()
-            .map(|n| format!("  - {n}")),
-    );
+    lines.extend(limit_lines(receipt, detail));
     lines.join("\n") + "\n"
 }
 
@@ -152,7 +179,9 @@ mod tests {
             "regression": {"status": "held", "tests_run": 212, "failed": [], "missing": [], "reasons": []},
             "changed_old_tests": [],
             "change": {"status": "unknown", "functions": [], "not_measured": ["x"]},
-            "action": "stop", "repair": [], "not_verified": ["a thing"]})
+            "action": "stop", "repair": [],
+            "not_verified": ["a standing thing", "another", "this run's thing"],
+            "this_run": ["this run's thing"]})
     }
 
     #[test]
@@ -162,7 +191,11 @@ mod tests {
         assert_eq!(lines.next(), Some("Regression: held (212 tests ran)."));
         assert_eq!(lines.next(), Some("New behaviour: not measured."));
         assert!(text.contains("Action: stop"));
-        assert!(text.contains("  - a thing"));
+        assert!(text.contains("Note: this run's thing"), "{text}");
+        assert!(text.contains("2 standing limits apply"), "{text}");
+        assert!(!text.contains("a standing thing"), "{text}");
+        let full = render_with(&receipt(), Detail::Full);
+        assert!(full.contains("  - a standing thing") && full.contains("  - this run's thing"));
     }
 
     #[test]
