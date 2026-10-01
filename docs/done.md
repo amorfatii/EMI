@@ -140,6 +140,10 @@ run continues past it and its tests are not regression evidence. A file only
 the candidate cannot collect is a break, or, for an added test file, leaves
 the change evidence unknown.
 
+A test the candidate adds that fails on the candidate is listed in
+`change.failing_tests` and is a `repair`: the proposer is told which test,
+and to fix the code or the test.
+
 Tests appended to an old test file need no approval: every line the baseline
 had is still there, so nothing was rewritten. The file still runs in its
 baseline form as regression evidence, and the appended tests are judged as

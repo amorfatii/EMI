@@ -273,9 +273,20 @@ inventory flag that the stand-in runner had not caught.
   remains explicit, including this Rust repository's dogfood workflow.
   Hosted job execution and branch protection are not configured locally.
 - Full fmt, Clippy, tests, release build and golden parity passed with
-  `RUST_TEST_THREADS=2 bash scripts/check.sh`. A default-parallel attempt
-  received SIGKILL in the controller lifecycle suite; the cause was not
-  established. No tests were removed to get the bounded-concurrency pass.
+  `RUST_TEST_THREADS=2 bash scripts/check.sh`. No tests were removed to get
+  the bounded-concurrency pass.
+- **Open defect: the controller lifecycle suite is not stable at default
+  parallelism.** In about one run in three the test process is killed by
+  SIGKILL, and in others a `git` child of some test dies with no output.
+  Investigated 2026-10-01 without finding the cause. Ruled out: the kernel's
+  out-of-memory killer (its counters did not move), a core dump, the
+  sandbox's `--die-with-parent`, and `emi-exec`'s own group and orphan kills
+  (the process is still killed with both disabled). It never happens under a
+  debugger. One real fault was seen on the way: a run's orphan cleanup also
+  kills and reaps background `git` maintenance processes that other threads'
+  commands left behind, so two concurrent runs act on the same process.
+  Until this is understood, anything that runs verifications concurrently
+  in one process (a server, a parallel runner) is not to be trusted.
 - The generic controller reads execution evidence from checks that
   declare it (`"evidence": {"format": "pytest"}`): per-test
   `<id> <OUTCOME>` lines when the run prints any (full per-test
@@ -296,6 +307,21 @@ inventory flag that the stand-in runner had not caught.
   controller records which tests a run named as not passing; `emi done`
   runs the check once on the baseline, keeps it, and counts against the
   candidate only a test that did worse. Checked against real pytest.
+
+- **Probe on benchmark repositories (2026-10-01).** `emi done` was run on
+  admitted SWE-bench tasks at their base commits, in fresh checkouts, with
+  four candidates each: untouched, the reference fix, the fix with the
+  benchmark's tests, and the tests alone (`emi-lab/tools/h1_emi_probe.py`,
+  rows in `emi-lab/results/H1/emi-probe.jsonl`). The first runs found seven
+  defects that no fixture had: skips, a symlinked test file, uncollectable
+  test files (two report formats), test ids with spaces, ids holding the
+  workspace path, an approval asked for appended tests, and a failing added
+  test reported as incomplete. All are fixed. On the two pylint tasks the
+  receipt now reads as intended on all four candidates: held and stop;
+  held with every changed function unproven; held with every changed
+  function proven by the benchmark's test; and a repair naming the failing
+  test. A check takes about one to two minutes there, and the first check
+  of a baseline twice that. No model ran; this is not usefulness evidence.
 
 ### Experiment decision recorded, still unregistered
 
