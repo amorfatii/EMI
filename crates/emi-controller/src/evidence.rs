@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 
 /// The version of this reader, recorded with what it read: a record kept
 /// from an older reader may name tests differently and is not comparable.
-pub const READER: u64 = 3;
+pub const READER: u64 = 4;
 
 /// How the run reported its tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

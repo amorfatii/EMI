@@ -476,13 +476,22 @@ fn parse_inventory(
 ) -> std::result::Result<std::collections::BTreeSet<String>, String> {
     let lines: Vec<&str> = stdout
         .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
         .collect();
+    // a pytest id starts its line and its file path holds no space: a
+    // warning that quotes a test (`  Test: tests/a.py::t, argvalues ...`)
+    // is not one, and counting it would make the suite look larger than
+    // any run of it
+    let is_id = |l: &&&str| {
+        !pytest
+            || l.split_once("::")
+                .is_some_and(|(path, _)| !path.is_empty() && !path.contains(char::is_whitespace))
+    };
     let ids: std::collections::BTreeSet<String> = lines
         .iter()
-        .filter(|l| !pytest || l.contains("::"))
-        .map(|l| (*l).to_owned())
+        .filter(is_id)
+        .map(|l| l.trim().to_owned())
         .collect();
     if ids.is_empty() && !lines.is_empty() {
         return Err(format!(
