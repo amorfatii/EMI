@@ -104,6 +104,25 @@ fn source(files: &[String]) -> String {
     }
 }
 
+/// Directories other than the root that hold the project's importable
+/// code (`src/pkg/__init__.py`, `src/mod.py`): a src layout. The tests must
+/// find the code being checked there, not an installed copy.
+fn python_path(files: &[String]) -> Vec<String> {
+    ["src", "lib"]
+        .into_iter()
+        .filter(|root| {
+            files.iter().any(|f| {
+                let Some(rest) = f.strip_prefix(&format!("{root}/")) else {
+                    return false;
+                };
+                let depth = rest.matches('/').count();
+                (depth == 0 && is_python(rest)) || (depth == 1 && rest.ends_with("/__init__.py"))
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Globs covering the repository's test files, derived from where they are.
 fn test_globs(files: &[String]) -> Result<Vec<String>, Error> {
     let tests: Vec<&String> = files
@@ -218,6 +237,7 @@ pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Dete
     let python = python(repo)?;
     let source = source(&files);
     let globs = test_globs(&files)?;
+    let python_path = python_path(&files);
     let branch = match default_branch_override {
         Some(b) => b.to_owned(),
         None => default_branch(repo)?,
@@ -251,6 +271,14 @@ pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Dete
                 link.join(", ")
             }
         ),
+        format!(
+            "own code is imported from: {}",
+            if python_path.is_empty() {
+                "the repository root".to_owned()
+            } else {
+                python_path.join(", ")
+            }
+        ),
     ];
     let config = Config {
         language: "python".to_owned(),
@@ -258,6 +286,7 @@ pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Dete
         default_branch: branch,
         tests: Tests { command, globs },
         link,
+        python_path,
         repair_rounds: DEFAULT_REPAIR_ROUNDS,
         on_unproven: OnUnproven::Report,
     };

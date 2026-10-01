@@ -18,6 +18,98 @@ use crate::config::Config;
 
 /// The check that runs the tests.
 const CHECK: &str = "tests";
+/// The check that the tests import the candidate's own code.
+const IMPORTS: &str = "imports";
+/// Most names the import check looks up.
+const MAX_OWN_NAMES: usize = 30;
+
+/// Where each of the project's own top-level names would be imported from,
+/// seen by the Python that runs the tests, in the directory the tests run
+/// in. A name found outside that directory is an installed copy (an
+/// editable install of another checkout, a package in site-packages): the
+/// tests would then exercise that copy, not the candidate. A name that
+/// cannot be found is left to the tests themselves to report.
+const IMPORT_ORIGINS: &str = r#"
+import importlib.util, os, sys
+here = os.path.realpath(os.getcwd()) + os.sep
+foreign = []
+for name in sys.argv[1:]:
+    if name in getattr(sys, "stdlib_module_names", ()):
+        continue
+    try:
+        spec = importlib.util.find_spec(name)
+    except Exception:
+        spec = None
+    if spec is None:
+        continue
+    origin = spec.origin
+    if origin is None and spec.submodule_search_locations:
+        origin = list(spec.submodule_search_locations)[0]
+    if origin and not (os.path.realpath(origin) + os.sep).startswith(here):
+        foreign.append(f"{name} from {origin}")
+if foreign:
+    print("the tests would not import the code being checked: " + "; ".join(foreign))
+    sys.exit(3)
+print("own code is imported from the checked copy")
+"#;
+
+/// Names that are files of a repository, not code its tests import.
+const NOT_OWN: &[&str] = &["setup", "conftest", "noxfile", "tests", "test", "docs"];
+
+fn identifier(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The top-level name `path` gives under import root `root`: a package
+/// (`root/pkg/__init__.py`) anywhere, a module (`root/mod.py`) only under
+/// a root other than the repository's (a module at the repository root may
+/// share its name with anything).
+fn own_name<'a>(path: &'a str, root: &str) -> Option<&'a str> {
+    let rest = if root == "." {
+        path
+    } else {
+        path.strip_prefix(root)?.strip_prefix('/')?
+    };
+    let name = match rest.split_once('/') {
+        Some((pkg, "__init__.py")) => pkg,
+        None if root != "." => rest.strip_suffix(".py")?,
+        _ => return None,
+    };
+    (identifier(name) && !NOT_OWN.contains(&name)).then_some(name)
+}
+
+/// The project's own top-level importable names at `baseline`: what the
+/// import check looks up. Taken from the baseline, so the same baseline
+/// and configuration always give the same contract.
+pub fn own_names(view: &Path, baseline: &str, config: &Config) -> Result<Vec<String>, Error> {
+    let raw = emi_git::run(view, &["ls-tree", "-r", "-z", "--name-only", baseline])
+        .map_err(|e| Error::Usage(format!("cannot list the files of the baseline: {e}")))?;
+    let mut roots: Vec<&str> = config.python_path.iter().map(String::as_str).collect();
+    roots.extend([config.source.as_str(), "."]);
+    let is_test = |p: &str| {
+        config
+            .tests
+            .globs
+            .iter()
+            .any(|g| emi_scan::walk::fnmatch(p, g))
+    };
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for path in raw.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let path = String::from_utf8_lossy(path);
+        if is_test(&path) {
+            continue;
+        }
+        names.extend(
+            roots
+                .iter()
+                .filter_map(|r| own_name(&path, r))
+                .map(str::to_owned),
+        );
+    }
+    Ok(names.into_iter().take(MAX_OWN_NAMES).collect())
+}
 /// Generous bounds: a check that ends at the timeout is `incomplete`, not
 /// a failure, so these only guard against a hung runner.
 const TEST_TIMEOUT_S: u64 = 1800;
@@ -74,7 +166,13 @@ pub fn trusted(
 /// restoring the originals. Test-runner configuration a candidate adds
 /// cannot be restored, so it is a review item, which the receipt turns
 /// into a question for a person.
-pub fn spec(repo: &Path, config: &Config, baseline: &str, trusted: &[String]) -> Value {
+pub fn spec(
+    repo: &Path,
+    config: &Config,
+    baseline: &str,
+    trusted: &[String],
+    own: &[String],
+) -> Value {
     let mut command = config.tests.command.clone();
     let mut verification = json!({"trusted": trusted, "runner_config": "review"});
     let mut evidence = Value::Null;
@@ -93,7 +191,12 @@ pub fn spec(repo: &Path, config: &Config, baseline: &str, trusted: &[String]) ->
         // (an early exit) or with skips is not regression evidence.
         evidence = json!({"format": "pytest"});
     }
-    json!({
+    let mut execution = json!({"isolation": "best", "network": false, "link": config.link});
+    if !config.python_path.is_empty() {
+        // relative: each run resolves it in its own copy of the code
+        execution["env"] = json!({"PYTHONPATH": config.python_path.join(":")});
+    }
+    let mut spec = json!({
         "task_id": "",
         "repo": repo,
         "baseline": baseline,
@@ -103,8 +206,26 @@ pub fn spec(repo: &Path, config: &Config, baseline: &str, trusted: &[String]) ->
         "envelope": {"permitted_paths": ["*"]},
         "guardrails": false,
         "verification": verification,
-        "execution": {"isolation": "best", "network": false, "link": config.link},
-    })
+        "execution": execution,
+    });
+    // the tests prove something about the candidate only if they import it
+    if let (Ok(pytest), false) = (
+        emi_proving::pytest::Command::parse(&config.tests.command),
+        own.is_empty(),
+    ) {
+        let mut argv = vec![
+            pytest.interpreter().to_owned(),
+            "-c".to_owned(),
+            IMPORT_ORIGINS.to_owned(),
+        ];
+        argv.extend(own.iter().cloned());
+        spec["checks"][IMPORTS] =
+            json!({"command": argv, "success": {"exit_code": 0}, "timeout_s": 120});
+        if let Some(list) = spec["requirements"].as_array_mut() {
+            list.push(json!({"id": "R2", "acceptance": "the tests import the candidate's own code, not an installed copy", "checks": [IMPORTS]}));
+        }
+    }
+    spec
 }
 
 /// The name of the task for `spec`: the same repository, baseline,
@@ -140,6 +261,31 @@ pub fn open(authority: &Path, repo: &Path, baseline: &str, spec: &Value) -> Resu
 pub struct Verified {
     pub decision: Value,
     pub check: Option<Value>,
+    /// Why the tests cannot be taken to exercise the candidate's code,
+    /// when the import check says so or could not say.
+    pub foreign_imports: Option<String>,
+}
+
+/// What the import check found, when the contract has one: `None` when it
+/// passed or is not part of the contract.
+fn foreign_imports(store: &Store, decision: &Value) -> Result<Option<String>, String> {
+    if store.contract()?["checks"][IMPORTS].is_null() {
+        return Ok(None);
+    }
+    let run = recorded_check(store, decision, IMPORTS)?;
+    Ok(match run.as_ref().map(|r| (r["status"].as_str(), r)) {
+        Some((Some("passed"), _)) => None,
+        Some((Some("failed"), r)) if r["exit_code"] == 3 => Some(
+            r["stdout_tail"]
+                .as_str()
+                .unwrap_or("the tests would not import the code being checked")
+                .trim()
+                .to_owned(),
+        ),
+        _ => Some(
+            "whether the tests import the code being checked could not be established".to_owned(),
+        ),
+    })
 }
 
 /// The recorded run of the test check on the baseline itself, under the
@@ -151,19 +297,19 @@ pub fn baseline_check(store: &Store, baseline: &str) -> Result<Option<Value>, St
     let id = contract["contract_id"].as_str().unwrap_or("");
     if let Some(known) = store.latest_decision(baseline, id)? {
         // a run recorded by an older reader names its tests differently
-        let kept = recorded_check(store, &known)?
+        let kept = recorded_check(store, &known, CHECK)?
             .filter(|c| c["evidence"]["reader"] == emi_controller::evidence::READER);
         if kept.is_some() {
             return Ok(kept);
         }
     }
     let decision = verify(store, &Candidate::Ref(baseline.to_owned()))?;
-    recorded_check(store, &decision)
+    recorded_check(store, &decision, CHECK)
 }
 
-fn recorded_check(store: &Store, decision: &Value) -> Result<Option<Value>, String> {
+fn recorded_check(store: &Store, decision: &Value, id: &str) -> Result<Option<Value>, String> {
     Ok(store.rows("check_run")?.into_iter().rev().find(|r| {
-        r["check_id"] == CHECK
+        r["check_id"] == id
             && r["candidate_id"] == decision["candidate_id"]
             && r["contract_id"] == decision["contract_id"]
     }))
@@ -185,8 +331,13 @@ pub fn run(store: &Store, candidate: &Candidate, repin: bool) -> Result<Verified
         )?;
         decision = verify(store, candidate)?;
     }
-    let check = recorded_check(store, &decision)?;
-    Ok(Verified { decision, check })
+    let check = recorded_check(store, &decision, CHECK)?;
+    let foreign_imports = foreign_imports(store, &decision)?;
+    Ok(Verified {
+        decision,
+        check,
+        foreign_imports,
+    })
 }
 
 #[cfg(test)]
@@ -210,6 +361,7 @@ mod tests {
                 globs: vec!["tests/*".into()],
             },
             link: vec![".venv".into()],
+            python_path: Vec::new(),
             repair_rounds: 3,
             on_unproven: OnUnproven::Report,
         }
@@ -229,7 +381,7 @@ mod tests {
     fn the_spec_trusts_listed_files_and_validates_as_a_contract() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let trusted = vec!["tests/test_a.py".to_owned()];
-        let spec = spec(dir.path(), &config(), SHA, &trusted);
+        let spec = spec(dir.path(), &config(), SHA, &trusted, &[]);
         assert_eq!(names(&spec["verification"]["trusted"]), ["tests/test_a.py"]);
         assert_eq!(spec["verification"]["runner_config"], "review");
         assert_eq!(spec["envelope"]["permitted_paths"], json!(["*"]));
@@ -271,12 +423,60 @@ mod tests {
     }
 
     #[test]
+    fn own_code_goes_first_on_the_import_path_and_its_origin_is_checked() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut c = config();
+        c.python_path = vec!["src".into()];
+        let own = vec!["app".to_owned()];
+        let spec = spec(dir.path(), &c, SHA, &[], &own);
+        assert_eq!(spec["execution"]["env"], json!({"PYTHONPATH": "src"}));
+        let argv = names(&spec["checks"]["imports"]["command"]);
+        assert_eq!(
+            (argv[0], argv[1], argv[3]),
+            (".venv/bin/python", "-c", "app")
+        );
+        assert_eq!(spec["requirements"][1]["checks"], json!(["imports"]));
+        let mut named = spec.clone();
+        named["task_id"] = json!(task_id(&spec));
+        assert!(contract::freeze(&named, &dir.path().to_string_lossy(), SHA).is_ok());
+        // without a src layout or known names, the contract is as before
+        let plain = super::spec(dir.path(), &config(), SHA, &[], &[]);
+        assert!(plain["execution"].get("env").is_none());
+        assert!(plain["checks"].get("imports").is_none());
+    }
+
+    #[test]
+    fn own_names_are_the_packages_and_src_modules_of_the_baseline() {
+        let dir = repo();
+        for name in [
+            "src/app/__init__.py",
+            "src/tool.py",
+            "pkg/__init__.py",
+            "top.py",
+            "setup.py",
+            "tests/__init__.py",
+            "tests/test_a.py",
+            "docs/conf.py",
+        ] {
+            commit_file(dir.path(), name, "x = 1\n", name);
+        }
+        let head = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        let view = emi_git::CleanView::of(dir.path()).unwrap_or_else(|e| panic!("{e}"));
+        let mut c = config();
+        c.source = "src".into();
+        c.python_path = vec!["src".into()];
+        let own = own_names(view.path(), &head, &c).unwrap_or_default();
+        // a module at the repository root is not looked up, nor are tests
+        assert_eq!(own, ["app", "pkg", "tool"]);
+    }
+
+    #[test]
     fn a_command_that_is_not_pytest_has_no_inventory() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let mut c = config();
         c.tests.command = vec!["python3".into(), "-m".into(), "unittest".into()];
         assert!(
-            spec(dir.path(), &c, SHA, &[])["verification"]
+            spec(dir.path(), &c, SHA, &[], &[])["verification"]
                 .get("inventory")
                 .is_none()
         );
@@ -286,8 +486,9 @@ mod tests {
     #[test]
     fn the_same_inputs_name_the_same_task_and_any_change_names_another() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-        let id =
-            |c: &Config, sha: &str, trusted: &[String]| task_id(&spec(dir.path(), c, sha, trusted));
+        let id = |c: &Config, sha: &str, trusted: &[String]| {
+            task_id(&spec(dir.path(), c, sha, trusted, &[]))
+        };
         let files = vec!["tests/a.py".to_owned()];
         let base = id(&config(), SHA, &files);
         assert!(contract::valid_task_id(&base));

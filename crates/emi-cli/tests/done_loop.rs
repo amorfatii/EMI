@@ -249,3 +249,93 @@ fn an_added_test_that_fails_sends_the_proposer_back() {
         "{receipt}"
     );
 }
+
+/// `lib/python3.x/site-packages` of a virtualenv.
+fn site_packages(venv: &std::path::Path) -> std::path::PathBuf {
+    let lib = venv.join("lib");
+    let python = std::fs::read_dir(&lib)
+        .expect("venv lib")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.join("site-packages").is_dir())
+        .expect("a python directory in the venv");
+    python.join("site-packages")
+}
+
+/// A virtualenv that sees the shared test environment's packages and has
+/// `installed`, a directory outside the repository, on its import path:
+/// what an editable install of another checkout looks like.
+fn environment_with_an_installed_copy(
+    scratch: &std::path::Path,
+    shared: &std::path::Path,
+    installed: &std::path::Path,
+) -> std::path::PathBuf {
+    let venv = scratch.join("venv");
+    let made = std::process::Command::new("python3")
+        .args(["-m", "venv", "--without-pip"])
+        .arg(&venv)
+        .output()
+        .expect("python3 -m venv");
+    assert!(made.status.success(), "{made:?}");
+    let site = site_packages(&venv);
+    let shared_site = site_packages(shared);
+    std::fs::write(
+        site.join("shared.pth"),
+        format!("{}\n", shared_site.display()),
+    )
+    .expect("pth");
+    std::fs::write(
+        site.join("installed.pth"),
+        format!("{}\n", installed.display()),
+    )
+    .expect("pth");
+    venv
+}
+
+#[test]
+fn the_tests_import_the_code_being_checked_not_an_installed_copy() {
+    let p = Project::new();
+    // outside /tmp, which the sandbox replaces
+    let scratch = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("scratch");
+    let installed = scratch.path().join("installed");
+    std::fs::create_dir_all(&installed).expect("mkdir");
+    // the environment's copy of the package is an old, broken one
+    std::fs::write(installed.join("app.py"), project::BROKEN).expect("installed copy");
+    let shared = std::fs::canonicalize(p.path().join(".venv")).expect("shared venv");
+    let venv = environment_with_an_installed_copy(scratch.path(), &shared, &installed);
+    std::fs::remove_file(p.path().join(".venv")).expect("unlink the shared venv");
+    std::os::unix::fs::symlink(&venv, p.path().join(".venv")).expect("link the venv");
+
+    // a src layout: only the import path leads to the repository's `app`
+    std::fs::create_dir_all(p.path().join("src")).expect("src");
+    project::git(p.path(), &["mv", "app.py", "src/app.py"]);
+    p.write("pytest.ini", "[pytest]\n");
+    let init = p.emi(&["init", "--yes", "--force"], None);
+    assert!(init.status.success(), "{init:?}");
+    let config = std::fs::read_to_string(p.path().join(".emi/config.json")).expect("config");
+    assert!(config.contains("\"python_path\""), "{config}");
+    p.commit("a src layout");
+
+    // the repository's code is correct and is what the tests import,
+    // although the environment's installed copy is broken
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+
+    // without the import path the tests would import the installed copy:
+    // that is said, never measured as if it were the candidate
+    let without: Value = serde_json::from_str(&config).expect("config JSON");
+    let mut without = without;
+    without
+        .as_object_mut()
+        .expect("config object")
+        .remove("python_path");
+    p.write(".emi/config.json", &without.to_string());
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 5, "{receipt}");
+    let why = receipt["regression"]["reasons"][0].as_str().unwrap_or("");
+    assert!(
+        why.contains("would not import the code being checked") && why.contains("app from"),
+        "{receipt}"
+    );
+}

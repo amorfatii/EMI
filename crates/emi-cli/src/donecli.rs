@@ -134,6 +134,13 @@ fn change_evidence(context: &ChangeContext) -> ChangeEvidence {
     req.test_globs.clone_from(&context.config.tests.globs);
     req.source.clone_from(&context.config.source);
     req.link.clone_from(&context.config.link);
+    if !context.config.python_path.is_empty() {
+        // the same import path as the regression run: the candidate's code
+        req.env.push((
+            "PYTHONPATH".to_owned(),
+            context.config.python_path.join(":"),
+        ));
+    }
     match emi_proving::measure_in(&req, context.view) {
         Ok(evidence) => ChangeEvidence::Measured(evidence.to_json()),
         Err(why) => ChangeEvidence::Failed(format!("change evidence could not be measured: {why}")),

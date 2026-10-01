@@ -137,6 +137,12 @@ impl Command {
         out
     }
 
+    /// The Python that runs the tests, for a command that must see the
+    /// same import path they do.
+    pub fn interpreter(&self) -> &str {
+        &self.interpreter
+    }
+
     /// Print the node ids the configured command would run.
     pub fn list_argv(&self) -> Vec<String> {
         let mut argv = self.launcher.clone();

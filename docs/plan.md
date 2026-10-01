@@ -92,10 +92,19 @@ the candidate.
   "default_branch": "main",
   "tests": {"command": ["python", "-m", "pytest", "-q"], "globs": ["tests/*"]},
   "link": [".venv"],
+  "python_path": ["src"],
   "repair_rounds": 3,
   "on_unproven": "report"
 }
 ```
+
+`python_path` (optional) lists the directories the tests import the
+project's own code from, other than the repository root (`src` for a src
+layout; `emi init` detects it). They go first on the import path of every
+run, and a check confirms that the project's own top-level names resolve
+inside the copy being checked: tests that would import an installed copy
+(an editable install of another checkout) make the check `incomplete`, since
+they say nothing about the candidate.
 
 `on_unproven` is `report` (default: unproven functions are stated, the
 proposer may stop) or `repair` (they send the proposer back once). The default

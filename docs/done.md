@@ -125,6 +125,17 @@ of them (`not_verified`), with this run's under `this_run`.
   baseline has no `.emi/config.json` the action is `incomplete`. Local
    approvals are not read, so a changed old test stays a review item.
 
+**Which code the tests import.** EMI runs the tests in a copy of the
+candidate, not in your checkout. A project with a src layout is usually
+installed into its environment in editable mode, which points the
+environment at one particular checkout; run from a copy, the tests would
+import that checkout (or fail to import anything), not the code being
+checked. `emi init` therefore records the import roots (`python_path`, for
+example `["src"]`), every run puts them first on the import path, and a
+check confirms that the project's own packages resolve inside the copy. If
+they would not, the action is `incomplete` and the receipt names the package
+and where it would have come from.
+
 Regression evidence is a comparison, test by test, with the baseline's own
 run. The test command runs once on the baseline (the result is kept and
 reused for every later check of the same baseline, configuration and

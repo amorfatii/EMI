@@ -24,6 +24,7 @@ const KEYS: &[&str] = &[
     "default_branch",
     "tests",
     "link",
+    "python_path",
     "repair_rounds",
     "on_unproven",
 ];
@@ -63,6 +64,11 @@ pub struct Config {
     pub tests: Tests,
     /// Ignored dependency directories the test command needs (a virtualenv).
     pub link: Vec<String>,
+    /// Directories the tests import the project's own code from, relative
+    /// to the repository root (`src` for a src layout). They go first on
+    /// the import path of every run, so the tests import the code being
+    /// checked and never a copy the environment has installed.
+    pub python_path: Vec<String>,
     pub repair_rounds: u64,
     pub on_unproven: OnUnproven,
 }
@@ -179,7 +185,12 @@ impl Config {
             source: relative(&obj["source"], "source")?,
             default_branch: branch(&obj["default_branch"])?,
             tests: tests(&obj["tests"])?,
-            link: obj.get("link").map_or(Ok(Vec::new()), links)?,
+            link: obj
+                .get("link")
+                .map_or(Ok(Vec::new()), |v| paths(v, "link"))?,
+            python_path: obj
+                .get("python_path")
+                .map_or(Ok(Vec::new()), |v| paths(v, "python_path"))?,
             repair_rounds: rounds(obj.get("repair_rounds"))?,
             on_unproven: on_unproven(obj.get("on_unproven"))?,
         })
@@ -187,7 +198,7 @@ impl Config {
 
     /// The configuration as written to disk (plan.md, interface 1).
     pub fn to_value(&self) -> Value {
-        json!({
+        let mut v = json!({
             "schema": SCHEMA,
             "language": self.language,
             "source": self.source,
@@ -196,7 +207,13 @@ impl Config {
             "link": self.link,
             "repair_rounds": self.repair_rounds,
             "on_unproven": self.on_unproven.as_str(),
-        })
+        });
+        // written only when set, so a configuration without it reads back
+        // as it was written
+        if !self.python_path.is_empty() {
+            v["python_path"] = json!(self.python_path);
+        }
+        v
     }
 
     pub fn to_text(&self) -> String {
@@ -212,11 +229,11 @@ fn branch(v: &Value) -> Result<String, Error> {
     Ok(s.to_owned())
 }
 
-fn links(v: &Value) -> Result<Vec<String>, Error> {
+fn paths(v: &Value, key: &str) -> Result<Vec<String>, Error> {
     let items = v
         .as_array()
-        .ok_or_else(|| bad("link", "must be an array of relative paths"))?;
-    items.iter().map(|x| relative(x, "link")).collect()
+        .ok_or_else(|| bad(key, "must be an array of relative paths"))?;
+    items.iter().map(|x| relative(x, key)).collect()
 }
 
 /// The configuration the working tree holds.

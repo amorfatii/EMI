@@ -43,7 +43,8 @@ fn try_measure(
         &oldtests::approved_paths(entries),
     )
     .map_err(|e| e.to_string())?;
-    let spec = derived::spec(repo, config, &baseline.sha, &trusted);
+    let own = derived::own_names(view, &baseline.sha, config).map_err(|e| e.to_string())?;
+    let spec = derived::spec(repo, config, &baseline.sha, &trusted, &own);
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
     let store = derived::open(&authority, repo, &baseline.sha, &spec).map_err(|e| e.to_string())?;
     let subject = match req.candidate {
@@ -62,6 +63,13 @@ fn try_measure(
             regression: Regression::unknown(vec![
                 "the working tree changed while the tests ran".to_owned(),
             ]),
+            isolation,
+        });
+    }
+    // tests that import an installed copy say nothing about the candidate
+    if let Some(why) = verified.foreign_imports {
+        return Ok(Measured {
+            regression: Regression::unknown(vec![why]),
             isolation,
         });
     }
