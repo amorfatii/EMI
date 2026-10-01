@@ -201,8 +201,15 @@ fn run_mutant(
         let timeout = mutant_timeout(limit, unmutated_duration(s, id)).as_secs_f64();
         let (status, mut record) = match prepared {
             Ok(mounts) => {
-                let (status, _, record) =
-                    run_check_within(id, def, timeout, &dir, &contract["execution"], mounts);
+                let (status, _, record) = run_check_within(
+                    id,
+                    def,
+                    timeout,
+                    &dir,
+                    &contract["execution"],
+                    mounts,
+                    false,
+                );
                 (status, record)
             }
             Err(e) => (

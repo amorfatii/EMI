@@ -111,7 +111,8 @@ impl Task {
             "objective": "make add() add",
             "requirements": [{"id": "R1", "acceptance": "add adds", "checks": ["suite"]}],
             "checks": {"suite": {"command": ["python3", "runner.py"],
-                                 "success": {"exit_code": 0}, "timeout_s": 60}},
+                                 "success": {"exit_code": 0}, "timeout_s": 60,
+                                 "evidence": {"format": "pytest"}}},
             "envelope": {"permitted_paths": ["app.py", "tests/*", "skip.txt"],
                          "protected_paths": ["runner.py"]},
             "verification": {"trusted": ["tests/*"]},
@@ -184,8 +185,11 @@ fn an_exit_before_collection_ends_leaves_the_inventory_short_and_rejects() {
 #[test]
 fn without_an_inventory_an_early_exit_passes_and_the_decision_says_so() {
     // the known limit of an exit status as the only evidence (docs/tasks.md):
-    // what the controller can do here is state it in the decision
-    let task = Task::new(None, None);
+    // what the controller can do here is state it in the decision; the
+    // check declares no evidence, so the exit code stands alone
+    let plain = json!({"command": ["python3", "runner.py"],
+        "success": {"exit_code": 0}, "timeout_s": 60});
+    let task = Task::new(None, Some(plain));
     let exits = "import os\n\ngetattr(os, '_exit')(0)\n";
     let d = task.verify_app(exits);
     assert_eq!(d["decision"], "accepted", "{d}");
@@ -306,8 +310,17 @@ fn a_baseline_that_lists_no_test_is_reported_as_nothing_to_compare() {
 }
 
 #[test]
-#[ignore = "needs per-test outcomes: with the inventory intact the controller sees only an exit \
-            status of 0 from a run that executed nothing"]
+fn a_check_that_declares_evidence_but_prints_none_is_not_a_pass() {
+    // a non-test command stays usable without evidence (see the lifecycle
+    // fixtures); declaring evidence for one demands a test report
+    let quiet = json!({"command": ["python3", "-c", "pass"],
+        "success": {"exit_code": 0}, "timeout_s": 60, "evidence": {"format": "pytest"}});
+    let task = Task::new(Some(pytest_listing()), Some(quiet));
+    let d = task.verify_app(FIXED_APP);
+    assert_eq!(d["decision"], "rejected", "{d}");
+}
+
+#[test]
 fn an_early_exit_after_collection_is_not_a_pass_even_with_an_inventory() {
     let task = Task::new(Some(pytest_listing()), None);
     // exits only when running, so the listing stays complete
@@ -319,8 +332,6 @@ fn an_early_exit_after_collection_is_not_a_pass_even_with_an_inventory() {
 }
 
 #[test]
-#[ignore = "needs per-test outcomes: a collected test that skipped on the candidate's code still \
-            exits 0, and only a per-test result shows it did not run"]
 fn a_baseline_test_that_skips_on_the_candidates_code_is_not_a_pass() {
     let task = Task::new(Some(pytest_listing()), None);
     let skipping = FIXED_APP.replace("DISABLED = False", "DISABLED = True");

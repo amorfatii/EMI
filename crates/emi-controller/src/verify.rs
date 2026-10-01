@@ -615,7 +615,21 @@ fn run_check(
     mounts: Mounts,
 ) -> (String, String, Value) {
     let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
-    run_check_within(id, def, timeout, workspace, execution, mounts)
+    run_check_within(id, def, timeout, workspace, execution, mounts, true)
+}
+
+/// [`run_check`] for reruns that compare against the check's own first run
+/// (shaken, mutated): they judge by the exit status alone, so a renamed
+/// test id or a mutant's summary never reads as missing evidence.
+fn run_check_status_only(
+    id: &str,
+    def: &Value,
+    workspace: &Path,
+    execution: &Value,
+    mounts: Mounts,
+) -> (String, String, Value) {
+    let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
+    run_check_within(id, def, timeout, workspace, execution, mounts, false)
 }
 
 /// [`run_check`] bounded by `timeout` seconds instead of the check's own.
@@ -626,6 +640,7 @@ fn run_check_within(
     workspace: &Path,
     execution: &Value,
     mounts: Mounts,
+    with_evidence: bool,
 ) -> (String, String, Value) {
     // contracts frozen before the status was required may state none: the
     // check cannot be judged, which is not the same as expecting 0
@@ -657,6 +672,11 @@ fn run_check_within(
     // the verdict rests on the exit status, which output limits cannot cut,
     // but the retained output is the first bytes: say when it is not all
     let limit = spec.output_limit as u64;
+    let (status, attribution, evidence) = if with_evidence {
+        apply_evidence(def, &o, limit, status, attribution)
+    } else {
+        (status.to_owned(), attribution.to_owned(), Value::Null)
+    };
     let record = json!({
         "check_id": id, "check_definition_id": digest("check-definition", def),
         "status": status, "attribution": attribution, "exit_code": o.exit_code, "signal": o.signal,
@@ -664,9 +684,86 @@ fn run_check_within(
         "stdout_tail": tail(&o.stdout, 2000), "stderr_tail": tail(&o.stderr, 2000),
         "stdout_bytes": o.stdout_bytes, "stderr_bytes": o.stderr_bytes,
         "output_truncated": o.stdout_bytes > limit || o.stderr_bytes > limit,
+        "evidence": evidence,
         "receipt": o.receipt,
     });
     (status.to_owned(), attribution.to_owned(), record)
+}
+
+/// Execution evidence for a check that declares it: the run's own report
+/// must show passing tests, not just a passing exit status. Returns the
+/// (possibly worsened) status, its attribution, and the evidence record
+/// (`null` when the check declares none).
+fn apply_evidence(
+    def: &Value,
+    o: &emi_exec::Outcome,
+    limit: u64,
+    status: &str,
+    attribution: &str,
+) -> (String, String, Value) {
+    if def.get("evidence").filter(|v| !v.is_null()).is_none() {
+        return (status.to_owned(), attribution.to_owned(), Value::Null);
+    }
+    // without the check's exit there is nothing to add evidence to: the
+    // run already failed, errored or timed out on its own terms
+    if status != "passed" {
+        return (
+            status.to_owned(),
+            attribution.to_owned(),
+            json!({"format": "pytest", "state": "not_required",
+                   "reason": "the run did not pass on its exit status"}),
+        );
+    }
+    // the retained output is the first bytes: a cut report may hide
+    // failures and skips, so truncated evidence is unresolved, never a pass
+    if o.stdout_bytes > limit || o.stderr_bytes > limit {
+        return (
+            "error".to_owned(),
+            "environment".to_owned(),
+            json!({"format": "pytest", "state": "unverified",
+                   "reason": "the run's output was cut at the kept limit, so its test report is partial"}),
+        );
+    }
+    match crate::evidence::parse(&o.stdout) {
+        Ok(ev) => match crate::evidence::judge(&ev) {
+            crate::evidence::Verdict::Pass => (
+                status.to_owned(),
+                attribution.to_owned(),
+                evidence_record(&ev, "pass", ""),
+            ),
+            crate::evidence::Verdict::Fail(why) => (
+                "failed".to_owned(),
+                "candidate".to_owned(),
+                evidence_record(&ev, "fail", &why),
+            ),
+        },
+        Err(why) => (
+            "failed".to_owned(),
+            "candidate".to_owned(),
+            json!({"format": "pytest", "state": "fail", "reason": why}),
+        ),
+    }
+}
+
+/// The recorded evidence: what form it took, the counts it showed, why it
+/// did or did not establish passing tests.
+fn evidence_record(ev: &crate::evidence::Evidence, state: &str, reason: &str) -> Value {
+    let (kind, passed, failed, skipped) = match ev.kind {
+        crate::evidence::Kind::Lines => (
+            "lines",
+            ev.passed.len(),
+            ev.failed.len() + ev.errored.len(),
+            ev.skipped.len(),
+        ),
+        crate::evidence::Kind::Summary => (
+            "summary",
+            ev.summary_passed as usize,
+            ev.summary_failed as usize,
+            ev.summary_skipped as usize,
+        ),
+    };
+    json!({"format": "pytest", "state": state, "kind": kind,
+           "passed": passed, "failed": failed, "skipped": skipped, "reason": reason})
 }
 
 /// The structural gate: EMI measures baseline -> candidate itself.

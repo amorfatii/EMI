@@ -10,7 +10,7 @@ use std::path::Path;
 use emi_ledger::pyfmt::digest;
 use serde_json::{Value, json};
 
-use super::{RunSetup, run_check};
+use super::{RunSetup, run_check_status_only};
 use crate::contract::Result;
 use crate::store::Store;
 
@@ -143,7 +143,7 @@ fn rerun(
     let command = def["command"].to_string();
     let renamed = rename_in(&dir, &setup.trusted_files, &tag[..6], &command);
     let execution = shaken_execution(&setup.contract["execution"], tag);
-    let (status, _, mut record) = run_check(id, def, &dir, &execution, mounts);
+    let (status, _, mut record) = run_check_status_only(id, def, &dir, &execution, mounts);
     let _ = std::fs::remove_dir_all(&dir);
     record["candidate_id"] = json!(candidate_id);
     record["contract_id"] = setup.contract["contract_id"].clone();

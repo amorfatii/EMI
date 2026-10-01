@@ -10,6 +10,7 @@ pub mod approve;
 pub mod contract;
 pub mod deps;
 pub mod escalate;
+pub mod evidence;
 pub mod receipt;
 pub mod refactor;
 pub mod runner_config;

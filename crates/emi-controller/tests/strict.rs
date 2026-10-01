@@ -162,6 +162,32 @@ fn the_expected_exit_status_must_be_stated_as_an_integer() {
 }
 
 #[test]
+fn execution_evidence_must_declare_a_report_the_controller_reads() {
+    assert_refused(&[
+        (
+            "an unknown report format",
+            |s| s["checks"]["unit"]["evidence"] = json!({"format": "junit"}),
+            "check unit evidence.format must be pytest",
+        ),
+        (
+            "a missing format",
+            |s| s["checks"]["unit"]["evidence"] = json!({}),
+            "check unit evidence.format must be pytest",
+        ),
+        (
+            "evidence that is not an object",
+            |s| s["checks"]["unit"]["evidence"] = json!("pytest"),
+            "check unit evidence must be an object",
+        ),
+        (
+            "an unread key beside the format",
+            |s| s["checks"]["unit"]["evidence"] = json!({"format": "pytest", "report": "out.xml"}),
+            "check unit: evidence: unknown key report",
+        ),
+    ]);
+}
+
+#[test]
 fn keys_no_part_of_the_contract_reads_are_refused_wherever_they_are() {
     assert_refused(&[
         (

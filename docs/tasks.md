@@ -84,7 +84,7 @@ simplification.
   and in `verification.drift` (no keys yet). A `held_out` that is not an object, or an
   entry of it that is not one, is refused too. A misspelt key would
   otherwise switch a protection off without a word. The same holds
-  inside each check (`command`, `success`, `timeout_s`), `structural`
+  inside each check (`command`, `success`, `timeout_s`, `evidence`), `structural`
   (`probe`, `source`, `allowance`, `headroom`, `profile`),
   `warning_policy` (`treatment`) and `guardrails` (`tiers`,
   `allow_classes`, `max_net_sloc`, `max_files`; scope keys belong to the
@@ -110,7 +110,9 @@ simplification.
   bubblewrap, with a PID namespace, a read-only root, no network and a
   verified cleanup. `link` symlinks ignored dependency directories (a
   virtualenv, `node_modules`) into the snapshot. A check passes when it
-  exits with `success.exit_code`.
+  exits with `success.exit_code`. A check that runs tests can declare
+  `"evidence": {"format": "pytest"}`: then its own report must show
+  passing tests too, or the check fails (see below).
 - **Pinned dependencies.** Linked directories are outside the candidate's
   tree, yet the checks run the tools inside them, so an agent could edit
   its test runner there without touching a tracked file. At freeze the
@@ -219,14 +221,20 @@ optional `verification` section does this the way benchmarks grade:
   list: output beyond the 1 MiB kept, and (in the `pytest` format) output
   with lines but no `path::name` id. A baseline that lists no test gives
   the inventory state `nothing_to_compare`, listed under *Not verified*.
-- **What the exit status cannot show.** A check is judged by its exit
-  status; the controller reads no per-test result. A run that exits 0
-  after a test was skipped, expected to fail or never ran, because the
-  candidate's code made it so, still counts as passed. Restored trusted
-  tests, the inventory and the guardrails cover the usual ways in; the rest
-  needs per-test outcomes. A check's run record says when its output was
-  cut (`output_truncated`), and one killed by a signal is a failure, one
-  that outlives its timeout is unresolved (`incomplete`).
+- **What the exit status cannot show.** A check without `evidence` is
+  judged by its exit status; the controller reads no per-test result. A
+  run that exits 0 after a test was skipped, expected to fail or never
+  ran, because the candidate's code made it so, still counts as passed.
+  Restored trusted tests, the inventory and the guardrails cover the
+  usual ways in. A check that declares pytest `evidence` is judged by its
+  own report as well: per-test `<id> <OUTCOME>` lines when it prints any
+  (the stronger form, reconciled test by test: any failure, error or
+  skip fails the check), else its pytest summary (the weaker form: it
+  says how many passed, never which, and any skip or expected failure
+  fails the check). A run with neither is not a pass, and a cut report
+  is unresolved, never a shorter suite. A check's run record says when
+  its output was cut (`output_truncated`), and one killed by a signal is
+  a failure, one that outlives its timeout is unresolved (`incomplete`).
 
 - **`shake`:** `{"rounds": 1}` (up to 3). Every check that passed runs again, and the task needs review if a rerun fails. Each rerun changes three things:
   - the trusted Python tests' functions and classes are renamed;

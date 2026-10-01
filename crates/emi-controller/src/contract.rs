@@ -71,7 +71,8 @@ fn check_definition(id: &str, def: &Value) -> Result<()> {
     if let Some((_, message)) = guards.into_iter().find(|(ok, _)| !ok) {
         return Err(message);
     }
-    success_criteria(id, &d["success"])
+    success_criteria(id, &d["success"])?;
+    evidence(id, def).map(|_| ())
 }
 
 /// The only criterion the verifier evaluates is the exit status. Any other
@@ -95,6 +96,27 @@ fn success_criteria(id: &str, success: &Value) -> Result<()> {
 
 /// The largest status a process can exit with.
 const MAX_EXIT_STATUS: u64 = 255;
+
+/// Execution evidence a check must show besides its exit status
+/// (`check.evidence`): absent unless the spec declares it, so contracts
+/// frozen without it keep their meaning (a check passes on its exit code
+/// alone, and the decision says so in `limits` when there is no test
+/// inventory).
+fn evidence(id: &str, def: &Value) -> Result<Option<String>> {
+    let Some(ev) = def.get("evidence").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(fields) = ev.as_object() else {
+        return Err(format!("check {id} evidence must be an object"));
+    };
+    known_keys("check.evidence", fields, &format!("check {id}: evidence"))?;
+    match fields.get("format").and_then(Value::as_str) {
+        Some("pytest") => Ok(Some("pytest".into())),
+        _ => Err(format!(
+            "check {id} evidence.format must be pytest (the only execution report the controller reads)"
+        )),
+    }
+}
 
 /// Longest run a contract may allow (one week): anything longer is a
 /// mistake, and far larger values cannot be represented as a duration.
@@ -171,8 +193,9 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
         ],
     ),
     ("requirement", &["id", "acceptance", "checks"]),
-    ("check", &["command", "success", "timeout_s"]),
+    ("check", &["command", "success", "timeout_s", "evidence"]),
     ("check.success", &["exit_code"]),
+    ("check.evidence", &["format"]),
     (
         "structural",
         &["probe", "source", "allowance", "headroom", "profile"],

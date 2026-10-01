@@ -274,10 +274,19 @@ inventory flag that the stand-in runner had not caught.
   `RUST_TEST_THREADS=2 bash scripts/check.sh`. A default-parallel attempt
   received SIGKILL in the controller lifecycle suite; the cause was not
   established. No tests were removed to get the bounded-concurrency pass.
-- The generic controller retains two explicitly ignored per-test-execution
-  regressions in `runner_evidence.rs`. The derived completion check fails
-  closed on unreadable summaries and skipped/expected-failure execution;
-  this does not imply all generic `emi task` checks gained per-test evidence.
+- The generic controller reads execution evidence from checks that
+  declare it (`"evidence": {"format": "pytest"}`): per-test
+  `<id> <OUTCOME>` lines when the run prints any (full per-test
+  reconciliation: any failure, error or skip fails the check), else the
+  pytest summary (summary-level hardening only: it says how many passed,
+  never which). The two `runner_evidence.rs` regressions (early exit with
+  the inventory intact, a baseline test skipping on the candidate's code)
+  now fail closed instead of passing, with no `#[ignore]` left. Checks
+  without the declaration keep exit-code semantics with the documented
+  `limits` note; shaken and mutated reruns compare exit statuses as
+  before. The derived completion check declares the evidence, so `emi
+  done` inherits it; this does not imply undeclared generic `emi task`
+  checks gained per-test evidence.
 
 ### Experiment blocked before registration
 

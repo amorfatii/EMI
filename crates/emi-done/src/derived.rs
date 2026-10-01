@@ -83,12 +83,17 @@ pub fn spec(repo: &Path, config: &Config, baseline: &str, trusted: &[String]) ->
         command.push("--tb=no".to_owned());
     }
     let mut verification = json!({"trusted": trusted, "runner_config": "review"});
+    let mut evidence = Value::Null;
     if let Ok(pytest) = emi_proving::pytest::Command::parse(&config.tests.command) {
         // Two quiet flags make real pytest print counts by file, not ids.
         // Share the normalizer used by the proving measurement.
         let inventory = pytest.list_argv();
         verification["inventory"] =
             json!({"command": inventory, "format": "pytest", "timeout_s": INVENTORY_TIMEOUT_S});
+        // The test check runs the same pytest invocation, so its own
+        // report is required too: a passing exit with no readable summary
+        // (an early exit) or with skips is not regression evidence.
+        evidence = json!({"format": "pytest"});
     }
     json!({
         "task_id": "",
@@ -96,7 +101,7 @@ pub fn spec(repo: &Path, config: &Config, baseline: &str, trusted: &[String]) ->
         "baseline": baseline,
         "objective": "The baseline's tests still pass on the candidate.",
         "requirements": [{"id": "R1", "acceptance": "every test the baseline had still passes, with the trusted tests restored", "checks": [CHECK]}],
-        "checks": {CHECK: {"command": command, "success": {"exit_code": 0}, "timeout_s": TEST_TIMEOUT_S}},
+        "checks": {CHECK: {"command": command, "success": {"exit_code": 0}, "timeout_s": TEST_TIMEOUT_S, "evidence": evidence}},
         "envelope": {"permitted_paths": ["*"]},
         "guardrails": false,
         "verification": verification,
