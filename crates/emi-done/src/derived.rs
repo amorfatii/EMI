@@ -384,6 +384,7 @@ mod tests {
             python_path: Vec::new(),
             repair_rounds: 3,
             on_unproven: OnUnproven::Report,
+            on_redundant: OnUnproven::Report,
         }
     }
 

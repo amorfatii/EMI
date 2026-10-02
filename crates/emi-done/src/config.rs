@@ -27,6 +27,7 @@ const KEYS: &[&str] = &[
     "python_path",
     "repair_rounds",
     "on_unproven",
+    "on_redundant",
 ];
 const REQUIRED: &[&str] = &["schema", "language", "source", "default_branch", "tests"];
 
@@ -47,6 +48,11 @@ impl OnUnproven {
         }
     }
 }
+
+/// What redundant tests do to the action: stated (the default; a test
+/// that passes before and after may still guard behaviour the change must
+/// keep), or sent back to be made to fail on the old code.
+pub type OnRedundant = OnUnproven;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tests {
@@ -71,6 +77,7 @@ pub struct Config {
     pub python_path: Vec<String>,
     pub repair_rounds: u64,
     pub on_unproven: OnUnproven,
+    pub on_redundant: OnRedundant,
 }
 
 fn bad(at: &str, what: &str) -> Error {
@@ -142,12 +149,14 @@ fn rounds(v: Option<&Value>) -> Result<u64, Error> {
     }
 }
 
-fn on_unproven(v: Option<&Value>) -> Result<OnUnproven, Error> {
+/// `report` (also when absent) or `repair`, for `on_unproven` and
+/// `on_redundant`.
+fn report_or_repair(v: Option<&Value>, key: &str) -> Result<OnUnproven, Error> {
     match v.map(|x| x.as_str()) {
         None => Ok(OnUnproven::Report),
         Some(Some("report")) => Ok(OnUnproven::Report),
         Some(Some("repair")) => Ok(OnUnproven::Repair),
-        Some(_) => Err(bad("on_unproven", "must be report or repair")),
+        Some(_) => Err(bad(key, "must be report or repair")),
     }
 }
 
@@ -192,7 +201,8 @@ impl Config {
                 .get("python_path")
                 .map_or(Ok(Vec::new()), |v| paths(v, "python_path"))?,
             repair_rounds: rounds(obj.get("repair_rounds"))?,
-            on_unproven: on_unproven(obj.get("on_unproven"))?,
+            on_unproven: report_or_repair(obj.get("on_unproven"), "on_unproven")?,
+            on_redundant: report_or_repair(obj.get("on_redundant"), "on_redundant")?,
         })
     }
 
@@ -212,6 +222,9 @@ impl Config {
         // as it was written
         if !self.python_path.is_empty() {
             v["python_path"] = json!(self.python_path);
+        }
+        if self.on_redundant == OnRedundant::Repair {
+            v["on_redundant"] = json!(self.on_redundant.as_str());
         }
         v
     }

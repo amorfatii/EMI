@@ -579,6 +579,45 @@ fn a_test_command_that_is_not_pytest_is_unknown_with_a_reason() {
     );
 }
 
+/// A change outside every function (a module-level value, a table) has no
+/// changed function for a test to be seen running. The test that fails
+/// without the change and passes with it shows the change all the same.
+#[test]
+fn a_test_that_fails_without_a_module_level_change_proves_it() {
+    let fx = Fixture::new();
+    fx.write(&[
+        (
+            "src/price.py",
+            "RATE = 1\n\n\ndef cost(x):\n    return x * RATE\n",
+        ),
+        (
+            "tests/test_price.py",
+            "from price import cost\n\n\ndef test_zero():\n    assert cost(0) == 0\n",
+        ),
+    ]);
+    fx.commit("a rate and a function that uses it");
+    fx.write(&[
+        (
+            "src/price.py",
+            "RATE = 2\n\n\ndef cost(x):\n    return x * RATE\n",
+        ),
+        (
+            "tests/test_rate.py",
+            "from price import cost\n\n\ndef test_rate():\n    assert cost(2) == 4\n",
+        ),
+    ]);
+    fx.commit("double the rate");
+    let v = change(&fx.request()).to_json();
+    assert_eq!(
+        ids(&v["proving_tests"]),
+        vec!["tests/test_rate.py::test_rate"],
+        "{v}"
+    );
+    assert_eq!(v["redundant_tests"], json!([]), "{v}");
+    // no function changed, so there is none to call proven
+    assert_eq!(v["status"], "none", "{v}");
+}
+
 /// pytest cannot select a test whose id holds an escape by naming it; one
 /// such test in an edited file must not hide the others' results.
 #[test]

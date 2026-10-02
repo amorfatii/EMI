@@ -67,6 +67,15 @@ impl Project {
         std::fs::write(file, text).expect("write");
     }
 
+    /// Make this project ask for redundant tests to be sent back.
+    pub fn strict_about_redundant_tests(&self) {
+        let path = self.path().join(".emi/config.json");
+        let mut config: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("config")).expect("JSON");
+        config["on_redundant"] = serde_json::json!("repair");
+        self.write(".emi/config.json", &config.to_string());
+    }
+
     pub fn commit(&self, message: &str) {
         git(self.path(), &["add", "-A"]);
         git(self.path(), &["commit", "-q", "-m", message]);

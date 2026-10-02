@@ -42,6 +42,8 @@ fn journal_has_the_three_checks_and_takes_a_label(p: &Project) {
 #[test]
 fn a_scripted_proposer_repairs_a_false_completion_then_removes_redundancy() {
     let p = Project::new();
+    // this project asks for redundant tests to be sent back
+    p.strict_about_redundant_tests();
     assert!(event(&p, "user-prompt-submit", "repair").is_null());
     p.write("app.py", project::BROKEN);
     let failed = event(&p, "stop", "repair");
@@ -497,4 +499,49 @@ fn a_warmed_baseline_is_not_run_again_by_the_check() {
     let (code, _) = cold.done(&[]);
     assert_eq!(code, 0);
     assert_eq!(decisions(&cold), 2);
+}
+
+/// A test that passes before and after does not show the change works, but
+/// it may guard what the change must keep. It is stated, and the proposer
+/// is sent back for it only where the project asks for that.
+#[test]
+fn a_test_that_does_not_fail_without_the_change_is_stated_not_sent_back() {
+    let p = Project::new();
+    p.write(
+        "app.py",
+        "def add(a, b):\n    if a is None:\n        return b\n    return a + b\n",
+    );
+    p.write(
+        "tests/test_none.py",
+        "from app import add\n\ndef test_none():\n    assert add(None, 2) == 2\n",
+    );
+    p.write(
+        "tests/test_preserved.py",
+        "from app import add\n\ndef test_negative():\n    assert add(-1, -2) == -3\n",
+    );
+    let (code, receipt) = p.done(&[]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(receipt["change"]["status"], "proven", "{receipt}");
+    assert_eq!(
+        receipt["change"]["redundant_tests"][0]["id"], "tests/test_preserved.py::test_negative",
+        "{receipt}"
+    );
+    let text = p.emi(&["done", "--format", "text"], None);
+    assert!(
+        String::from_utf8_lossy(&text.stdout).contains(
+            "1 added test(s) do not fail without the change (first: tests/test_preserved.py::test_negative)"
+        ),
+        "{text:?}"
+    );
+
+    p.strict_about_redundant_tests();
+    let (code, receipt) = p.done(&[]);
+    assert_eq!(code, 3, "{receipt}");
+    assert!(
+        receipt["repair"][0]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("tests/test_preserved.py::test_negative passes without your change"),
+        "{receipt}"
+    );
 }

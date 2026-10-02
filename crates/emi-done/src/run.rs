@@ -365,6 +365,7 @@ pub fn check(
         old_tests: &old_tests,
         change: &change,
         on_unproven: config.on_unproven,
+        on_redundant: config.on_redundant,
         faults: approval_fault.into_iter().collect(),
         not_verified,
         this_run,

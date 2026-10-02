@@ -12,7 +12,7 @@ use crate::action::{self, Action};
 use crate::baseline::Baseline;
 use crate::candidate::Candidate;
 use crate::change::ChangeEvidence;
-use crate::config::OnUnproven;
+use crate::config::{OnRedundant, OnUnproven};
 use crate::oldtests::Entry;
 use crate::regression::{Regression, Status};
 
@@ -30,6 +30,7 @@ pub struct Parts<'a> {
     pub old_tests: &'a [Entry],
     pub change: &'a ChangeEvidence,
     pub on_unproven: OnUnproven,
+    pub on_redundant: OnRedundant,
     /// Environment faults beyond those the two evidence parts carry.
     pub faults: Vec<String>,
     pub not_verified: Vec<String>,
@@ -97,6 +98,7 @@ fn facts(p: &Parts) -> action::Facts {
         regression_broken: p.regression.status == Status::Broken,
         failing_tests: failing(p).len(),
         redundant_tests: change.redundant.len(),
+        on_redundant: p.on_redundant,
         unproven_functions: change.unproven.len(),
         on_unproven: p.on_unproven,
         unapproved_old_tests: p.old_tests.iter().filter(|e| !e.approved).count(),
@@ -167,7 +169,7 @@ fn repair_lines(p: &Parts) -> Vec<String> {
     if !failing.is_empty() {
         return itemize(&failing, failing_line);
     }
-    if !change.redundant.is_empty() {
+    if p.on_redundant == OnRedundant::Repair && !change.redundant.is_empty() {
         return itemize(&change.redundant, redundant_line);
     }
     if p.on_unproven == OnUnproven::Repair {
@@ -302,6 +304,22 @@ mod tests {
         on_unproven: OnUnproven,
         f: impl FnOnce(&Parts) -> R,
     ) -> R {
+        with_policy(
+            regression,
+            old_tests,
+            change,
+            (on_unproven, OnRedundant::Report),
+            f,
+        )
+    }
+
+    fn with_policy<R>(
+        regression: &Regression,
+        old_tests: &[Entry],
+        change: &ChangeEvidence,
+        (on_unproven, on_redundant): (OnUnproven, OnRedundant),
+        f: impl FnOnce(&Parts) -> R,
+    ) -> R {
         let baseline = Baseline {
             sha: "a".repeat(40),
             source: "explicit".into(),
@@ -321,6 +339,7 @@ mod tests {
             old_tests,
             change,
             on_unproven,
+            on_redundant,
             faults: Vec::new(),
             not_verified: vec!["x".into()],
             this_run: Vec::new(),
@@ -473,7 +492,12 @@ mod tests {
         let redundant = ChangeEvidence::Measured(json!({"status": "proven", "functions": [],
             "proving_tests": [], "redundant_tests": [{"id": "tests/t.py::test_extra"}],
             "unknown_tests": [], "not_measured": []}));
+        // a test that passes before and after may guard what must stay:
+        // stated, not sent back, unless the project asks for that
         let (v, action) = with(&held(), &[], &redundant, OnUnproven::Report, assemble);
+        assert_eq!((action, v["repair"].clone()), (Action::Stop, json!([])));
+        let strict = (OnUnproven::Report, OnRedundant::Repair);
+        let (v, action) = with_policy(&held(), &[], &redundant, strict, assemble);
         assert_eq!(action, Action::Repair);
         assert!(
             v["repair"][0]
@@ -491,7 +515,8 @@ mod tests {
                 {"id": "tests/t.py::test_a", "reason": "passes at the baseline"},
                 {"id": "tests/t.py::test_b", "reason": "executes no changed line"}],
             "unknown_tests": [], "not_measured": []}));
-        let (v, action) = with(&held(), &[], &change, OnUnproven::Report, assemble);
+        let strict = (OnUnproven::Report, OnRedundant::Repair);
+        let (v, action) = with_policy(&held(), &[], &change, strict, assemble);
         assert_eq!(action, Action::Repair);
         let lines: Vec<&str> = v["repair"]
             .as_array()

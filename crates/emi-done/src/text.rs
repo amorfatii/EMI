@@ -15,13 +15,12 @@ fn regression_line(r: &Value) -> String {
     let count = |n: usize, what: &str| format!("{n} {what}");
     match r["status"].as_str() {
         Some("held") => {
-            // what a second look cleared is the one thing a held line
-            // must not leave out
-            let cleared = strs(&r["reasons"])
+            // what was not counted is part of what "held" means: tests a
+            // second look cleared, tests that already failed at the baseline
+            let cleared: String = strs(&r["reasons"])
                 .into_iter()
-                .find(|why| why.contains("fail only beside") || why.contains("flaky"))
                 .map(|why| format!(" {why}."))
-                .unwrap_or_default();
+                .collect();
             match r["tests_run"].as_u64() {
                 Some(n) => format!("held ({n} tests ran).{cleared}"),
                 None => {
@@ -77,7 +76,12 @@ fn change_line(c: &Value) -> String {
         Some("unproven") => {
             format!("unproven ({functions} changed functions, none run by a proving test).")
         }
-        Some("none") => "nothing to prove (no function changed).".to_owned(),
+        Some("none") => match c["proving_tests"].as_array().map_or(0, Vec::len) {
+            0 => "nothing to prove (no function changed).".to_owned(),
+            n => format!(
+                "shown by {n} proving test(s); the change is outside functions, so none is listed{by}."
+            ),
+        },
         _ => "not measured.".to_owned(),
     }
 }
@@ -155,6 +159,15 @@ pub fn render_with(receipt: &Value, detail: Detail) -> String {
         format!("Regression: {}", regression_line(&receipt["regression"])),
         format!("New behaviour: {}", change_line(&receipt["change"])),
     ];
+    let redundant = receipt["change"]["redundant_tests"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if let Some(first) = redundant.first().and_then(|t| t["id"].as_str()) {
+        lines.push(format!(
+            "  {} added test(s) do not fail without the change (first: {first}); they may guard what must stay, they do not show the change works.",
+            redundant.len()
+        ));
+    }
     let skipped = strs(&receipt["change"]["skipped_tests"]).len();
     if skipped > 0 {
         lines.push(format!(

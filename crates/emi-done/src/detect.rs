@@ -443,6 +443,7 @@ pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Dete
         python_path,
         repair_rounds: DEFAULT_REPAIR_ROUNDS,
         on_unproven: OnUnproven::Report,
+        on_redundant: OnUnproven::Report,
     };
     Ok(Detected {
         notes: notes(&config, &linked),

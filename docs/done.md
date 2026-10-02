@@ -24,6 +24,7 @@ link (`.venv`, `venv`), prints them, and writes `.emi/config.json`.
 The file has the schema `emi-config-0.1` (see plan.md, interface 1). Unknown
 keys and values of the wrong type are errors. `repair_rounds` (default 3) and
 `on_unproven` (`report`, the default, or `repair`) are for the hook.
+`on_redundant` is the same choice for redundant tests.
 
 ## Check: `emi done`
 
@@ -66,11 +67,18 @@ of them (`not_verified`), with this run's under `this_run`.
   list may be cut) is `unknown`.
 - **New behaviour** (`change`): added tests run against the baseline's product
   code with the candidate's tests overlaid, and against the same frozen
-  candidate as the regression check. A proving test fails or errors before,
-  passes after, and executes changed product code in its own test context.
-  A test already passing before, or unrelated to the changed code, is redundant
-  and sends the proposer back. Collection/import execution alone
-  does not earn proving credit.
+  candidate as the regression check. A proving test fails or errors before
+  and passes after. One that failed in its own run needs nothing more: the
+  test code is the same at both revisions, so the product change made the
+  difference, wherever it is (a function, a module-level value, a data
+  file). One that errored must also execute changed product code in its own
+  test context, because a test file that does not import gives the same
+  error to every test in it. A test already passing before, or one that
+  errored and does not reach the change, is redundant. Redundant tests are
+  stated in the receipt: such a test does not show the change works, and it
+  may still guard behaviour the change must keep, so the proposer is not
+  sent back for it unless the project sets `on_redundant: repair`.
+  Collection/import execution alone does not earn proving credit.
   - An old test the candidate edited is judged in its edited form by the same
     rule, and listed as a proving test with `edited: true`. Whether the edit
     is acceptable stays the person's question; that the edited test fails on
@@ -124,7 +132,7 @@ of them (`not_verified`), with this run's under `this_run`.
 
 | Exit | Action | Meaning |
 |---|---|---|
-| 0 | `stop` | Regression held, no redundant test or unapproved changed old test/runner configuration. |
+| 0 | `stop` | Regression held, no failing added test, no unapproved changed old test/runner configuration. It lets the proposer stop; it is not a statement that the task is done. |
 | 3 | `repair` | Something the proposer can fix; `repair` names every item of the first failing kind (up to five, then a count), each with what to do. |
 | 4 | `ask_person` | A changed old test or runner configuration file waits for an approval. |
 | 5 | `incomplete` | EMI could not measure (no sandbox, no pytest, config absent at the baseline). Not a pass. |
@@ -217,8 +225,16 @@ Known limit: a test that can only fail on another platform (a Windows path
 case, say) passes at the baseline here and is called redundant.
 
 A redundant test carries why: it `passes at the baseline`, or it `executes
-no changed line`. The repair says which, and that the test may be fixed
+no changed line`. The text receipt counts them and names the first. Under
+`on_redundant: repair` the repair says which, and that the test may be fixed
 (made to fail on the old code, or to exercise the change) instead of removed.
+
+A change outside every function (a module-level value, a table) has no
+function to list: the status is `none`, and the text receipt says the change
+is shown by its proving tests.
+
+The text receipt's `held` line says what was not counted: tests that already
+failed at the baseline, and failures a second look cleared.
 
 A test the candidate adds that fails on the candidate is listed in
 `change.failing_tests` and is a `repair`: the proposer is told which test,

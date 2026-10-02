@@ -9,6 +9,8 @@ use std::process::Command;
 #[test]
 fn installed_v2_adapter_drives_the_real_completion_loop() {
     let p = project::Project::new();
+    // the scripted session expects a redundant test to be sent back
+    p.strict_about_redundant_tests();
     let install = p.emi(&["hook", "install", "--harness", "opencode"], None);
     assert!(install.status.success(), "{install:?}");
     let out = Command::new("node")

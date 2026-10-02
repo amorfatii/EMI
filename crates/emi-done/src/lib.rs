@@ -258,6 +258,7 @@ fn unconfigured(
         old_tests: &[],
         change: &change,
         on_unproven: config::OnUnproven::Report,
+        on_redundant: config::OnRedundant::Report,
         faults: Vec::new(),
         not_verified: receipt::not_verified(&limits),
         this_run: receipt::this_run(&limits),

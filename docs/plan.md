@@ -39,7 +39,7 @@ part in a decision.
 | 5 | A harness hook (Claude Code and opencode first) runs the check when the proposer tries to finish, only if the files changed since the last check. |
 | 6 | The baseline is where the branch split from the default branch, or the commit the session started on when working directly on the default branch. |
 | 7 | The receipt has two parts: regression evidence (hard) and change evidence (a level, counted in changed functions). |
-| 8 | A test the candidate adds stays only if it is a proving test. A redundant test goes back to the proposer for removal. The stricter mutation rule is opt-in. |
+| 8 | A test the candidate adds is a proving test or a redundant one, and the receipt says which. A redundant test is stated by default: passing before and after shows it does not discriminate this change, not that it guards nothing (amended 2026-10-02: 38% of merged pull requests that add tests carry one, and an independent audit reproduced a useful regression test being sent back for removal). `on_redundant: repair` sends it back. The stricter mutation rule is opt-in. |
 | 9 | A changed or deleted old test is shown to a person for one approval; in CI it is a review item. |
 | 10 | Three repair rounds by default, reset on each user message. When they run out the proposer stops and the person sees the receipt marked NOT VERIFIED. |
 | 11 | Tokens are not measured in the product. `max_tokens` leaves the contract. Feedback to the proposer names the first failing kind of thing: every item of it (up to five, then a count), each with what to do. One round can then settle them; one item per round cost two rounds for two tests in the first live pilot. |
@@ -108,7 +108,9 @@ they say nothing about the candidate.
 
 `on_unproven` is `report` (default: unproven functions are stated, the
 proposer may stop) or `repair` (they send the proposer back once). The default
-follows decision 7; the experiment measures both.
+follows decision 7; the experiment measures both. `on_redundant` is the same
+choice for redundant tests (default `report`; the key is written only when it
+is `repair`).
 
 ### Interface 2: `emi done`
 
@@ -119,8 +121,8 @@ emi done [--repo .] [--baseline REF] [--setting cooperative|enforced]
 
 | Exit | Action | Meaning |
 |---|---|---|
-| 0 | `stop` | Regression evidence holds, no redundant test, no unapproved changed old test. Change evidence is whatever the receipt says. |
-| 3 | `repair` | Something the proposer can fix: regression broken, a redundant test, or unproven functions under `on_unproven: repair`. |
+| 0 | `stop` | Regression evidence holds, no added test fails, no unapproved changed old test. Change evidence is whatever the receipt says: `stop` lets the proposer stop, it does not say the task is done. |
+| 3 | `repair` | Something the proposer can fix: regression broken, a failing added test, a redundant test under `on_redundant: repair`, or unproven functions under `on_unproven: repair`. |
 | 4 | `ask_person` | Only a person can decide: an unapproved changed or deleted old test. |
 | 5 | `incomplete` | EMI could not measure (environment fault, unsupported layout). Never reported as a pass. |
 | 2 | — | Usage or configuration error. |
@@ -182,7 +184,7 @@ Evaluated top to bottom; the first match wins.
 | Any part could not be measured for an environment reason (the change part does not count once the regression is `broken`: a break is established whatever else is unknown) | `incomplete` |
 | `regression.status` is `broken` | `repair` |
 | A test the candidate added fails on it, or a test file only the candidate cannot collect (`change.failing_tests`, or seen by the regression run) | `repair` |
-| `change.redundant_tests` is not empty | `repair` |
+| `on_redundant` is `repair` and `change.redundant_tests` is not empty | `repair` |
 | `on_unproven` is `repair` and a function is `unproven` | `repair` |
 | A changed old test or changed runner configuration is not approved | `ask_person` |
 | Otherwise | `stop` |

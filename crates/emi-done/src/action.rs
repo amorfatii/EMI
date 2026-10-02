@@ -1,7 +1,7 @@
 //! The action table (plan.md): what the proposer or the person should do
 //! next. One pure function, so the whole table is a unit test.
 
-use crate::config::OnUnproven;
+use crate::config::{OnRedundant, OnUnproven};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -41,6 +41,7 @@ pub struct Facts {
     /// Tests the candidate adds that do not pass on it.
     pub failing_tests: usize,
     pub redundant_tests: usize,
+    pub on_redundant: OnRedundant,
     pub unproven_functions: usize,
     pub on_unproven: OnUnproven,
     /// Changed or deleted old tests without an approval.
@@ -53,7 +54,10 @@ pub fn decide(f: &Facts) -> Action {
         (!f.faults.is_empty(), Action::Incomplete),
         (f.regression_broken, Action::Repair),
         (f.failing_tests > 0, Action::Repair),
-        (f.redundant_tests > 0, Action::Repair),
+        (
+            f.on_redundant == OnRedundant::Repair && f.redundant_tests > 0,
+            Action::Repair,
+        ),
         (
             f.on_unproven == OnUnproven::Repair && f.unproven_functions > 0,
             Action::Repair,
@@ -75,6 +79,7 @@ mod tests {
             regression_broken: false,
             failing_tests: 0,
             redundant_tests: 0,
+            on_redundant: OnRedundant::Report,
             unproven_functions: 0,
             on_unproven: OnUnproven::Report,
             unapproved_old_tests: 0,
@@ -97,7 +102,15 @@ mod tests {
                 |f| f.failing_tests = 1,
                 Action::Repair,
             ),
-            ("redundant", |f| f.redundant_tests = 1, Action::Repair),
+            ("redundant, report", |f| f.redundant_tests = 1, Action::Stop),
+            (
+                "redundant, repair",
+                |f| {
+                    f.redundant_tests = 1;
+                    f.on_redundant = OnRedundant::Repair;
+                },
+                Action::Repair,
+            ),
             (
                 "unproven, report",
                 |f| f.unproven_functions = 2,
@@ -136,6 +149,7 @@ mod tests {
             regression_broken: true,
             failing_tests: 1,
             redundant_tests: 1,
+            on_redundant: OnRedundant::Repair,
             unproven_functions: 1,
             on_unproven: OnUnproven::Repair,
             unapproved_old_tests: 1,

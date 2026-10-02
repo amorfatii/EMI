@@ -9,7 +9,7 @@ use emi_diff::functions::{ChangeKind, ChangedFn, ChangedFunctions, changed_funct
 use emi_diff::{hunks, snapshot};
 use emi_profile::sandbox::{Copy, Runner};
 
-use crate::classify::{Verdict, classify, needs_candidate};
+use crate::classify::{BaselineResult, Verdict, classify, needs_candidate};
 use crate::evidence::RedundantTest;
 use crate::evidence::{ChangeEvidence, FunctionEvidence, ProvingTest, UnknownTest, status_of};
 use crate::evidence::{FailingTest, NOT_COLLECTED, PASSES_AT_BASELINE, RUNS_NO_CHANGED_LINE};
@@ -468,7 +468,18 @@ impl Context<'_> {
             let report = s.coverage(&tree, &ids, &self.coverage_sources(&scope))?;
             Ok((tree, report))
         });
-        let tests = std::mem::take(&mut c.proving);
+        // A test whose own run failed at the baseline and passes on the
+        // candidate, with the same test code at both, was changed by the
+        // candidate's product code, wherever that code is: a function, a
+        // module-level value, a data file. Only a test that errored needs
+        // to be seen reaching the change, because a file that does not
+        // import gives that one error to every test in it.
+        let (failed, errored): (Vec<ProvingTest>, Vec<ProvingTest>) =
+            std::mem::take(&mut c.proving)
+                .into_iter()
+                .partition(|t| t.baseline_result == BaselineResult::Failed);
+        c.proving = failed;
+        let tests = errored;
         match measured {
             Err(why) => c.unknown.extend(tests.into_iter().map(|t| UnknownTest {
                 id: t.id,
