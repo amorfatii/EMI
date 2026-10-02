@@ -2,9 +2,10 @@
 //! tested without running anything.
 //!
 //! A test is proving when it fails or errors at the baseline and passes on
-//! the candidate, redundant when it already passes at the baseline, and
-//! otherwise unknown with the reason. Nothing is guessed: a skipped test, a
-//! run that did not finish and a report that did not line up are unknown.
+//! the candidate, redundant when it already passes at the baseline, skipped
+//! when it runs at neither, and otherwise unknown with the reason. Nothing
+//! is guessed: a run that did not finish and a report that did not line up
+//! are unknown.
 
 use crate::junit::Observed;
 
@@ -31,13 +32,21 @@ pub enum Verdict {
     /// It fails on the candidate (`failed` or `errored`): the proposer's
     /// own test does not pass on the proposer's own change.
     Failing(&'static str),
+    /// Skipped or expected to fail at both revisions: it does not run
+    /// here (an optional dependency is absent, a marker says so), so it
+    /// says nothing about the change and is not a measurement that failed.
+    Skipped,
     Unknown(String),
 }
 
-/// Whether the baseline run says the test could be proving, so that it is
-/// worth running on the candidate.
-pub fn failed_at_baseline(baseline: &Observed) -> bool {
-    matches!(baseline, Observed::Failed | Observed::Errored)
+/// Whether the baseline run leaves the verdict to the candidate's: a test
+/// that failed there could be proving, and one skipped there is skipped
+/// only if the candidate skips it too.
+pub fn needs_candidate(baseline: &Observed) -> bool {
+    matches!(
+        baseline,
+        Observed::Failed | Observed::Errored | Observed::Skipped
+    )
 }
 
 fn shown(seen: &Observed) -> &'static str {
@@ -50,14 +59,25 @@ fn shown(seen: &Observed) -> &'static str {
     }
 }
 
+/// A test the baseline skipped: skipped if the candidate skips it too.
+fn skipped_at_baseline(candidate: Option<&Observed>) -> Verdict {
+    match candidate {
+        Some(Observed::Skipped) => Verdict::Skipped,
+        Some(Observed::Unknown(why)) => Verdict::Unknown(format!("on the candidate: {why}")),
+        Some(other) => Verdict::Unknown(format!(
+            "it was skipped or expected to fail at the baseline and {} on the candidate",
+            shown(other)
+        )),
+        None => Verdict::Unknown("it was not run on the candidate".into()),
+    }
+}
+
 /// Judge one added test. `candidate` is its result on the candidate; it is
-/// only looked at when the test failed at the baseline.
+/// only looked at when the test did not pass at the baseline.
 pub fn classify(baseline: &Observed, candidate: Option<&Observed>) -> Verdict {
     let result = match baseline {
         Observed::Passed => return Verdict::Redundant,
-        Observed::Skipped => {
-            return Verdict::Unknown("skipped or expected to fail at the baseline".into());
-        }
+        Observed::Skipped => return skipped_at_baseline(candidate),
         Observed::Unknown(why) => return Verdict::Unknown(format!("at the baseline: {why}")),
         Observed::Failed => BaselineResult::Failed,
         Observed::Errored => BaselineResult::Errored,
@@ -108,9 +128,13 @@ mod tests {
                 "{baseline:?} / {candidate:?}"
             );
         }
+        assert_eq!(classify(&Skipped, Some(&Skipped)), Verdict::Skipped);
         // everything else is unknown, with a reason
         let others = [
             (Skipped, None),
+            (Skipped, Some(Passed)),
+            (Skipped, Some(Failed)),
+            (Skipped, Some(unknown())),
             (unknown(), None),
             (unknown(), Some(Passed)),
             (Failed, None),
@@ -127,11 +151,12 @@ mod tests {
     }
 
     #[test]
-    fn only_failures_at_the_baseline_go_on_to_the_candidate() {
-        assert!(failed_at_baseline(&Observed::Failed));
-        assert!(failed_at_baseline(&Observed::Errored));
-        for seen in [Observed::Passed, Observed::Skipped, unknown()] {
-            assert!(!failed_at_baseline(&seen), "{seen:?}");
+    fn tests_that_did_not_pass_at_the_baseline_go_on_to_the_candidate() {
+        for seen in [Observed::Failed, Observed::Errored, Observed::Skipped] {
+            assert!(needs_candidate(&seen), "{seen:?}");
+        }
+        for seen in [Observed::Passed, unknown()] {
+            assert!(!needs_candidate(&seen), "{seen:?}");
         }
     }
 

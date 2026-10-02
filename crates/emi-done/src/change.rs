@@ -28,11 +28,21 @@ pub struct Redundant {
     pub reason: String,
 }
 
+/// A test the candidate adds that does not pass on it, or a test file
+/// only the candidate cannot collect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failing {
+    pub id: String,
+    /// `failed`, `errored` or `not collected`; empty when the evidence
+    /// did not say.
+    pub result: String,
+}
+
 /// What the action table and the repair lines read from the change part.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     /// Tests the candidate adds that do not pass on it.
-    pub failing: Vec<String>,
+    pub failing: Vec<Failing>,
     pub redundant: Vec<Redundant>,
     /// Changed functions no proving test executes, as `file:name (line n)`.
     pub unproven: Vec<String>,
@@ -100,7 +110,10 @@ impl ChangeEvidence {
             // absent in evidence measured before the list existed: none
             failing: list("failing_tests")
                 .iter()
-                .map(|t| text(t, "id"))
+                .map(|t| Failing {
+                    id: text(t, "id"),
+                    result: text(t, "candidate_result"),
+                })
                 .collect(),
             redundant: list("redundant_tests")
                 .iter()

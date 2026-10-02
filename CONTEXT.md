@@ -70,12 +70,16 @@ Evidence that the behaviour the task asked for exists in the candidate.
 _Avoid_: feature works, new tests pass
 
 **Proving test**:
-A test the candidate adds that fails at the baseline, passes on the candidate, and executes code the candidate changed.
+A test the candidate adds, or an old test it edited, that fails at the baseline, passes on the candidate, and executes code the candidate changed.
 _Avoid_: fail-to-pass test, new test
 
 **Redundant test**:
-A test the candidate adds that would not notice the change: it passes at the baseline, or it executes none of the changed code.
+A test the candidate adds that would not notice the change: it passes at the baseline, or it executes none of the changed code. A companion test is not redundant.
 _Avoid_: useless test, extra test, low-quality test
+
+**Companion test**:
+An added case of a parametrized test that passes at the baseline while another case of the same test function is a proving test.
+_Avoid_: redundant case, extra parameter
 
 **Unproven function**:
 A function the candidate changed that no proving test executes.

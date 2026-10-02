@@ -65,6 +65,11 @@ pub struct FunctionEvidence {
 pub struct ProvingTest {
     pub id: String,
     pub baseline_result: BaselineResult,
+    /// An old test the candidate edited, not one it added: in its new form
+    /// it fails at the baseline and passes on the candidate. Whether the
+    /// edit is acceptable is the person's question; that it shows the
+    /// change is a fact.
+    pub edited: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,11 +90,16 @@ pub struct RedundantTest {
     pub reason: &'static str,
 }
 
-/// A test the candidate adds that does not pass on the candidate.
+/// What a test file that cannot be collected on the candidate is listed
+/// as failing with.
+pub const NOT_COLLECTED: &str = "not collected";
+
+/// A test the candidate adds that does not pass on the candidate, or a
+/// test file only the candidate cannot collect (the id is then the file).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailingTest {
     pub id: String,
-    /// `failed` or `errored`.
+    /// `failed`, `errored` or [`NOT_COLLECTED`].
     pub candidate_result: &'static str,
 }
 
@@ -101,6 +111,12 @@ pub struct ChangeEvidence {
     pub proving_tests: Vec<ProvingTest>,
     pub redundant_tests: Vec<RedundantTest>,
     pub failing_tests: Vec<FailingTest>,
+    /// Added cases that pass at the baseline while another case of the
+    /// same test function is a proving test: they mark what the change
+    /// must leave alone, so they are not redundant.
+    pub companion_tests: Vec<String>,
+    /// Added tests skipped at both revisions: they do not run here.
+    pub skipped_tests: Vec<String>,
     pub unknown_tests: Vec<UnknownTest>,
     /// Everything the measurement could not establish, and why.
     pub not_measured: Vec<String>,
@@ -120,6 +136,8 @@ impl ChangeEvidence {
             proving_tests: Vec::new(),
             redundant_tests: Vec::new(),
             failing_tests: Vec::new(),
+            companion_tests: Vec::new(),
+            skipped_tests: Vec::new(),
             unknown_tests: Vec::new(),
             not_measured: reasons,
             isolation: None,
@@ -133,6 +151,8 @@ impl ChangeEvidence {
         self.proving_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.redundant_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.failing_tests.sort_by(|a, b| a.id.cmp(&b.id));
+        self.companion_tests.sort();
+        self.skipped_tests.sort();
         self.unknown_tests.sort_by(|a, b| a.id.cmp(&b.id));
         self.not_measured.sort();
         self.not_measured.dedup();
@@ -152,12 +172,15 @@ impl ChangeEvidence {
             "proving_tests": self.proving_tests.iter().map(|t| json!({
                 "id": t.id,
                 "baseline_result": t.baseline_result.as_str(),
+                "edited": t.edited,
             })).collect::<Vec<_>>(),
             "redundant_tests": self.redundant_tests.iter()
                 .map(|t| json!({"id": t.id, "reason": t.reason})).collect::<Vec<_>>(),
             "failing_tests": self.failing_tests.iter()
                 .map(|t| json!({"id": t.id, "candidate_result": t.candidate_result}))
                 .collect::<Vec<_>>(),
+            "companion_tests": self.companion_tests,
+            "skipped_tests": self.skipped_tests,
             "unknown_tests": self.unknown_tests.iter()
                 .map(|t| json!({"id": t.id, "reason": t.reason})).collect::<Vec<_>>(),
             "not_measured": self.not_measured,
@@ -218,6 +241,7 @@ mod tests {
             proving_tests: vec![ProvingTest {
                 id: "tests/test_a.py::test_new".into(),
                 baseline_result: BaselineResult::Errored,
+                edited: false,
             }],
             redundant_tests: vec![
                 RedundantTest {
@@ -233,6 +257,8 @@ mod tests {
                 id: "tests/test_a.py::test_w".into(),
                 candidate_result: "failed",
             }],
+            companion_tests: vec!["tests/test_a.py::test_p[1]".into()],
+            skipped_tests: vec!["tests/test_a.py::test_k".into()],
             unknown_tests: vec![UnknownTest {
                 id: "tests/test_a.py::test_s".into(),
                 reason: "skipped".into(),
@@ -251,7 +277,7 @@ mod tests {
                     {"file": "src/b.py", "function": "g", "line": 3, "status": "unproven"},
                 ],
                 "proving_tests": [
-                    {"id": "tests/test_a.py::test_new", "baseline_result": "errored"},
+                    {"id": "tests/test_a.py::test_new", "baseline_result": "errored", "edited": false},
                 ],
                 "redundant_tests": [
                     {"id": "tests/test_a.py::test_a", "reason": "executes no changed line"},
@@ -260,6 +286,8 @@ mod tests {
                 "failing_tests": [
                     {"id": "tests/test_a.py::test_w", "candidate_result": "failed"},
                 ],
+                "companion_tests": ["tests/test_a.py::test_p[1]"],
+                "skipped_tests": ["tests/test_a.py::test_k"],
                 "unknown_tests": [{"id": "tests/test_a.py::test_s", "reason": "skipped"}],
                 "not_measured": ["a", "b"],
             })

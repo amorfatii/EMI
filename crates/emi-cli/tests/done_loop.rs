@@ -163,14 +163,20 @@ fn enforced_verification_reads_baseline_configuration_and_refuses_approval() {
 }
 
 #[test]
-fn skipped_regressions_and_unmeasurable_added_tests_are_incomplete() {
+fn an_added_test_that_is_skipped_is_stated_and_is_no_fault() {
     let p = Project::new();
     p.write("tests/test_new.py", "import pytest\n\n@pytest.mark.skip(reason='not implemented')\ndef test_future():\n    pass\n");
     let (code, receipt) = p.done(&[]);
-    assert_eq!(code, 5, "{receipt}");
+    assert_eq!(code, 0, "{receipt}");
     assert_eq!(
-        receipt["change"]["unknown_tests"][0]["id"],
-        "tests/test_new.py::test_future"
+        receipt["change"]["skipped_tests"],
+        json!(["tests/test_new.py::test_future"])
+    );
+    let text = p.emi(&["done", "--format", "text"], None);
+    assert!(
+        String::from_utf8_lossy(&text.stdout)
+            .contains("1 test(s) the change added are skipped here and show nothing."),
+        "{text:?}"
     );
 }
 
@@ -224,7 +230,15 @@ fn an_added_test_that_fails_sends_the_proposer_back() {
     );
     let (code, receipt) = p.done(&[]);
     assert_eq!(code, 3, "{receipt}");
-    assert_eq!(receipt["regression"]["status"], "broken", "{receipt}");
+    // nothing old broke: the added test is what fails
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    assert_eq!(
+        receipt["repair"],
+        json!([
+            "tests/test_new.py::test_none is a test you added and it fails on your change; fix the code or the test."
+        ]),
+        "{receipt}"
+    );
 
     // appended to an old file, the failing test is not part of the
     // regression run (the file runs in its baseline form): still a repair
@@ -378,4 +392,62 @@ fn the_listing_is_exact_whatever_the_projects_own_options() {
     assert_eq!(code, 0, "{receipt}");
     assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
     assert_eq!(receipt["regression"]["tests_run"], 2, "{receipt}");
+}
+
+/// An old test that fails only because an edited helper was put back in
+/// its baseline form is not something the proposer can repair in the
+/// code: it is the person's question about the helper.
+#[test]
+fn an_old_test_that_fails_only_beside_a_restored_helper_asks_the_person() {
+    let p = Project::new();
+    p.write("scale.py", "def scale():\n    return 1\n");
+    p.write(
+        "tests/conftest.py",
+        "import pytest\n\n@pytest.fixture\ndef factor():\n    return 2\n",
+    );
+    p.write(
+        "tests/test_scale.py",
+        "from scale import scale\n\ndef test_scaled(factor):\n    assert scale() * factor == 2\n",
+    );
+    p.commit("a baseline whose test uses a shared fixture");
+
+    p.write("scale.py", "def scale():\n    return 2\n");
+    p.write(
+        "tests/conftest.py",
+        "import pytest\n\n@pytest.fixture\ndef factor():\n    return 1\n",
+    );
+    let (code, receipt) = p.done(&["--baseline", "HEAD"]);
+    assert_eq!(code, 4, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    assert!(
+        receipt["regression"]["reasons"][0]
+            .as_str()
+            .expect("note")
+            .starts_with("1 old test(s) fail only beside the baseline versions"),
+        "{receipt}"
+    );
+    assert_eq!(
+        receipt["changed_old_tests"][0]["item"],
+        "runner-config:tests/conftest.py"
+    );
+}
+
+/// A test that fails in the whole suite and passes by itself is a break
+/// when it fails in the whole suite again: the change made it depend on
+/// what runs before it.
+#[test]
+fn a_failure_that_shows_again_in_the_whole_suite_is_a_break_even_if_it_passes_alone() {
+    let p = Project::new();
+    p.write(
+        "app.py",
+        "_calls = []\n\n\ndef add(a, b):\n    _calls.append(1)\n    if len(_calls) > 1:\n        return a + b + 1\n    return a + b\n",
+    );
+    let (code, receipt) = p.done(&[]);
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "broken", "{receipt}");
+    assert_eq!(
+        receipt["regression"]["failed"],
+        json!(["tests/test_app.py::test_zero"]),
+        "{receipt}"
+    );
 }

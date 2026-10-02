@@ -61,6 +61,17 @@ pub struct Scope {
     pub approved: BTreeSet<String>,
     /// Added test-runner configuration nobody approved: it ran as well.
     pub added_runner: Vec<String>,
+    /// Touched test-runner configuration (a `conftest.py`, a
+    /// `pyproject.toml`) that ran in its baseline form.
+    pub restored_runner: BTreeSet<String>,
+}
+
+impl Scope {
+    /// Whether the run held any file in another version than the
+    /// candidate's: its failures may then come from the mix, not the code.
+    pub fn any_restored(&self) -> bool {
+        !self.restored.is_empty() || !self.restored_runner.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +91,10 @@ pub struct Regression {
     /// Every failed or missing test id the run showed, restored files'
     /// included.
     pub attributed: Vec<String>,
+    /// Tests the candidate added that fail on it. They are not regression
+    /// evidence (nothing old broke); the action table reads them as
+    /// failing added tests.
+    pub added_failing: Vec<String>,
 }
 
 impl Regression {
@@ -92,6 +107,7 @@ impl Regression {
             reasons,
             complete: false,
             attributed: Vec::new(),
+            added_failing: Vec::new(),
         }
     }
 
@@ -249,9 +265,12 @@ pub fn from_decision(
         .filter(|id| !touched(id, &scope.restored))
         .cloned()
         .collect();
+    // a restored file whose tests no longer run does not collect on the
+    // candidate in its baseline form: like its failures, the person's
+    // question, not a break
     let missing: Vec<String> = missing_all
         .iter()
-        .filter(|id| !touched(id, &scope.approved))
+        .filter(|id| !touched(id, &scope.approved) && !touched(id, &scope.restored))
         .cloned()
         .collect();
     let mut attributed: Vec<String> = seen.into_iter().chain(missing_all).collect();
@@ -265,8 +284,61 @@ pub fn from_decision(
         reasons: Vec::new(),
         complete,
         attributed,
+        added_failing: Vec::new(),
     };
     verdict(base, decision, ok, scope)
+}
+
+/// The candidate's run named no test at all, where the baseline's ran
+/// them in the same environment: the change stopped the suite from
+/// starting (a module the tests load no longer imports, a plugin that no
+/// longer loads). That is a break the proposer repairs, not a measurement
+/// that failed. `None` when the run did not end by itself with a failure
+/// status, or its output is cut or holds a summary after all.
+pub fn not_started(check: Option<&Value>, base: &Outcomes) -> Option<Regression> {
+    let run = Run::of(check);
+    let ended_failing = matches!(run.code, Some(c) if c != 0 && c != 126 && c != 127);
+    if !ended_failing || !run.reliable || base.passed == 0 || pytest::summary(run.output).is_some()
+    {
+        return None;
+    }
+    let why = no_summary(run.errors);
+    let detail = why
+        .split_once(": ")
+        .map_or("no error line was kept", |(_, d)| d);
+    let mut r = Regression::unknown(vec![format!(
+        "the tests ran at the baseline ({} passed) and do not start on the candidate: {detail}",
+        base.passed
+    )]);
+    r.status = Status::Broken;
+    Some(r)
+}
+
+/// Why the candidate's per-test report cannot be compared as it stands.
+enum Unreadable {
+    Why(String),
+    /// A collection error, or pytest saying it ran nothing: the per-test
+    /// lines are not the whole story.
+    NotPerTest,
+}
+
+fn unreadable(check: Option<&Value>, cand: &Outcomes, inventory: &Value) -> Option<Unreadable> {
+    match (Run::of(check).code, cand.failed.is_empty()) {
+        (Some(0), true) | (Some(1), false) => {}
+        (Some(0 | 1), _) => {
+            return Some(Unreadable::Why(
+                "the test command's exit status disagrees with its own per-test report".into(),
+            ));
+        }
+        _ => return Some(Unreadable::NotPerTest),
+    }
+    let collected = inventory["candidate"]
+        .as_u64()
+        .filter(|n| cand.reported() < *n)?;
+    Some(Unreadable::Why(format!(
+        "{} of {collected} collected tests have no outcome in the run's own report",
+        collected - cand.reported()
+    )))
 }
 
 /// The receipt's `regression` when both the baseline's run and the
@@ -274,9 +346,10 @@ pub fn from_decision(
 /// candidate only if it did worse than at the baseline. A test the baseline
 /// already skipped, or that already failed there, is not regression
 /// evidence; a test that passed there and no longer runs is a break, like
-/// one that now fails. Tests the candidate added count when they fail (the
-/// suite must be repaired) and not when they are skipped (the change
-/// evidence reports those).
+/// one that now fails. Tests the candidate added are not regression
+/// evidence: one that fails is kept apart (`added_failing`), to be repaired
+/// as a failing added test, and one that is skipped is the change
+/// evidence's to report.
 pub fn from_outcomes(
     decision: &Value,
     check: Option<&Value>,
@@ -289,36 +362,29 @@ pub fn from_outcomes(
     ) {
         return Regression::unknown(strings(&decision["reasons"]));
     }
-    match (Run::of(check).code, cand.failed.is_empty()) {
-        (Some(0), true) | (Some(1), false) => {}
-        (Some(0 | 1), _) => {
-            return Regression::unknown(vec![
-                "the test command's exit status disagrees with its own per-test report".into(),
-            ]);
-        }
-        // a collection error, or pytest saying it ran nothing: the
-        // per-test lines are not the whole story
-        _ => return from_decision(decision, check, true, scope),
-    }
     let inventory = &decision["gates"]["verification"]["inventory"];
-    if let Some(collected) = inventory["candidate"]
-        .as_u64()
-        .filter(|n| cand.reported() < *n)
-    {
-        return Regression::unknown(vec![format!(
-            "{} of {collected} collected tests have no outcome in the run's own report",
-            collected - cand.reported()
-        )]);
+    match unreadable(check, cand, inventory) {
+        Some(Unreadable::Why(why)) => return Regression::unknown(vec![why]),
+        Some(Unreadable::NotPerTest) => return from_decision(decision, check, true, scope),
+        None => {}
     }
     let added: BTreeSet<String> = strings(&inventory["added"]).into_iter().collect();
-    let new_failures = cand.failed.iter().filter(|id| !base.failed.contains(*id));
+    let (added_failing, new_failures): (Vec<&String>, Vec<&String>) = cand
+        .failed
+        .iter()
+        .filter(|id| !base.failed.contains(*id))
+        .partition(|id| added.contains(*id));
     let stopped: Vec<String> = cand
         .skipped
         .iter()
         .filter(|id| !base.not_passing(id) && !added.contains(*id))
         .cloned()
         .collect();
-    let seen: Vec<String> = new_failures.cloned().chain(stopped.clone()).collect();
+    let seen: Vec<String> = new_failures
+        .into_iter()
+        .cloned()
+        .chain(stopped.clone())
+        .collect();
     let missing_all = strings(&inventory["missing"]);
     let touched = |id: &String, files: &BTreeSet<String>| files.contains(pytest::file_of(id));
     let mut attributed: Vec<String> = seen.iter().cloned().chain(missing_all.clone()).collect();
@@ -333,11 +399,19 @@ pub fn from_outcomes(
             .collect(),
         missing: missing_all
             .into_iter()
-            .filter(|id| !touched(id, &scope.approved))
+            .filter(|id| !touched(id, &scope.approved) && !touched(id, &scope.restored))
             .collect(),
         reasons: Vec::new(),
         complete: true,
         attributed,
+        // with a test file restored, an added test ran beside files it
+        // was not written for: only the change evidence, which runs it on
+        // the candidate as it is, can say that it fails
+        added_failing: if !scope.any_restored() {
+            added_failing.into_iter().cloned().collect()
+        } else {
+            Vec::new()
+        },
     };
     let mut r = verdict(draft, decision, all_verified(decision), scope);
     let already_failing = cand.failed.intersection(&base.failed).count();
@@ -353,6 +427,23 @@ pub fn from_outcomes(
         Status::Unknown => None,
     };
     r.reasons.extend(note);
+    r
+}
+
+/// `r` without the failures in `cleared`, which a second look did not
+/// confirm, and with `note` saying what became of them. The status is
+/// settled again from what is left.
+pub fn cleared(
+    mut r: Regression,
+    cleared: &BTreeSet<String>,
+    note: String,
+    decision: &Value,
+    scope: &Scope,
+) -> Regression {
+    r.failed.retain(|id| !cleared.contains(id));
+    r.status = Status::Held;
+    let mut r = verdict(r, decision, all_verified(decision), scope);
+    r.reasons.insert(0, note);
     r
 }
 
@@ -429,7 +520,7 @@ mod tests {
         Scope {
             restored: set(restored),
             approved: set(approved),
-            added_runner: Vec::new(),
+            ..Scope::default()
         }
     }
 
@@ -510,6 +601,89 @@ mod tests {
     }
 
     #[test]
+    fn failures_a_second_look_did_not_confirm_are_not_a_break() {
+        let base = outcomes(5, &[], &[]);
+        let cand = outcomes(3, &["tests/a.py::test_x", "tests/b.py::test_y"], &[]);
+        let d = decision("rejected", "failed");
+        let broken = compare(&d, 1, &base, &cand, &Scope::default());
+        assert_eq!(broken.status, Status::Broken);
+        let one: BTreeSet<String> = ["tests/a.py::test_x".to_owned()].into();
+        let still = cleared(broken.clone(), &one, "note".into(), &d, &Scope::default());
+        assert_eq!(
+            (
+                still.status,
+                still.failed.clone(),
+                still.reasons[0].as_str()
+            ),
+            (
+                Status::Broken,
+                vec!["tests/b.py::test_y".to_owned()],
+                "note"
+            )
+        );
+        let both: BTreeSet<String> = cand.failed.clone();
+        let held = cleared(broken, &both, "note".into(), &d, &Scope::default());
+        assert_eq!(
+            (held.status, held.failed.len(), held.reasons.clone()),
+            (Status::Held, 0, vec!["note".to_owned()])
+        );
+    }
+
+    #[test]
+    fn an_added_test_beside_restored_files_is_left_to_the_change_evidence() {
+        let base = outcomes(5, &[], &[]);
+        let mut d = decision("rejected", "failed");
+        d["gates"]["verification"]["inventory"] = json!({"state": "pass", "baseline": 5,
+            "candidate": 6, "missing": [], "added": ["tests/n.py::test_new"]});
+        let failing = outcomes(5, &["tests/n.py::test_new"], &[]);
+        let r = compare(&d, 1, &base, &failing, &scope(&["tests/t.py"], &[]));
+        assert_eq!((r.status, r.added_failing.len()), (Status::Held, 0));
+        let helper = Scope {
+            restored_runner: ["tests/conftest.py".to_owned()].into(),
+            ..Scope::default()
+        };
+        let r = compare(&d, 1, &base, &failing, &helper);
+        assert_eq!((r.status, r.added_failing.len()), (Status::Held, 0));
+    }
+
+    #[test]
+    fn a_suite_that_ran_at_the_baseline_and_does_not_start_is_broken() {
+        let base = outcomes(5, &[], &[]);
+        let died = json!({"exit_code": 4, "output_truncated": false, "stdout_tail": "",
+            "stderr_tail": "Traceback\nImportError: cannot import name 'f' from 'pkg'\n"});
+        let r = not_started(Some(&died), &base);
+        assert_eq!(
+            r.as_ref().map(|r| (r.status, r.reasons.clone())),
+            Some((
+                Status::Broken,
+                vec!["the tests ran at the baseline (5 passed) and do not start on the candidate: ImportError: cannot import name 'f' from 'pkg'".to_owned()]
+            ))
+        );
+        // not when the run was killed, could not be started, was cut, had
+        // a summary after all, or the baseline ran nothing either
+        let mut cut = died.clone();
+        cut["output_truncated"] = json!(true);
+        let mut summed = died.clone();
+        summed["stdout_tail"] = json!("1 failed, 4 passed in 1s\n");
+        let code = |c: Value| {
+            let mut v = died.clone();
+            v["exit_code"] = c;
+            v
+        };
+        for other in [
+            cut,
+            summed,
+            code(json!(null)),
+            code(json!(127)),
+            code(json!(0)),
+        ] {
+            assert_eq!(not_started(Some(&other), &base), None, "{other}");
+        }
+        assert_eq!(not_started(Some(&died), &outcomes(0, &[], &[])), None);
+        assert_eq!(not_started(None, &base), None);
+    }
+
+    #[test]
     fn an_added_test_that_is_skipped_is_not_a_regression_and_one_that_fails_is() {
         let base = outcomes(5, &[], &[]);
         let mut d = decision("rejected", "failed");
@@ -520,10 +694,12 @@ mod tests {
             compare(&d, 0, &base, &skipped, &Scope::default()).status,
             Status::Held
         );
+        // nothing old broke: the failing added test is kept apart
         let failing = outcomes(5, &["tests/n.py::test_new"], &[]);
+        let r = compare(&d, 1, &base, &failing, &Scope::default());
         assert_eq!(
-            compare(&d, 1, &base, &failing, &Scope::default()).status,
-            Status::Broken
+            (r.status, r.failed.len(), r.added_failing.clone()),
+            (Status::Held, 0, vec!["tests/n.py::test_new".to_owned()])
         );
     }
 
@@ -745,6 +921,17 @@ mod tests {
             r.status,
             Status::Held,
             "the person approved that file as the candidate left it"
+        );
+        // the baseline form of an edited file does not collect on the
+        // candidate: the person's question, as its failures are
+        let r = judge(
+            &d,
+            &run(0, "4 passed in 1s\n"),
+            &scope(&["tests/a.py"], &[]),
+        );
+        assert_eq!(
+            (r.status, r.restored_result("tests/a.py")),
+            (Status::Held, Restored::Fails)
         );
     }
 

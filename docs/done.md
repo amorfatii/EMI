@@ -69,8 +69,20 @@ of them (`not_verified`), with this run's under `this_run`.
   candidate as the regression check. A proving test fails or errors before,
   passes after, and executes changed product code in its own test context.
   A test already passing before, or unrelated to the changed code, is redundant
-  and sends the proposer back for removal. Collection/import execution alone
-  does not earn proving credit. A changed function is proven only when a
+  and sends the proposer back. Collection/import execution alone
+  does not earn proving credit.
+  - An old test the candidate edited is judged in its edited form by the same
+    rule, and listed as a proving test with `edited: true`. Whether the edit
+    is acceptable stays the person's question; that the edited test fails on
+    the old code and passes on the new is a measured fact, and the receipt
+    says how many proving tests are edited old tests.
+  - A case of a parametrized test that passes at the baseline while another
+    case of the same test function is a proving test is a **companion**
+    (`companion_tests`), not redundant: such a test shows the change with
+    some cases and what must stay as it was with the others.
+  - An added test skipped (or expected to fail) at both revisions is listed
+    in `skipped_tests`: it does not run here, shows nothing, and is not a
+    measurement that failed. A changed function is proven only when a
   proving test executes its changed body. The levels are `proven`,
   `partly_proven`, `unproven`, `none`, and `unknown`.
   - Requires coverage.py >=7.9 in the same environment as pytest; EMI selects
@@ -153,13 +165,42 @@ dependencies) and once on the candidate:
   and the receipt says how many there are;
 - a test that passed at the baseline and now fails, or no longer runs
   (skipped by the candidate's code), is `broken`;
-- a test the candidate added counts when it fails, not when it is skipped
-  (the change evidence reports that).
+- a test the candidate added is not regression evidence: one that fails is
+  a failing added test (a `repair`), one that is skipped is listed in the
+  change evidence;
+- a suite that ran at the baseline and does not start on the candidate (an
+  import the change broke stops pytest before any test) is `broken`, with
+  the run's last error line. The action is `repair` even though the change
+  evidence cannot be measured on such a candidate.
 
 A test file the baseline already cannot import is tolerated the same way: the
 run continues past it and its tests are not regression evidence. A file only
-the candidate cannot collect is a break, or, for an added test file, leaves
-the change evidence unknown.
+the candidate cannot collect is listed in `change.failing_tests` with
+`candidate_result: not collected` and is a `repair`; the other files are
+still measured. An edited old test file whose baseline form no longer
+collects on the candidate is the person's question, like a baseline form
+that fails.
+
+A failure is a break when it shows again. Before a test is reported as
+broken, the failed tests are run once more by themselves on the candidate as
+it is (seconds, not a suite run). Those that fail again are the break. Those
+that pass were not broken by the product code alone:
+
+- when the run restored test files or runner configuration the change
+  edited (a `conftest.py`, a helper, expected output), they fail only beside
+  the baseline versions of those files. That is the person's question, as it
+  is for an edited test whose baseline form fails; the regression line says
+  how many and names the first.
+- when nothing was restored, the whole suite runs a second time. A test
+  that passes in it was flaky, and the regression line says so. One that
+  fails again depends on what ran before it, which the change altered: it
+  stays a break.
+
+A test the candidate added that fails beside restored files is judged by the
+change evidence alone, which runs it on the candidate as it is.
+
+Known limit: a test that can only fail on another platform (a Windows path
+case, say) passes at the baseline here and is called redundant.
 
 A redundant test carries why: it `passes at the baseline`, or it `executes
 no changed line`. The repair says which, and that the test may be fixed

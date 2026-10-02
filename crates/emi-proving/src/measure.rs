@@ -9,9 +9,10 @@ use emi_diff::functions::{ChangeKind, ChangedFn, ChangedFunctions, changed_funct
 use emi_diff::{hunks, snapshot};
 use emi_profile::sandbox::{Copy, Runner};
 
-use crate::classify::{Verdict, classify, failed_at_baseline};
+use crate::classify::{Verdict, classify, needs_candidate};
+use crate::evidence::RedundantTest;
 use crate::evidence::{ChangeEvidence, FunctionEvidence, ProvingTest, UnknownTest, status_of};
-use crate::evidence::{FailingTest, PASSES_AT_BASELINE, RUNS_NO_CHANGED_LINE, RedundantTest};
+use crate::evidence::{FailingTest, NOT_COLLECTED, PASSES_AT_BASELINE, RUNS_NO_CHANGED_LINE};
 use crate::exec::Session;
 use crate::junit::Observed;
 use crate::overlay::{TestFiles, Tree, overlay_tests};
@@ -94,8 +95,45 @@ struct Classified {
     proving: Vec<ProvingTest>,
     redundant: Vec<RedundantTest>,
     failing: Vec<FailingTest>,
+    companion: Vec<String>,
+    skipped: Vec<String>,
     unknown: Vec<UnknownTest>,
+    /// What the listing said of files only the candidate cannot collect.
+    notes: Vec<String>,
     coverage: Option<(Copy, crate::exec::Coverage)>,
+}
+
+/// The tests whose behaviour at the baseline is to be seen.
+struct Targets {
+    /// Ids the candidate lists and the baseline does not.
+    added: Vec<String>,
+    /// Ids both list, in test files the candidate edited.
+    edited: BTreeSet<String>,
+}
+
+impl Targets {
+    fn all(&self) -> Vec<String> {
+        let all: BTreeSet<&String> = self.added.iter().chain(&self.edited).collect();
+        all.into_iter().cloned().collect()
+    }
+}
+
+/// Added cases that pass at the baseline, or run no changed line, while
+/// another case of the same test function is a proving test are that
+/// test's companions: a parametrized test shows the change with some cases
+/// and what must stay as it was with the others.
+fn companions(mut c: Classified) -> Classified {
+    let proving: BTreeSet<&str> = c
+        .proving
+        .iter()
+        .map(|t| pytest::function_of(&t.id))
+        .collect();
+    let (companion, redundant) = std::mem::take(&mut c.redundant)
+        .into_iter()
+        .partition(|t| proving.contains(pytest::function_of(&t.id)));
+    c.redundant = redundant;
+    c.companion = companion.into_iter().map(|t| t.id).collect();
+    c
 }
 
 /// The changed functions that are measured, and what is left out.
@@ -131,7 +169,7 @@ impl Context<'_> {
         let session = Session::new(runner, self.objects, &command);
         let mut evidence = match self.found_tests(&session) {
             Ok(classified) => {
-                let classified = self.refine(&session, &changed, classified);
+                let classified = companions(self.refine(&session, &changed, classified));
                 self.judge(&changed, classified)
             }
             Err(why) => self.unmeasured(&changed, vec![why]),
@@ -221,8 +259,8 @@ impl Context<'_> {
         scope
     }
 
-    /// What each added test is: the ids the candidate lists and the
-    /// baseline does not.
+    /// What each added test is (the ids the candidate lists and the
+    /// baseline does not), and which edited old tests show the change.
     fn found_tests(&self, s: &Session) -> Result<Classified, String> {
         let tree = s.tree("candidate", &self.cand)?;
         let at_candidate = s.list(&tree, "candidate")?;
@@ -230,89 +268,83 @@ impl Context<'_> {
             let pristine = s.tree("baseline-list", &self.base)?;
             s.list(&pristine, "baseline")?
         };
+        let mut out = Classified::default();
         // a file the baseline already could not collect is no news; one
-        // only the candidate cannot collect hides its tests from this
-        // measurement, so nothing can be said
-        if at_candidate
-            .broken
-            .difference(&at_baseline.broken)
-            .next()
-            .is_some()
-        {
-            return Err(at_candidate.problem.unwrap_or_else(|| {
-                "the candidate has a test file that cannot be collected".to_owned()
-            }));
+        // only the candidate cannot collect is the candidate's to repair:
+        // its tests ran before and do not run now
+        for file in at_candidate.broken.difference(&at_baseline.broken) {
+            out.failing.push(FailingTest {
+                id: file.clone(),
+                candidate_result: NOT_COLLECTED,
+            });
         }
-        let added = pytest::added_ids(&at_candidate.ids, &at_baseline.ids, &self.renames()?);
-        if added.is_empty() {
-            return Ok(Classified::default());
+        if !out.failing.is_empty() {
+            out.notes.extend(at_candidate.problem.clone());
         }
-        self.classify_added(s, &tree, &added)
-    }
-
-    /// Files git sees as moved by the change: new path to old path.
-    fn renames(&self) -> Result<BTreeMap<String, String>, String> {
         let files = hunks::changes(self.objects, &self.base, Some(&self.cand))
-            .map_err(|e| format!("the files the change moved could not be read: {e}"))?;
-        Ok(files
-            .into_iter()
-            .filter(|f| f.status == hunks::Status::Renamed)
-            .filter_map(|f| f.old_path.map(|old| (f.path, old)))
-            .collect())
+            .map_err(|e| format!("the files the change touched could not be read: {e}"))?;
+        let added = pytest::added_ids(&at_candidate.ids, &at_baseline.ids, &renames(&files));
+        let edited_files: BTreeSet<&str> = files
+            .iter()
+            .filter(|f| f.status == hunks::Status::Modified && self.tests.matches(&f.path))
+            .map(|f| f.path.as_str())
+            .collect();
+        let edited = at_candidate
+            .ids
+            .iter()
+            .filter(|id| at_baseline.ids.contains(*id))
+            .filter(|id| edited_files.contains(pytest::file_of(id)))
+            .cloned()
+            .collect();
+        let targets = Targets { added, edited };
+        if targets.added.is_empty() && targets.edited.is_empty() {
+            return Ok(out);
+        }
+        self.classify_tests(s, &tree, &targets, out)
     }
 
-    /// Run the added tests against the baseline's product code, with the
+    /// Run the tests against the baseline's product code, with the
     /// candidate's test files laid over it, then on the candidate those
-    /// that failed there.
-    fn classify_added(
+    /// that did not pass there.
+    fn classify_tests(
         &self,
         s: &Session,
         candidate: &Copy,
-        added: &[String],
+        targets: &Targets,
+        mut out: Classified,
     ) -> Result<Classified, String> {
         let workspace = s.tree("baseline", &self.base)?;
         let links = overlay_tests(&Tree::of(candidate), &workspace.dir, &self.tests)?;
-        let (blocked, runnable): (Vec<&String>, Vec<&String>) = added
-            .iter()
+        let (blocked, runnable): (Vec<String>, Vec<String>) = targets
+            .all()
+            .into_iter()
             .partition(|id| links.contains(pytest::file_of(id)));
-        let runnable: Vec<String> = runnable.into_iter().cloned().collect();
         let at_baseline = s.observe(&workspace, &runnable, "baseline");
         let missing = Observed::Unknown("no result".into());
-        let failing: Vec<String> = runnable
+        let again: Vec<String> = runnable
             .iter()
-            .filter(|id| failed_at_baseline(at_baseline.get(*id).unwrap_or(&missing)))
+            .filter(|id| needs_candidate(at_baseline.get(*id).unwrap_or(&missing)))
             .cloned()
             .collect();
-        let on_candidate = s.observe(candidate, &failing, "candidate");
-        let mut out = Classified::default();
-        for id in blocked {
+        let on_candidate = s.observe(candidate, &again, "candidate");
+        for id in blocked
+            .into_iter()
+            .filter(|id| !targets.edited.contains(id))
+        {
             out.unknown.push(UnknownTest {
-                id: id.clone(),
+                id,
                 reason: "its file is a symbolic link, which is not followed, so the test was not run at the baseline".into(),
             });
         }
-        for id in &runnable {
+        for id in runnable {
             let verdict = classify(
-                at_baseline.get(id).unwrap_or(&missing),
-                on_candidate.get(id),
+                at_baseline.get(&id).unwrap_or(&missing),
+                on_candidate.get(&id),
             );
-            match verdict {
-                Verdict::Proving(baseline_result) => out.proving.push(ProvingTest {
-                    id: id.clone(),
-                    baseline_result,
-                }),
-                Verdict::Redundant => out.redundant.push(RedundantTest {
-                    id: id.clone(),
-                    reason: PASSES_AT_BASELINE,
-                }),
-                Verdict::Failing(candidate_result) => out.failing.push(FailingTest {
-                    id: id.clone(),
-                    candidate_result,
-                }),
-                Verdict::Unknown(reason) => out.unknown.push(UnknownTest {
-                    id: id.clone(),
-                    reason,
-                }),
+            if targets.edited.contains(&id) {
+                out.edited(id, &verdict);
+            } else {
+                out.added(id, verdict);
             }
         }
         Ok(out)
@@ -333,7 +365,10 @@ impl Context<'_> {
         evidence.proving_tests = classified.proving;
         evidence.redundant_tests = classified.redundant;
         evidence.failing_tests = classified.failing;
+        evidence.companion_tests = classified.companion;
+        evidence.skipped_tests = classified.skipped;
         evidence.unknown_tests = classified.unknown;
+        evidence.not_measured.extend(classified.notes);
         let changed = match changed {
             Ok(changed) => changed,
             Err(why) => {
@@ -355,6 +390,52 @@ impl Context<'_> {
         evidence.status = status_of(&statuses, scope.unparsed);
         evidence
     }
+}
+
+impl Classified {
+    /// File a test the candidate added under what it turned out to be.
+    fn added(&mut self, id: String, verdict: Verdict) {
+        match verdict {
+            Verdict::Proving(baseline_result) => self.proving.push(ProvingTest {
+                id,
+                baseline_result,
+                edited: false,
+            }),
+            Verdict::Redundant => self.redundant.push(RedundantTest {
+                id,
+                reason: PASSES_AT_BASELINE,
+            }),
+            Verdict::Failing(candidate_result) => self.failing.push(FailingTest {
+                id,
+                candidate_result,
+            }),
+            Verdict::Skipped => self.skipped.push(id),
+            Verdict::Unknown(reason) => self.unknown.push(UnknownTest { id, reason }),
+        }
+    }
+
+    /// An old test in a file the candidate edited counts only when it
+    /// shows the change. One that passes at the baseline is an old test
+    /// doing its work, not a redundant one, and one that fails at both
+    /// revisions is the regression evidence's to judge.
+    fn edited(&mut self, id: String, verdict: &Verdict) {
+        if let Verdict::Proving(baseline_result) = verdict {
+            self.proving.push(ProvingTest {
+                id,
+                baseline_result: *baseline_result,
+                edited: true,
+            });
+        }
+    }
+}
+
+/// Files git sees as moved by the change: new path to old path.
+fn renames(files: &[hunks::FileChange]) -> BTreeMap<String, String> {
+    files
+        .iter()
+        .filter(|f| f.status == hunks::Status::Renamed)
+        .filter_map(|f| f.old_path.clone().map(|old| (f.path.clone(), old)))
+        .collect()
 }
 
 fn function_evidence(f: &ChangedFn, status: FnStatus) -> FunctionEvidence {
@@ -397,6 +478,9 @@ impl Context<'_> {
                 for test in tests {
                     match self.reaches(changed, &tree, &report, &test.id) {
                         Ok(true) => c.proving.push(test),
+                        // an old test the candidate edited that does not
+                        // reach the change is an old test, nothing more
+                        Ok(false) if test.edited => {}
                         Ok(false) => c.redundant.push(RedundantTest {
                             id: test.id,
                             reason: RUNS_NO_CHANGED_LINE,

@@ -35,6 +35,7 @@ pub use action::Action;
 pub use baseline::{Baseline, Given};
 pub use change::ChangeEvidence;
 pub use config::Config;
+pub use run::proving_request;
 
 /// The candidate id of the working tree.
 pub const WORKTREE: &str = "worktree";

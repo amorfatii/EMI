@@ -153,9 +153,12 @@ the truth, and "stop" does not mean "correct".
     "status": "proven | partly_proven | unproven | none | unknown",
     "functions": [{"file": "src/a.py", "function": "f", "line": 10,
                    "status": "proven | unproven | unknown"}],
-    "proving_tests": [{"id": "tests/test_a.py::test_new", "baseline_result": "failed | errored"}],
+    "proving_tests": [{"id": "tests/test_a.py::test_new", "baseline_result": "failed | errored",
+                       "edited": false}],
     "redundant_tests": [{"id": "tests/test_a.py::test_extra", "reason": "passes at the baseline | executes no changed line"}],
-    "failing_tests": [{"id": "tests/test_a.py::test_wip", "candidate_result": "failed | errored"}],
+    "failing_tests": [{"id": "tests/test_a.py::test_wip", "candidate_result": "failed | errored | not collected"}],
+    "companion_tests": ["tests/test_a.py::test_new[unchanged-case]"],
+    "skipped_tests": ["tests/test_a.py::test_needs_extra"],
     "unknown_tests": [{"id": "…", "reason": "…"}],
     "not_measured": ["…"]
   },
@@ -176,9 +179,9 @@ Evaluated top to bottom; the first match wins.
 
 | Condition | Action |
 |---|---|
-| Any part could not be measured for an environment reason | `incomplete` |
+| Any part could not be measured for an environment reason (the change part does not count once the regression is `broken`: a break is established whatever else is unknown) | `incomplete` |
 | `regression.status` is `broken` | `repair` |
-| `change.failing_tests` is not empty (a test the candidate added fails on it) | `repair` |
+| A test the candidate added fails on it, or a test file only the candidate cannot collect (`change.failing_tests`, or seen by the regression run) | `repair` |
 | `change.redundant_tests` is not empty | `repair` |
 | `on_unproven` is `repair` and a function is `unproven` | `repair` |
 | A changed old test or changed runner configuration is not approved | `ask_person` |
@@ -196,6 +199,18 @@ is fixed here:
 - Once the person approves the item, the candidate's version of that file is
   used instead of the restored one, and its tests count as regression
   evidence like any other.
+- A restored file that no longer collects on the candidate (its baseline
+  form imports a name the change removed) is the same question, not
+  `broken`: its tests are missing because the proposer rewrote them.
+- A suite that ran at the baseline and names no test at all on the candidate
+  (a module the tests load no longer imports) is `broken`, with the run's
+  last error line: the proposer repairs it.
+- A failure is `broken` only when it shows again: the failed tests are run
+  once more by themselves on the candidate as it is. One that passes there
+  fails only beside restored files (the person's question), or, with nothing
+  restored, is run in the whole suite again and is flaky if it passes.
+- A test the candidate added is never regression evidence. One that fails is
+  a failing added test (the row below `broken`), whichever run saw it fail.
 - A modified runner configuration file is handled the same way: restored for
   the run, listed as an item `runner-config:PATH`, approved by a person.
   Editing it never makes the status `broken` by itself.

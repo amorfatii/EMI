@@ -200,7 +200,9 @@ pub fn scope(entries: &[Entry]) -> Scope {
                 scope.restored.insert(path);
             }
             (false, What::RunnerConfig, Kind::Added) => scope.added_runner.push(path),
-            (false, What::RunnerConfig, _) => {}
+            (false, What::RunnerConfig, _) => {
+                scope.restored_runner.insert(path);
+            }
         }
     }
     scope
@@ -366,6 +368,7 @@ mod tests {
             reasons: Vec::new(),
             complete: true,
             attributed: vec!["tests/a.py::t".into()],
+            added_failing: Vec::new(),
         };
         settle(&mut entries, &regression);
         let got: Vec<Restored> = entries.iter().map(|e| e.restored).collect();

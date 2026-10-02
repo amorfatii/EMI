@@ -49,12 +49,45 @@ fn faults(p: &Parts) -> Vec<String> {
                 .map_or("no reason given", String::as_str)
         ));
     }
-    out.extend(
-        p.change
-            .fault()
-            .map(|f| format!("change evidence could not be measured: {f}")),
-    );
+    // a break is established whatever else could not be measured, and a
+    // suite the change stopped from starting cannot show the change either
+    if p.regression.status != Status::Broken {
+        out.extend(
+            p.change
+                .fault()
+                .map(|f| format!("change evidence could not be measured: {f}")),
+        );
+    }
     out
+}
+
+/// The added tests that fail on the candidate: those the change evidence
+/// names, and those the regression run saw fail, whichever measured them.
+fn failing(p: &Parts) -> Vec<crate::change::Failing> {
+    let mut out = p.change.facts().failing;
+    for id in &p.regression.added_failing {
+        if !out.iter().any(|f| &f.id == id) {
+            out.push(crate::change::Failing {
+                id: id.clone(),
+                result: "failed".to_owned(),
+            });
+        }
+    }
+    out
+}
+
+fn failing_line(t: &crate::change::Failing) -> String {
+    if t.result == "not collected" {
+        format!(
+            "{} cannot be collected on your change, so none of its tests run; fix the code or the test file.",
+            t.id
+        )
+    } else {
+        format!(
+            "{} is a test you added and it fails on your change; fix the code or the test.",
+            t.id
+        )
+    }
 }
 
 fn facts(p: &Parts) -> action::Facts {
@@ -62,7 +95,7 @@ fn facts(p: &Parts) -> action::Facts {
     action::Facts {
         faults: faults(p),
         regression_broken: p.regression.status == Status::Broken,
-        failing_tests: change.failing.len(),
+        failing_tests: failing(p).len(),
         redundant_tests: change.redundant.len(),
         unproven_functions: change.unproven.len(),
         on_unproven: p.on_unproven,
@@ -130,12 +163,9 @@ fn repair_lines(p: &Parts) -> Vec<String> {
         }
         return out;
     }
-    if !change.failing.is_empty() {
-        return itemize(&change.failing, |id| {
-            format!(
-                "{id} is a test you added and it fails on your change; fix the code or the test."
-            )
-        });
+    let failing = failing(p);
+    if !failing.is_empty() {
+        return itemize(&failing, failing_line);
     }
     if !change.redundant.is_empty() {
         return itemize(&change.redundant, redundant_line);
@@ -248,6 +278,7 @@ mod tests {
             reasons: Vec::new(),
             attributed: Vec::new(),
             complete: true,
+            added_failing: Vec::new(),
         }
     }
 
@@ -382,6 +413,46 @@ mod tests {
         let failed = ChangeEvidence::Failed("coverage run died".into());
         let (_, action) = with(&held(), &[], &failed, OnUnproven::Report, assemble);
         assert_eq!(action, Action::Incomplete);
+    }
+
+    #[test]
+    fn failing_added_tests_repair_whichever_run_saw_them_fail() {
+        // the regression run saw an added test fail and nothing measured
+        // the change: still a repair, never a stop
+        let mut seen = held();
+        seen.added_failing = vec!["tests/n.py::test_new".into()];
+        let (v, action) = with(&seen, &[], &unmeasured(), OnUnproven::Report, assemble);
+        assert_eq!(action, Action::Repair);
+        assert_eq!(
+            v["repair"],
+            json!([
+                "tests/n.py::test_new is a test you added and it fails on your change; fix the code or the test."
+            ])
+        );
+        // both saw it: named once; a file that does not collect says so
+        let change = ChangeEvidence::Measured(json!({"status": "none", "functions": [],
+            "proving_tests": [], "redundant_tests": [], "unknown_tests": [], "not_measured": [],
+            "failing_tests": [{"id": "tests/n.py::test_new", "candidate_result": "failed"},
+                              {"id": "tests/b.py", "candidate_result": "not collected"}]}));
+        let (v, _) = with(&seen, &[], &change, OnUnproven::Report, assemble);
+        assert_eq!(v["repair"].as_array().map(Vec::len), Some(2), "{v}");
+        assert_eq!(
+            v["repair"][1],
+            "tests/b.py cannot be collected on your change, so none of its tests run; fix the code or the test file."
+        );
+    }
+
+    #[test]
+    fn a_break_is_repaired_even_when_the_change_could_not_be_measured() {
+        let mut broken = Regression::unknown(vec!["the tests do not start: ImportError".into()]);
+        broken.status = Status::Broken;
+        let failed = ChangeEvidence::Failed("listing the tests exited 4".into());
+        let (v, action) = with(&broken, &[], &failed, OnUnproven::Report, assemble);
+        assert_eq!(action, Action::Repair);
+        assert_eq!(
+            v["repair"],
+            json!(["Regression broken: the tests do not start: ImportError"])
+        );
     }
 
     #[test]

@@ -3,8 +3,13 @@
 //!
 //! An added test is a **proving test** when it fails or errors against the
 //! baseline's product code, passes on the candidate, and executes changed
-//! product code in its own context. A **redundant test** already passes at
-//! the baseline or executes no changed body. A function the candidate
+//! product code in its own context. An old test the candidate edited is a
+//! proving test by the same rule, in its edited form. A **redundant test**
+//! is an added test that already passes at the baseline or executes no
+//! changed body, unless another case of the same parametrized test is a
+//! proving test: it is then that test's **companion**. An added test that
+//! is skipped at both revisions is listed as skipped. A test file only the
+//! candidate cannot collect is listed with the failing tests. A function the candidate
 //! changed is **proven** when a proving test executes a line the change
 //! wrote in it, **unproven** when none does. Whatever could not be decided
 //! is `unknown` with its reason, never a guess and never an empty list.
@@ -45,16 +50,19 @@ mod measure;
 mod overlay;
 mod proof;
 pub mod pytest;
+mod rerun;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 pub use classify::BaselineResult;
 pub use evidence::{
-    ChangeEvidence, FailingTest, FunctionEvidence, ProvingTest, RedundantTest, Status, UnknownTest,
+    ChangeEvidence, FailingTest, FunctionEvidence, NOT_COLLECTED, ProvingTest, RedundantTest,
+    Status, UnknownTest,
 };
 pub use measure::{measure, measure_in};
 pub use proof::FnStatus;
+pub use rerun::passing;
 
 /// The candidate revision: a ref, or the working tree as it is on disk
 /// (frozen into one commit before anything is read from it).

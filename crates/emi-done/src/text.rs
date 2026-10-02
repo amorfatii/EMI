@@ -14,10 +14,21 @@ fn strs(v: &Value) -> Vec<&str> {
 fn regression_line(r: &Value) -> String {
     let count = |n: usize, what: &str| format!("{n} {what}");
     match r["status"].as_str() {
-        Some("held") => match r["tests_run"].as_u64() {
-            Some(n) => format!("held ({n} tests ran)."),
-            None => "held (the test count was not read from the output).".to_owned(),
-        },
+        Some("held") => {
+            // what a second look cleared is the one thing a held line
+            // must not leave out
+            let cleared = strs(&r["reasons"])
+                .into_iter()
+                .find(|why| why.contains("fail only beside") || why.contains("flaky"))
+                .map(|why| format!(" {why}."))
+                .unwrap_or_default();
+            match r["tests_run"].as_u64() {
+                Some(n) => format!("held ({n} tests ran).{cleared}"),
+                None => {
+                    format!("held (the test count was not read from the output).{cleared}")
+                }
+            }
+        }
         Some("broken") => {
             let failed = strs(&r["failed"]);
             let missing = strs(&r["missing"]);
@@ -49,10 +60,19 @@ fn change_line(c: &Value) -> String {
     let proven = c["functions"]
         .as_array()
         .map_or(0, |f| f.iter().filter(|x| x["status"] == "proven").count());
+    let edited = c["proving_tests"]
+        .as_array()
+        .map_or(0, |t| t.iter().filter(|x| x["edited"] == true).count());
+    // an edited old test shows the change only if its edit is acceptable,
+    // which is the person's to say
+    let by = match edited {
+        0 => String::new(),
+        n => format!("; {n} of the proving tests are old tests the change edited"),
+    };
     match c["status"].as_str() {
-        Some("proven") => format!("proven ({functions} changed functions)."),
+        Some("proven") => format!("proven ({functions} changed functions{by})."),
         Some("partly_proven") => {
-            format!("partly proven ({proven} of {functions} changed functions).")
+            format!("partly proven ({proven} of {functions} changed functions{by}).")
         }
         Some("unproven") => {
             format!("unproven ({functions} changed functions, none run by a proving test).")
@@ -135,6 +155,12 @@ pub fn render_with(receipt: &Value, detail: Detail) -> String {
         format!("Regression: {}", regression_line(&receipt["regression"])),
         format!("New behaviour: {}", change_line(&receipt["change"])),
     ];
+    let skipped = strs(&receipt["change"]["skipped_tests"]).len();
+    if skipped > 0 {
+        lines.push(format!(
+            "  {skipped} test(s) the change added are skipped here and show nothing."
+        ));
+    }
     lines.extend(old_test_lines(
         receipt["changed_old_tests"]
             .as_array()
@@ -229,5 +255,19 @@ mod tests {
         let text = render(&r);
         assert!(text.contains("Regression: unknown (no sandbox)."), "{text}");
         assert!(text.contains("Nothing here is a pass"));
+    }
+
+    #[test]
+    fn proof_that_rests_on_edited_old_tests_says_so() {
+        let mut r = receipt();
+        r["change"] = json!({"status": "proven",
+            "functions": [{"file": "a.py", "function": "f", "line": 1, "status": "proven"}],
+            "proving_tests": [{"id": "t.py::test_a", "baseline_result": "failed", "edited": true},
+                              {"id": "t.py::test_b", "baseline_result": "failed", "edited": false}]});
+        let text = render(&r);
+        assert!(
+            text.contains("New behaviour: proven (1 changed functions; 1 of the proving tests are old tests the change edited)."),
+            "{text}"
+        );
     }
 }

@@ -165,7 +165,7 @@ fn a_test_that_fails_at_the_baseline_and_passes_on_the_candidate_proves_the_chan
     assert_eq!(v["status"], "proven", "{v}");
     assert_eq!(
         v["proving_tests"],
-        json!([{"id": "tests/test_calc.py::test_add_none", "baseline_result": "failed"}])
+        json!([{"id": "tests/test_calc.py::test_add_none", "baseline_result": "failed", "edited": false}])
     );
     assert_eq!(v["redundant_tests"], json!([]));
     assert_eq!(v["unknown_tests"], json!([]));
@@ -237,8 +237,8 @@ fn a_test_for_a_function_that_does_not_exist_yet_errors_at_the_baseline() {
     assert_eq!(
         v["proving_tests"],
         json!([
-            {"id": "tests/test_mul.py::test_mul", "baseline_result": "errored"},
-            {"id": "tests/test_mul.py::test_mul_zero", "baseline_result": "errored"},
+            {"id": "tests/test_mul.py::test_mul", "baseline_result": "errored", "edited": false},
+            {"id": "tests/test_mul.py::test_mul_zero", "baseline_result": "errored", "edited": false},
         ]),
         "{v}"
     );
@@ -373,8 +373,10 @@ fn a_test_that_does_not_finish_in_time_is_unknown() {
     );
 }
 
+/// A test that runs at neither revision says nothing about the change,
+/// and that is not a measurement that failed.
 #[test]
-fn a_skipped_test_is_unknown() {
+fn a_test_skipped_at_both_revisions_is_listed_as_skipped() {
     let fx = Fixture::new();
     fx.write(&[
         ("src/calc.py", ADD_FIXED),
@@ -386,11 +388,76 @@ fn a_skipped_test_is_unknown() {
     fx.commit("a skipped test");
     let v = change(&fx.request()).to_json();
     assert_eq!(
-        ids(&v["unknown_tests"]),
-        vec!["tests/test_calc.py::test_add_none"]
+        v["skipped_tests"],
+        json!(["tests/test_calc.py::test_add_none"]),
+        "{v}"
     );
+    assert_eq!(v["unknown_tests"], json!([]), "{v}");
     assert_eq!(v["proving_tests"], json!([]));
     assert_eq!(v["redundant_tests"], json!([]));
+    // nothing may yet prove the change: it is unproven, not unknown
+    assert_eq!(function(&v, "add")["status"], "unproven", "{v}");
+}
+
+const PARAMETRIZED: &str = "import pytest\nfrom calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\n@pytest.mark.parametrize('a, want', [(None, 2), (1, 3)])\ndef test_add_cases(a, want):\n    assert add(a, 2) == want\n\n\ndef test_add_again():\n    assert add(2, 2) == 4\n";
+
+/// A parametrized test usually shows the change with some cases and what
+/// must stay as it was with the others; only a test with no proving case
+/// is redundant.
+#[test]
+fn a_passing_case_of_a_proving_test_is_its_companion_not_redundant() {
+    let fx = Fixture::new();
+    fx.write(&[
+        ("src/calc.py", ADD_FIXED),
+        ("tests/test_calc.py", PARAMETRIZED),
+    ]);
+    fx.commit("handle None, with a parametrized test");
+    let v = change(&fx.request()).to_json();
+    assert_eq!(
+        ids(&v["proving_tests"]),
+        vec!["tests/test_calc.py::test_add_cases[None-2]"],
+        "{v}"
+    );
+    assert_eq!(
+        v["companion_tests"],
+        json!(["tests/test_calc.py::test_add_cases[1-3]"]),
+        "{v}"
+    );
+    assert_eq!(
+        ids(&v["redundant_tests"]),
+        vec!["tests/test_calc.py::test_add_again"],
+        "{v}"
+    );
+}
+
+/// Half of real fixes change an existing test instead of adding one. The
+/// edited test, in its new form, shows the change by the same rule.
+#[test]
+fn an_old_test_edited_to_fail_at_the_baseline_is_a_proving_test() {
+    let fx = Fixture::new();
+    fx.write(&[(
+        "tests/test_calc.py",
+        "from calc import add, sub\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\ndef test_sub():\n    assert sub(3, 2) == 1\n",
+    )]);
+    fx.commit("two old tests");
+    fx.write(&[
+        ("src/calc.py", ADD_FIXED),
+        (
+            "tests/test_calc.py",
+            "from calc import add, sub\n\n\ndef test_add():\n    assert add(1, 2) == 3\n    assert add(None, 2) == 2\n\n\ndef test_sub():\n    assert sub(3, 2) == 1\n",
+        ),
+    ]);
+    fx.commit("handle None, shown by an edited test");
+    let v = change(&fx.request()).to_json();
+    assert_eq!(
+        v["proving_tests"],
+        json!([{"id": "tests/test_calc.py::test_add", "baseline_result": "failed", "edited": true}]),
+        "{v}"
+    );
+    // the old test beside it passes at both revisions: an old test, not a
+    // redundant one
+    assert_eq!(v["redundant_tests"], json!([]), "{v}");
+    assert_eq!(v["status"], "proven", "{v}");
 }
 
 /// A candidate that rewrites the report so a failing test looks as if it
@@ -512,13 +579,31 @@ fn a_test_command_that_is_not_pytest_is_unknown_with_a_reason() {
     );
 }
 
+/// A test file that stops importing is the candidate's to repair, like a
+/// test that fails: its tests do not run now.
 #[test]
-fn a_collection_error_at_the_candidate_is_unknown_with_a_reason() {
+fn a_test_file_only_the_candidate_cannot_collect_is_listed_as_failing() {
     let fx = Fixture::new();
-    fx.write(&[("tests/test_broken.py", "def test_x(:\n    pass\n")]);
-    fx.commit("a test file that does not import");
+    fx.write(&[
+        ("tests/test_broken.py", "def test_x(:\n    pass\n"),
+        (
+            "tests/test_more.py",
+            "from calc import add\n\n\ndef test_more():\n    assert add(2, 2) == 4\n",
+        ),
+    ]);
+    fx.commit("a test file that does not import, and one that does");
     let v = change(&fx.request()).to_json();
-    assert_eq!(v["status"], "unknown", "{v}");
+    assert_eq!(
+        v["failing_tests"],
+        json!([{"id": "tests/test_broken.py", "candidate_result": "not collected"}]),
+        "{v}"
+    );
+    // the other added file is still measured
+    assert_eq!(
+        ids(&v["redundant_tests"]),
+        vec!["tests/test_more.py::test_more"],
+        "{v}"
+    );
     let reason = v["not_measured"][0].as_str().unwrap_or_default();
     assert!(
         reason.starts_with("listing the tests at the candidate exited 2"),
@@ -528,6 +613,39 @@ fn a_collection_error_at_the_candidate_is_unknown_with_a_reason() {
     // no scratch path, so the same inputs give the same receipt
     assert!(!reason.contains("emi-profile"), "{v}");
     assert_eq!(change(&fx.request()).to_json(), v);
+}
+
+/// The second look: of the tests named, those that pass by themselves on
+/// the candidate as it is.
+#[test]
+fn a_second_run_says_which_of_the_named_tests_pass_alone() {
+    let fx = Fixture::new();
+    fx.write(&[(
+        "tests/test_calc.py",
+        "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\ndef test_wrong():\n    assert add(1, 1) == 3\n",
+    )]);
+    fx.commit("a passing and a failing test");
+    let mut req = fx.request();
+    req.candidate = Candidate::Ref(head(fx.path()));
+    let view = emi_git::CleanView::of(fx.path()).expect("view");
+    let named = |ids: &[&str]| {
+        let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+        emi_proving::passing(&req, view.path(), &ids)
+            .expect("rerun")
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    let (wrong, add) = (
+        "tests/test_calc.py::test_wrong",
+        "tests/test_calc.py::test_add",
+    );
+    assert_eq!(named(&[wrong, add]), vec![add]);
+    // a run that names a test that does not exist ends without results:
+    // nothing is taken to pass
+    assert_eq!(
+        named(&[add, "tests/test_calc.py::test_absent"]),
+        Vec::<String>::new()
+    );
 }
 
 #[test]

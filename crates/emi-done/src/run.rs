@@ -1,6 +1,7 @@
 //! One configured check: approvals, the verification through the
 //! controller, and the receipt.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use emi_controller::Candidate as Subject;
@@ -15,6 +16,96 @@ use crate::regression::{self, Regression};
 use crate::state::{self, Approval};
 use crate::{ChangeContext, Error, Outcome, Request, Setting, derived, receipt};
 
+/// The request the proving measurement and the second look share: the
+/// frozen candidate, the configured command, and the same import path as
+/// the regression run, so that all of them run the candidate's code.
+pub fn proving_request(
+    repo: &Path,
+    config: &Config,
+    baseline: &Baseline,
+    cand: &Candidate,
+) -> emi_proving::Request {
+    let mut req = emi_proving::Request::new(repo, &baseline.sha, config.tests.command.clone());
+    req.candidate = emi_proving::Candidate::Ref(cand.rev.clone());
+    req.language = emi_proving::Language::from_name(&config.language);
+    req.test_globs.clone_from(&config.tests.globs);
+    req.source.clone_from(&config.source);
+    req.link.clone_from(&config.link);
+    if !config.python_path.is_empty() {
+        req.env
+            .push(("PYTHONPATH".to_owned(), config.python_path.join(":")));
+    }
+    req
+}
+
+/// What a second look needs beside the regression it looks at again.
+struct Second<'a> {
+    repo: &'a Path,
+    view: &'a Path,
+    config: &'a Config,
+    baseline: &'a Baseline,
+    cand: &'a Candidate,
+    store: &'a emi_controller::Store,
+    subject: &'a Subject,
+    decision: &'a serde_json::Value,
+    scope: &'a regression::Scope,
+}
+
+fn first_of(ids: &BTreeSet<String>) -> &str {
+    ids.iter().next().map_or("?", String::as_str)
+}
+
+/// A failure is a break when it shows again. The failed tests are run by
+/// themselves on the candidate as it is; most real breaks fail there too,
+/// and that is all it costs. Those that pass were not broken by the
+/// product code alone:
+///
+/// - with old test files restored, they fail only beside the baseline
+///   versions of files the change edited (a fixture, a helper, expected
+///   output): the person's question, like a restored test that fails;
+/// - with nothing restored, the whole suite runs once more, and a test
+///   that passes in it was flaky. One that fails again depends on what
+///   ran before it, which the change altered: still a break.
+///
+/// Anything that cannot be run a second time leaves the first verdict.
+fn confirm(r: Regression, s: &Second) -> Regression {
+    if r.status != regression::Status::Broken || r.failed.is_empty() {
+        return r;
+    }
+    let req = proving_request(s.repo, s.config, s.baseline, s.cand);
+    let alone = match emi_proving::passing(&req, s.view, &r.failed) {
+        Ok(alone) if !alone.is_empty() => alone,
+        _ => return r,
+    };
+    if s.scope.any_restored() {
+        let note = format!(
+            "{} old test(s) fail only beside the baseline versions of the test files the change \
+             edited (first: {}); whether those edits are acceptable is the person's question",
+            alone.len(),
+            first_of(&alone)
+        );
+        return regression::cleared(r, &alone, note, s.decision, s.scope);
+    }
+    let again = derived::run(s.store, s.subject, false)
+        .ok()
+        .and_then(|v| Outcomes::of(v.check.as_ref()));
+    let Some(again) = again else { return r };
+    let flaky: BTreeSet<String> = alone
+        .into_iter()
+        .filter(|id| !again.not_passing(id))
+        .collect();
+    if flaky.is_empty() {
+        return r;
+    }
+    let note = format!(
+        "{} test(s) failed once and passed when run again, alone and in the whole suite \
+         (first: {}): flaky, not a break",
+        flaky.len(),
+        first_of(&flaky)
+    );
+    regression::cleared(r, &flaky, note, s.decision, s.scope)
+}
+
 /// What the verification found, or why it found nothing.
 struct Measured {
     regression: Regression,
@@ -27,6 +118,33 @@ fn measured_unknown(why: String) -> Measured {
         regression: Regression::unknown(vec![why]),
         isolation: "unknown".to_owned(),
     }
+}
+
+/// The regression evidence from the candidate's run. When that run named
+/// its tests one by one, it is compared with the baseline's own run
+/// instead of demanding a suite with no skips.
+fn compared(
+    store: &emi_controller::Store,
+    baseline: &Baseline,
+    verified: &derived::Verified,
+    pytest: bool,
+    scope: &regression::Scope,
+) -> Result<Regression, String> {
+    let check = verified.check.as_ref();
+    let base = if pytest {
+        let base = derived::baseline_check(store, &baseline.sha)?;
+        Outcomes::of(base.as_ref())
+    } else {
+        None
+    };
+    Ok(match (&base, Outcomes::of(check)) {
+        (Some(base), Some(cand)) => {
+            regression::from_outcomes(&verified.decision, check, (base, &cand), scope)
+        }
+        (Some(base), None) => regression::not_started(check, base)
+            .unwrap_or_else(|| regression::from_decision(&verified.decision, check, pytest, scope)),
+        (None, _) => regression::from_decision(&verified.decision, check, pytest, scope),
+    })
 }
 
 fn try_measure(
@@ -75,24 +193,24 @@ fn try_measure(
     }
     let pytest = derived::is_pytest(&config.tests.command);
     let scope = oldtests::scope(entries);
-    let check = verified.check.as_ref();
-    // when the candidate's run named its tests one by one, compare it with
-    // the baseline's own run instead of demanding a suite with no skips
-    let compared = match Outcomes::of(check) {
-        Some(cand) => {
-            let base = derived::baseline_check(&store, &baseline.sha)?;
-            Outcomes::of(base.as_ref()).map(|base| (base, cand))
-        }
-        None => None,
-    };
-    let regression = match &compared {
-        Some((base, cand)) => {
-            regression::from_outcomes(&verified.decision, check, (base, cand), &scope)
-        }
-        None => regression::from_decision(&verified.decision, check, pytest, &scope),
+    let regression = compared(&store, baseline, &verified, pytest, &scope)?;
+    let second = Second {
+        repo,
+        view,
+        config,
+        baseline,
+        cand,
+        store: &store,
+        subject: &subject,
+        decision: &verified.decision,
+        scope: &scope,
     };
     Ok(Measured {
-        regression,
+        regression: if pytest {
+            confirm(regression, &second)
+        } else {
+            regression
+        },
         isolation,
     })
 }

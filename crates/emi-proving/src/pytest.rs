@@ -337,6 +337,16 @@ pub fn file_of(id: &str) -> &str {
     id.split("::").next().unwrap_or(id)
 }
 
+/// The test function a case belongs to: its id without the parameters
+/// (`t.py::test_x[1]` is a case of `t.py::test_x`).
+pub fn function_of(id: &str) -> &str {
+    let names = file_of(id).len();
+    match id[names..].find('[') {
+        Some(at) => &id[..names + at],
+        None => id,
+    }
+}
+
 /// Ids (sorted, so a file's ids are together) in batches that each stay in
 /// one file and fit one argument list. One file per run because a file that
 /// cannot be imported makes pytest abort a run that names it, with the
