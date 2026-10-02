@@ -246,3 +246,29 @@ fn a_crashing_command_is_not_handed_to_the_systems_crash_handler() {
     assert_eq!(crashed.signal, Some(6), "{crashed:?}");
     assert!(crashed.receipt.cores_quiet);
 }
+
+#[test]
+fn a_sandboxed_command_cannot_reach_the_hosts_services() {
+    if !emi_exec::bwrap_available() {
+        return;
+    }
+    let ws = scratch("run");
+    // the system bus and the service manager's socket are under /run
+    let mut s = Spec::new(
+        &[
+            "/bin/sh",
+            "-c",
+            "ls -A /run | wc -l; test -e /run/dbus/system_bus_socket && echo bus; test -e /run/systemd/private && echo manager; true",
+        ],
+        &ws,
+    );
+    s.isolation = Isolation::Bwrap { network: false };
+    let o = run(&s);
+    assert_eq!(o.exit_code, Some(0), "{o:?}");
+    assert_eq!(
+        o.stdout.trim(),
+        "0",
+        "nothing of the host's /run is visible"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}

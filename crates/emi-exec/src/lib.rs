@@ -173,6 +173,19 @@ fn command(spec: &Spec, bwrap: Option<bool>, token: Option<&str>) -> Command {
                 "/proc",
             ]);
             c.args(["--tmpfs", "/tmp"]);
+            // the sockets of the system's and the session's services live
+            // under /run: with them visible a command can ask the host's
+            // service manager to change units (a test suite did, sixty
+            // times, each one an authentication prompt on the desktop)
+            c.args(["--tmpfs", "/run"]);
+            if network {
+                // name resolution, where the resolver's files are under /run
+                c.args([
+                    "--ro-bind-try",
+                    "/run/systemd/resolve",
+                    "/run/systemd/resolve",
+                ]);
+            }
             for h in spec.hidden.iter().filter(|h| h.exists()) {
                 c.arg("--tmpfs").arg(h);
             }
