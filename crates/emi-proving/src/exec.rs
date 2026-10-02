@@ -219,8 +219,17 @@ impl<'a> Session<'a> {
             // run died before writing its own
             let _ = std::fs::remove_file(copy.dir.join(&rel));
             let o = self.run(copy, &self.command.run_argv(batch, &rel));
+            let mut exit = exit_of(&o, self.runner.timeout);
+            // pytest cannot select every test by its id (parameters with
+            // escapes in them, say) and then runs nothing. The file run
+            // whole reports the same tests, the named ones among them.
+            if matches!(exit, RunExit::Code(4)) {
+                let _ = std::fs::remove_file(copy.dir.join(&rel));
+                let file = [pytest::file_of(&batch[0]).to_owned()];
+                let whole = self.run(copy, &self.command.run_argv(&file, &rel));
+                exit = exit_of(&whole, self.runner.timeout);
+            }
             let report = read_report(&copy.dir, &rel);
-            let exit = exit_of(&o, self.runner.timeout);
             seen.extend(junit::observe(&exit, report, batch));
         }
         seen

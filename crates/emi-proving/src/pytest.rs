@@ -337,14 +337,15 @@ pub fn file_of(id: &str) -> &str {
     id.split("::").next().unwrap_or(id)
 }
 
-/// The test function a case belongs to: its id without the parameters
-/// (`t.py::test_x[1]` is a case of `t.py::test_x`).
-pub fn function_of(id: &str) -> &str {
-    let names = file_of(id).len();
-    match id[names..].find('[') {
-        Some(at) => &id[..names + at],
-        None => id,
-    }
+/// The test function a case belongs to, as file and function name: its id
+/// without the parameters and without the class (`t.py::TestA::test_x[1]`
+/// is a case of `test_x` in `t.py`). The class is left out because a test
+/// written once in a base class runs under each subclass's name.
+pub fn function_of(id: &str) -> (&str, &str) {
+    let file = file_of(id);
+    let names = &id[file.len()..];
+    let names = names.find('[').map_or(names, |at| &names[..at]);
+    (file, names.rsplit("::").next().unwrap_or(names))
 }
 
 /// Ids (sorted, so a file's ids are together) in batches that each stay in

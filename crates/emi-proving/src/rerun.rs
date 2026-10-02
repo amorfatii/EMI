@@ -15,8 +15,7 @@ use crate::{Candidate, Request};
 
 /// The `ids` that pass when run by themselves on the request's candidate,
 /// which must be a commit in `objects`. `Err` when nothing could be run.
-/// A test that gave no result is not among the passing ones, and neither
-/// is any test of a file whose run ended without a readable report.
+/// A test that gave no result is not among the passing ones.
 pub fn passing(req: &Request, objects: &Path, ids: &[String]) -> Result<BTreeSet<String>, String> {
     let Candidate::Ref(rev) = &req.candidate else {
         return Err("a second run needs the candidate as a commit".into());

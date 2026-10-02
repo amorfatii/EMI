@@ -236,12 +236,14 @@ fn the_file_of_an_id_is_what_precedes_the_first_separator() {
 #[test]
 fn a_case_belongs_to_the_test_function_its_id_names() {
     let cases = [
-        ("t.py::test_x", "t.py::test_x"),
-        ("t.py::test_x[1]", "t.py::test_x"),
-        ("t.py::TestA::test_x[a-b]", "t.py::TestA::test_x"),
+        ("t.py::test_x", ("t.py", "test_x")),
+        ("t.py::test_x[1]", ("t.py", "test_x")),
+        // a test inherited from a base class is one function
+        ("t.py::TestA::test_x[a-b]", ("t.py", "test_x")),
+        ("t.py::TestB::test_x[a-b]", ("t.py", "test_x")),
         // parameters may hold anything, brackets and colons too
-        ("t.py::test_x[a[0]::b]", "t.py::test_x"),
-        ("t.py", "t.py"),
+        ("t.py::test_x[a[0]::b]", ("t.py", "test_x")),
+        ("t.py", ("t.py", "")),
     ];
     for (id, want) in cases {
         assert_eq!(function_of(id), want, "{id}");

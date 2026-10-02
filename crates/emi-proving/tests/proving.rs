@@ -579,6 +579,36 @@ fn a_test_command_that_is_not_pytest_is_unknown_with_a_reason() {
     );
 }
 
+/// pytest cannot select a test whose id holds an escape by naming it; one
+/// such test in an edited file must not hide the others' results.
+#[test]
+fn a_test_pytest_cannot_select_by_id_does_not_hide_the_rest_of_its_file() {
+    let fx = Fixture::new();
+    let weird = "import pytest\nfrom calc import add\n\n\n@pytest.mark.parametrize('s', ['a\\\\b', '\\xe6'])\ndef test_weird(s):\n    assert s\n\n\n";
+    fx.write(&[(
+        "tests/test_calc.py",
+        &format!("{weird}def test_add():\n    assert add(1, 2) == 3\n"),
+    )]);
+    fx.commit("a test whose ids hold escapes");
+    fx.write(&[
+        ("src/calc.py", ADD_FIXED),
+        (
+            "tests/test_calc.py",
+            &format!(
+                "{weird}def test_add():\n    assert add(1, 2) == 3\n    assert add(None, 2) == 2\n"
+            ),
+        ),
+    ]);
+    fx.commit("handle None, shown by an edited test beside them");
+    let v = change(&fx.request()).to_json();
+    assert_eq!(v["unknown_tests"], json!([]), "{v}");
+    assert_eq!(
+        ids(&v["proving_tests"]),
+        vec!["tests/test_calc.py::test_add"],
+        "{v}"
+    );
+}
+
 /// A test file that stops importing is the candidate's to repair, like a
 /// test that fails: its tests do not run now.
 #[test]
@@ -640,12 +670,9 @@ fn a_second_run_says_which_of_the_named_tests_pass_alone() {
         "tests/test_calc.py::test_add",
     );
     assert_eq!(named(&[wrong, add]), vec![add]);
-    // a run that names a test that does not exist ends without results:
-    // nothing is taken to pass
-    assert_eq!(
-        named(&[add, "tests/test_calc.py::test_absent"]),
-        Vec::<String>::new()
-    );
+    // a test pytest cannot find by name does not hide the others: the
+    // file is run whole and the named tests are read from its report
+    assert_eq!(named(&[add, "tests/test_calc.py::test_absent"]), vec![add]);
 }
 
 #[test]

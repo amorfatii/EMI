@@ -43,7 +43,7 @@ pub fn read(repo: &Path, view: &Path, spec: &Spec) -> Result<Candidate, Error> {
             (sha.clone(), sha)
         }
         Spec::Worktree => {
-            let scratch = snapshot::TempDir::new("emi-done-index")
+            let scratch = snapshot::TempDir::new("emi-done-index-")
                 .map_err(|e| Error::Usage(format!("working tree: {e}")))?;
             let rev = snapshot::commit_worktree(repo, view, scratch.path())
                 .map_err(|e| Error::Usage(format!("cannot read the working tree: {e}")))?;

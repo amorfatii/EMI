@@ -46,6 +46,70 @@ impl Drop for TempDir {
     }
 }
 
+/// The prefixes of the scratch directories EMI's crates create in the
+/// temporary directory, each followed by the creating process's id.
+const SCRATCH_PREFIXES: &[&str] = &[
+    "emi-verify-",
+    "emi-git-view-",
+    "emi-profile-",
+    "emi-proving-",
+    "emi-diff-",
+    "emi-measure-",
+    "emi-places-",
+    "emi-report-",
+    "emi-done-index-",
+];
+
+/// The process a scratch directory of this name belongs to: the name is a
+/// known prefix, then words, then `<pid>-<nanos>` or
+/// `<pid>-<nanos>-<attempt>`. `None` for any other name, which is then
+/// nobody's to remove.
+pub fn scratch_owner(name: &str) -> Option<u32> {
+    let rest = SCRATCH_PREFIXES
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))?;
+    let numbers: Vec<&str> = rest
+        .rsplit('-')
+        .take_while(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        .collect();
+    match numbers.len() {
+        // collected from the right: the process id is the last one
+        2 | 3 => numbers.last()?.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Remove the scratch directories that runs which no longer exist left in
+/// the temporary directory. A run that is killed (a harness timeout, an
+/// interrupt) cannot remove its copies of the repository, and they would
+/// otherwise stay until the machine restarts, often in memory. Only
+/// directories this user owns, named as EMI names them, whose process is
+/// gone are touched; where the process table cannot be read, nothing is.
+/// Returns how many were removed.
+pub fn sweep_stale_scratch() -> usize {
+    use std::os::unix::fs::MetadataExt;
+    let proc = Path::new("/proc");
+    let Ok(me) = fs::metadata(proc.join("self")).map(|m| m.uid()) else {
+        return 0;
+    };
+    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = scratch_owner(&name.to_string_lossy()) else {
+            continue;
+        };
+        let mine = entry.metadata().is_ok_and(|m| m.is_dir() && m.uid() == me);
+        if mine && !proc.join(pid.to_string()).exists() && fs::remove_dir_all(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 fn is_sha(s: &str) -> bool {
     matches!(s.len(), 40 | 64)
         && s.bytes()
@@ -789,5 +853,44 @@ mod tests {
         assert!(normalize_source("../x").is_err());
         assert!(normalize_source("/abs").is_err());
         assert!(normalize_source("a/../b").is_err());
+    }
+
+    #[test]
+    fn a_scratch_name_says_whose_it_is_and_other_names_say_nothing() {
+        let cases = [
+            ("emi-verify-4242-1790885403020206177", Some(4242)),
+            ("emi-git-view-17-99", Some(17)),
+            ("emi-diff-1029893-439168965-0", Some(1_029_893)),
+            ("emi-profile-baseline-list-77-123", Some(77)),
+            ("emi-done-index-5-6-0", Some(5)),
+            // not EMI's scratch, or not named the way it names scratch
+            ("emi-audit-20261001", None),
+            ("emi-verify-4242", None),
+            ("emi-verify-a-b", None),
+            ("emi-verify-1-2-3-4", None),
+            ("other-1-2", None),
+        ];
+        for (name, want) in cases {
+            assert_eq!(scratch_owner(name), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn scratch_of_a_process_that_is_gone_is_swept_and_a_live_ones_is_kept() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .unwrap_or_else(|e| panic!("true: {e}"));
+        let gone = child.id();
+        child.wait().unwrap_or_else(|e| panic!("wait: {e}"));
+        let tmp = std::env::temp_dir();
+        let stale = tmp.join(format!("emi-verify-{gone}-1"));
+        let live = tmp.join(format!("emi-verify-{}-1", std::process::id()));
+        for dir in [&stale, &live] {
+            fs::create_dir_all(dir.join("candidate")).unwrap_or_else(|e| panic!("mkdir: {e}"));
+        }
+        assert!(sweep_stale_scratch() >= 1);
+        assert!(!stale.exists());
+        assert!(live.exists());
+        fs::remove_dir_all(&live).unwrap_or_else(|e| panic!("cleanup: {e}"));
     }
 }

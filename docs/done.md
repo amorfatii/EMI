@@ -79,7 +79,9 @@ of them (`not_verified`), with this run's under `this_run`.
   - A case of a parametrized test that passes at the baseline while another
     case of the same test function is a proving test is a **companion**
     (`companion_tests`), not redundant: such a test shows the change with
-    some cases and what must stay as it was with the others.
+    some cases and what must stay as it was with the others. The same test
+    function means the same name in the same file: a test written once in a
+    base class and run under several subclasses is one function.
   - An added test skipped (or expected to fail) at both revisions is listed
     in `skipped_tests`: it does not run here, shows nothing, and is not a
     measurement that failed. A changed function is proven only when a
@@ -198,6 +200,15 @@ that pass were not broken by the product code alone:
 
 A test the candidate added that fails beside restored files is judged by the
 change evidence alone, which runs it on the candidate as it is.
+
+Chosen tests are run by naming them. pytest cannot select every test by
+its id (a parameter with an escape in it); when it refuses, the file is run
+whole and the chosen tests are read from its report.
+
+Each check works on copies of the repository in the temporary directory and
+removes them when it ends. A check that is killed (a harness timeout, an
+interrupt) cannot, so every check first removes the copies left by EMI
+processes that no longer exist.
 
 Known limit: a test that can only fail on another platform (a Windows path
 case, say) passes at the baseline here and is called redundant.

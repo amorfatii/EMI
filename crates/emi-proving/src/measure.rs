@@ -123,14 +123,14 @@ impl Targets {
 /// test's companions: a parametrized test shows the change with some cases
 /// and what must stay as it was with the others.
 fn companions(mut c: Classified) -> Classified {
-    let proving: BTreeSet<&str> = c
+    let proving: BTreeSet<(&str, &str)> = c
         .proving
         .iter()
         .map(|t| pytest::function_of(&t.id))
         .collect();
     let (companion, redundant) = std::mem::take(&mut c.redundant)
         .into_iter()
-        .partition(|t| proving.contains(pytest::function_of(&t.id)));
+        .partition(|t| proving.contains(&pytest::function_of(&t.id)));
     c.redundant = redundant;
     c.companion = companion.into_iter().map(|t| t.id).collect();
     c
