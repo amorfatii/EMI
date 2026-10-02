@@ -85,7 +85,10 @@ of them (`not_verified`), with this run's under `this_run`.
   - An added test skipped (or expected to fail) at both revisions is listed
     in `skipped_tests`: it does not run here, shows nothing, and is not a
     measurement that failed. A changed function is proven only when a
-  proving test executes its changed body. The levels are `proven`,
+  proving test executes its changed body: the lines the change added, or,
+  where the change also removed lines from the function (a guard taken out,
+  a statement rewritten), any line of it, since a removed line cannot run
+  and its absence changes every call. The levels are `proven`,
   `partly_proven`, `unproven`, `none`, and `unknown`.
   - Requires coverage.py >=7.9 in the same environment as pytest; EMI selects
     the tracing engine that supports per-test contexts, including on Python 3.14.

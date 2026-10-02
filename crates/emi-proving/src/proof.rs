@@ -70,14 +70,18 @@ pub fn header_end(source: &[&str], start: u32) -> u32 {
     start
 }
 
-/// The executable lines of the body that the change wrote, or, when it
-/// wrote none there (it removed lines, changed only the signature, or
-/// wrote only comments), every executable line of the body: the function
-/// ran or it did not.
+/// The lines of the body whose execution shows the function's change was
+/// reached. Where the change only added lines to the function, those
+/// lines: a test that never runs them did not meet what was written.
+/// Where it also removed lines (a guard taken out, a statement rewritten),
+/// or wrote nothing executable there, every executable line of the body:
+/// a removed line cannot run, and what it used to do is changed for every
+/// call of the function, whether or not the call reaches a line that was
+/// added elsewhere in it.
 fn target_lines(f: &ChangedFn, body: (u32, u32), executable: &BTreeSet<u32>) -> BTreeSet<u32> {
     let in_body = |l: &u32| (body.0..=body.1).contains(l) && executable.contains(l);
     let wrote: BTreeSet<u32> = f.added_lines.iter().copied().filter(in_body).collect();
-    if wrote.is_empty() {
+    if wrote.is_empty() || !f.removed_lines.is_empty() {
         executable.iter().copied().filter(in_body).collect()
     } else {
         wrote

@@ -122,3 +122,21 @@ fn what_coverage_cannot_say_is_unknown_with_a_reason() {
         FnStatus::Unknown
     );
 }
+
+/// A guard taken out of a function changes every call of it; a test that
+/// runs the function, though not the line added further down, met the change.
+#[test]
+fn a_function_the_change_removed_lines_from_is_reached_by_running_it() {
+    let source = "def f(a):\n    x = 1\n    if a:\n        x = 2\n    return x\n";
+    let lines = Lines {
+        executable: [2, 3, 4, 5].into(),
+        executed: [2, 3, 5].into(),
+    };
+    // only an added line (4), never run: not reached
+    let added = changed((1, 5), &[4]);
+    assert_eq!(judge(&added, source, Some(&lines)).0, FnStatus::Unproven);
+    // the same, with a line removed from the function as well: reached
+    let mut removed = changed((1, 5), &[4]);
+    removed.removed_lines = vec![2];
+    assert_eq!(judge(&removed, source, Some(&lines)).0, FnStatus::Proven);
+}
