@@ -451,3 +451,50 @@ fn a_failure_that_shows_again_in_the_whole_suite_is_a_break_even_if_it_passes_al
         "{receipt}"
     );
 }
+
+/// How many decisions the stores under the project's state hold: one per
+/// run of the checks on a revision.
+fn decisions(p: &Project) -> usize {
+    fn walk(dir: &std::path::Path, found: &mut usize) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else if path.file_name().is_some_and(|n| n == "evidence.jsonl") {
+                *found += std::fs::read_to_string(&path)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|l| l.contains("\"kind\":\"decision\""))
+                    .count();
+            }
+        }
+    }
+    let mut found = 0;
+    walk(p.state.path(), &mut found);
+    found
+}
+
+/// The hook warms the baseline while the agent works: the check that
+/// follows runs the candidate only.
+#[test]
+fn a_warmed_baseline_is_not_run_again_by_the_check() {
+    let p = Project::new();
+    let out = p.emi(&["done", "--warm"], None);
+    assert!(out.status.success() && out.stdout.is_empty(), "{out:?}");
+    assert_eq!(decisions(&p), 1, "the baseline ran");
+    p.write(
+        "app.py",
+        "def add(a, b):\n    if a is None:\n        return b\n    return a + b\n",
+    );
+    let (code, receipt) = p.done(&[]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    assert_eq!(decisions(&p), 2, "only the candidate ran");
+
+    // without warming, the first check runs both
+    let cold = Project::new();
+    cold.write("app.py", "def add(a, b):\n    return b + a\n");
+    let (code, _) = cold.done(&[]);
+    assert_eq!(code, 0);
+    assert_eq!(decisions(&cold), 2);
+}

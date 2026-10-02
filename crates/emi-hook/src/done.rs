@@ -90,6 +90,27 @@ pub fn manual_command(args: &[String]) -> String {
         .join(" ")
 }
 
+/// Environment variable that turns warming off when set to `0`.
+pub const WARM_VARIABLE: &str = "EMI_HOOK_WARM";
+
+/// Start `emi done --warm` for `scope` and do not wait for it: the
+/// baseline's tests run while the agent works, and the first check finds
+/// their result instead of running them. Nothing depends on this having
+/// worked. A warm run that fails leaves the check to run the baseline
+/// itself and to report whatever went wrong, so a failure to start is
+/// returned only to be ignored or logged by the caller.
+pub fn warm(command: &Command, repo: &Path, scope: &[String]) -> Result<(), String> {
+    if std::env::var(WARM_VARIABLE).is_ok_and(|v| v == "0") {
+        return Ok(());
+    }
+    let mut argv: Vec<&str> = command.prefix.iter().map(String::as_str).collect();
+    argv.extend(scope.iter().map(String::as_str));
+    argv.push("--warm");
+    let mut spec = Spec::new(&argv, repo);
+    spec.env = inherited_environment();
+    emi_exec::spawn_detached(&spec).map(|_| ())
+}
+
 fn inherited_environment() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(k, _)| {

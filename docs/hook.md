@@ -54,6 +54,21 @@ It confirms two repairs, round numbering, and a final queued receipt with no
 fourth provider call. That tests integration, not usefulness. The experiment and owner
 trial remain separate release evidence; see `docs/plan.md`.
 
+## Warming the baseline
+
+The first check of a task runs the test command twice: once on the baseline,
+to have something to compare with, and once on the candidate. When the
+person sends a message, the hook therefore starts `emi done --warm` in the
+background and returns at once. That run executes the baseline's tests and
+keeps the result; by the time the agent says it is finished, the check runs
+the candidate only. A check that arrives while the warm run is still going
+waits for it instead of running the suite beside it.
+
+Warming is best effort: a warm run that fails changes nothing, since the
+check runs the baseline itself and reports what went wrong. The result is
+kept per baseline, configuration and dependencies, so later messages in the
+same session start nothing. Set `EMI_HOOK_WARM=0` to turn it off.
+
 ## The journal
 
 Every check the hook runs is appended to a journal outside the repository

@@ -120,11 +120,35 @@ fn measured_unknown(why: String) -> Measured {
     }
 }
 
+/// Run the test command on the baseline now, so that the first check of a
+/// candidate finds the result waiting. The task is the one a check of an
+/// unchanged tree derives (nothing approved, nothing restored); a check
+/// that later derives another runs its own baseline. Nothing is returned:
+/// the result is in the task's store, and a failure here is found again,
+/// and reported, by the check itself.
+pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: &Baseline) {
+    if !derived::is_pytest(&config.tests.command) {
+        return;
+    }
+    let Ok(trusted) = derived::trusted(view, &baseline.sha, &config.tests.globs, &BTreeSet::new())
+    else {
+        return;
+    };
+    let Ok(own) = derived::own_names(view, &baseline.sha, config) else {
+        return;
+    };
+    let spec = derived::spec(repo, config, &baseline.sha, &trusted, &own);
+    let authority = state::authority(&state::repo_dir(req.state_root, repo));
+    if let Ok(store) = derived::open(&authority, repo, &baseline.sha, &spec) {
+        let _ = derived::baseline_check_once(&store, &baseline.sha, &authority);
+    }
+}
+
 /// The regression evidence from the candidate's run. When that run named
 /// its tests one by one, it is compared with the baseline's own run
 /// instead of demanding a suite with no skips.
 fn compared(
-    store: &emi_controller::Store,
+    (store, authority): (&emi_controller::Store, &Path),
     baseline: &Baseline,
     verified: &derived::Verified,
     pytest: bool,
@@ -132,7 +156,7 @@ fn compared(
 ) -> Result<Regression, String> {
     let check = verified.check.as_ref();
     let base = if pytest {
-        let base = derived::baseline_check(store, &baseline.sha)?;
+        let base = derived::baseline_check_once(store, &baseline.sha, authority)?;
         Outcomes::of(base.as_ref())
     } else {
         None
@@ -193,7 +217,7 @@ fn try_measure(
     }
     let pytest = derived::is_pytest(&config.tests.command);
     let scope = oldtests::scope(entries);
-    let regression = compared(&store, baseline, &verified, pytest, &scope)?;
+    let regression = compared((&store, &authority), baseline, &verified, pytest, &scope)?;
     let second = Second {
         repo,
         view,

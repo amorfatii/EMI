@@ -307,6 +307,26 @@ pub fn baseline_check(store: &Store, baseline: &str) -> Result<Option<Value>, St
     recorded_check(store, &decision, CHECK)
 }
 
+/// [`baseline_check`], one run at a time for a repository: a check that
+/// arrives while another process is running the baseline (the hook warms
+/// it when the person sends a message) waits for that run and reads its
+/// result instead of running the suite a second time beside it.
+pub fn baseline_check_once(
+    store: &Store,
+    baseline: &str,
+    authority: &Path,
+) -> Result<Option<Value>, String> {
+    let path = authority.join("baseline.lock");
+    let lock = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("lock {}: {e}", path.display()))?;
+    lock.lock()
+        .map_err(|e| format!("lock {}: {e}", path.display()))?;
+    baseline_check(store, baseline)
+}
+
 fn recorded_check(store: &Store, decision: &Value, id: &str) -> Result<Option<Value>, String> {
     Ok(store.rows("check_run")?.into_iter().rev().find(|r| {
         r["check_id"] == id

@@ -71,6 +71,11 @@ pub struct DoneArgs {
     /// (`old-test:PATH`); repeatable.
     #[arg(long, value_name = "ITEM")]
     approve: Vec<String>,
+    /// Run the baseline's tests now and keep the result, so that the first
+    /// check finds it waiting; prints nothing and checks nothing. The hook
+    /// starts this when the person sends a message.
+    #[arg(long, conflicts_with_all = ["candidate", "approve"])]
+    warm: bool,
 }
 
 fn confirmed(path: &std::path::Path) -> anyhow::Result<bool> {
@@ -161,6 +166,10 @@ pub fn done(a: &DoneArgs) -> anyhow::Result<u8> {
         },
         approve: &a.approve,
     };
+    if a.warm {
+        emi_done::warm(&request)?;
+        return Ok(0);
+    }
     let outcome = emi_done::done(&request, change_evidence)?;
     let text = match a.format {
         Some(FormatArg::Json) => false,

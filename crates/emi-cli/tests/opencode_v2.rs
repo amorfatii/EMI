@@ -17,6 +17,8 @@ fn installed_v2_adapter_drives_the_real_completion_loop() {
         .arg(p.path())
         .env("XDG_STATE_HOME", p.state.path())
         .env_remove("EMI_DONE_COMMAND")
+        // a warm run would outlive the test and its directories
+        .env("EMI_HOOK_WARM", "0")
         .output()
         .expect("Node is required for the native OpenCode adapter test");
     assert!(out.status.success(), "{out:?}");

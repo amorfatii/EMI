@@ -223,7 +223,9 @@ is fixed here:
   `incomplete`, or no rounds left, let it stop and show the person the text
   receipt; when rounds ran out, the first line is `NOT VERIFIED`.
 - **User-message event:** reset the round count; on the first one of a
-  session, record the session baseline.
+  session, record the session baseline. Start the baseline's test run in
+  the background (`emi done --warm`), so the first check runs the candidate
+  only.
 - State lives outside the repository, under the user's state directory.
 
 ## Work

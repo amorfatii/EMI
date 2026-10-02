@@ -184,6 +184,13 @@ fn user_message_checked(env: &Env, session: &str, cwd: &Path) -> Result<Reaction
     let head = repo::head(&root);
     let after = decision::on_user_message(&before, head.as_deref().ok());
     persist(&store, &before, &after)?;
+    // the agent is about to work for a while: run the baseline's tests
+    // meanwhile. Best effort; the check does not rely on it.
+    if let Ok(config) = repo::read_config(&root)
+        && let Ok(Ok(scope)) = scope_for(&root, &config, &after)
+    {
+        let _ = done::warm(&env.done, &root, &scope);
+    }
     match head {
         Err(why) if after.baseline.is_none() => Err(format!(
             "could not record the session baseline ({why}); on the default branch the check will be incomplete"

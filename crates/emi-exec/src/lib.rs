@@ -292,6 +292,36 @@ fn launch_token() -> String {
     format!("emi-sandbox-ready-{}-{nanos}", std::process::id())
 }
 
+/// Start the command and leave it running after this process ends: its own
+/// process group, no terminal, no environment but `spec.env`. This is for
+/// work whose result is picked up later from what it writes (a warmed
+/// cache), never for a run whose outcome matters now: nothing waits for
+/// it, and `timeout`, `output_limit` and `isolation` do not apply, so the
+/// command must bound itself. Returns its process id.
+pub fn spawn_detached(spec: &Spec) -> Result<u32, String> {
+    use std::process::{Command, Stdio};
+    let (program, args) = spec
+        .argv
+        .split_first()
+        .ok_or_else(|| "nothing to start: the command is empty".to_owned())?;
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(&spec.cwd)
+        .env_clear()
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn()
+        .map(|child| child.id())
+        .map_err(|e| format!("{program}: {e}"))
+}
+
 /// Run the command; never returns before its group is gone.
 pub fn run(spec: &Spec) -> Outcome {
     let start = Instant::now();

@@ -123,7 +123,10 @@ impl Fixture {
             .env("HOME", self.home.path())
             .env("XDG_STATE_HOME", self.state.path())
             .env_remove("XDG_CONFIG_HOME")
-            .env("EMI_DONE_COMMAND", done);
+            .env("EMI_DONE_COMMAND", done)
+            // warming starts the stand-in in the background, which would
+            // make every count of its calls a race; one test turns it on
+            .env("EMI_HOOK_WARM", "0");
         cmd
     }
 
@@ -459,6 +462,43 @@ fn a_missing_done_command_is_incomplete() {
     assert!(
         Answer::parse(&text).message().starts_with("EMI INCOMPLETE"),
         "{text}"
+    );
+}
+
+/// A message from the person starts the baseline's tests in the
+/// background, for the same change the stop will check.
+#[test]
+fn a_user_message_warms_the_baseline_without_waiting_for_it() {
+    let f = Fixture::configured();
+    let head = f.head();
+    let input = json!({"session_id": SESSION, "cwd": f.repo.path(),
+        "hook_event_name": "UserPromptSubmit", "stop_hook_active": false});
+    let mut child = f
+        .command(&["hook", "claude-code", "user-prompt-submit"])
+        .env_remove("EMI_HOOK_WARM")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn emi");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.to_string().as_bytes())
+        .expect("write stdin");
+    assert!(child.wait_with_output().expect("wait").status.success());
+    // the hook has returned; the warm run finishes on its own
+    let started = std::time::Instant::now();
+    while f.calls().is_empty() && started.elapsed().as_secs() < 20 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let calls = f.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(
+        calls[0].ends_with(&format!(
+            "--baseline {head} --baseline-source session --warm"
+        )),
+        "{calls:?}"
     );
 }
 

@@ -78,6 +78,8 @@ impl Project {
             .current_dir(self.path())
             .env("XDG_STATE_HOME", self.state.path())
             .env_remove("EMI_DONE_COMMAND")
+            // a warm run would outlive the test and its directories
+            .env("EMI_HOOK_WARM", "0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if input.is_some() {

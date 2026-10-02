@@ -210,6 +210,22 @@ pub fn done(
     run::check(&repo, view.path(), req, (&config, &baseline, &cand), change)
 }
 
+/// Run the baseline's tests ahead of the first check (see `run::warm`).
+/// Only cooperative verification of a working tree is warmed: that is
+/// what the hook runs. `Err` is for input `done` would refuse too.
+pub fn warm(req: &Request) -> Result<(), Error> {
+    if req.setting != Setting::Cooperative {
+        return Ok(());
+    }
+    let repo = repo_root(req.repo)?;
+    emi_diff::snapshot::sweep_stale_scratch();
+    let view = emi_git::CleanView::of(&repo).map_err(Error::Usage)?;
+    let config = config::read_file(&repo)?;
+    let baseline = resolve_baseline(&repo, req, Some(&config))?;
+    run::warm(&repo, view.path(), req, &config, &baseline);
+    Ok(())
+}
+
 /// Enforced verification of a baseline that has no configuration: the
 /// receipt says why nothing was measured.
 fn unconfigured(
