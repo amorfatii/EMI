@@ -14,8 +14,9 @@
 //!   isolation that was not applied.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -151,6 +152,103 @@ fn resolve_isolation(isolation: &Isolation) -> Option<bool> {
 const LAUNCHER: &str =
     r#"command -v "$1" >/dev/null 2>&1 || exit 127; printf '%s\n' "$0" >&2; exec "$@""#;
 
+/// Starts bubblewrap with the file named by its first argument open as
+/// descriptor 9, where `--seccomp 9` reads the filter from. The shell opens
+/// it because a descriptor this process opens is closed on exec.
+const WITH_FILTER: &str = r#"f="$1"; shift; exec bwrap --seccomp 9 "$@" 9<"$f""#;
+
+/// A seccomp filter that makes changing the core-size limit fail with
+/// `EPERM` and allows everything else.
+///
+/// The one-byte core limit ([`platform::quiet_cores`]) keeps a crash away
+/// from the system's crash handler only while it stays one byte. Programs
+/// that crash on purpose lower it to zero first, meaning well (CPython's
+/// own `faulthandler` test helpers do), and with zero the handler is
+/// called again: a test suite that aborts child interpreters deliberately
+/// then fills the desktop with crash reports. Inside the sandbox the limit
+/// therefore cannot be changed. Reading it is allowed.
+///
+/// The program is classic BPF over `struct seccomp_data`, written out by
+/// hand for the architectures listed; elsewhere there is no filter.
+fn core_limit_filter() -> Option<Vec<u8>> {
+    // (audit architecture, setrlimit, prlimit64)
+    let (arch, setrlimit, prlimit64): (u32, u32, u32) = if cfg!(target_arch = "x86_64") {
+        (0xC000_003E, 160, 302)
+    } else if cfg!(target_arch = "aarch64") {
+        (0xC000_00B7, 164, 261)
+    } else {
+        return None;
+    };
+    const LOAD: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
+    const EQUAL: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
+    const RETURN: u16 = 0x06; // BPF_RET | BPF_K
+    const ALLOW: u32 = 0x7fff_0000;
+    const EPERM: u32 = 0x0005_0000 | 1;
+    const RLIMIT_CORE: u32 = 4;
+    // offsets in seccomp_data: nr 0, arch 4, args from 16, eight bytes each
+    let program: [(u16, u8, u8, u32); 16] = [
+        (LOAD, 0, 0, 4),
+        (EQUAL, 0, 12, arch),
+        (LOAD, 0, 0, 0),
+        (EQUAL, 2, 0, setrlimit),
+        (EQUAL, 3, 0, prlimit64),
+        (RETURN, 0, 0, ALLOW),
+        // setrlimit(resource, new)
+        (LOAD, 0, 0, 16),
+        (EQUAL, 7, 6, RLIMIT_CORE),
+        // prlimit64(pid, resource, new, old): only a call that sets
+        (LOAD, 0, 0, 24),
+        (EQUAL, 0, 4, RLIMIT_CORE),
+        (LOAD, 0, 0, 32),
+        (EQUAL, 0, 3, 0),
+        (LOAD, 0, 0, 36),
+        (EQUAL, 0, 1, 0),
+        (RETURN, 0, 0, ALLOW),
+        (RETURN, 0, 0, EPERM),
+    ];
+    let mut bytes = Vec::with_capacity(program.len() * 8);
+    for (code, jt, jf, k) in program {
+        bytes.extend_from_slice(&code.to_ne_bytes());
+        bytes.extend_from_slice(&[jt, jf]);
+        bytes.extend_from_slice(&k.to_ne_bytes());
+    }
+    Some(bytes)
+}
+
+/// The filter in a file bubblewrap can be given, written once per process.
+/// `None` where there is no filter or it could not be written: the sandbox
+/// then runs without it, as before.
+fn filter_file() -> Option<&'static Path> {
+    static FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    FILE.get_or_init(|| {
+        let bytes = core_limit_filter()?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let path = std::env::temp_dir().join(format!("emi-seccomp-{}-{nanos}", std::process::id()));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
+            .ok()?;
+        Some(path)
+    })
+    .as_deref()
+}
+
+/// bubblewrap, behind the shell that hands it the filter when there is one.
+fn bwrap_command() -> Command {
+    match filter_file() {
+        Some(filter) => {
+            let mut c = Command::new("/bin/sh");
+            c.args(["-c", WITH_FILTER, "emi-bwrap"]).arg(filter);
+            c
+        }
+        None => Command::new("bwrap"),
+    }
+}
+
 fn command(spec: &Spec, bwrap: Option<bool>, token: Option<&str>) -> Command {
     let mut cmd = match bwrap {
         None => {
@@ -160,7 +258,7 @@ fn command(spec: &Spec, bwrap: Option<bool>, token: Option<&str>) -> Command {
         }
         Some(network) => {
             let cwd = spec.cwd.to_string_lossy().into_owned();
-            let mut c = Command::new("bwrap");
+            let mut c = bwrap_command();
             c.args([
                 "--die-with-parent",
                 "--unshare-pid",

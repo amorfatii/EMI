@@ -93,3 +93,12 @@ Test suites crash child processes on purpose. EMI starts its commands with a
 core limit of one byte, which keeps those crashes out of the system's crash
 reports (and off the desktop); `emi` itself therefore leaves no core dump
 either.
+
+The limit only works while it stays one byte, and a program that crashes on
+purpose often sets it to zero first (Python's own crash-test helpers do),
+which hands the crash to the system's handler again. Inside the sandbox a
+command therefore cannot change the core limit: the call fails with a
+permission error and everything else is allowed. A test that needs to set
+that limit fails in the sandbox the same way at the baseline and on the
+candidate, so it is not counted as a regression. Without bubblewrap there is
+no such filter.

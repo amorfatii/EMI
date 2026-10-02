@@ -58,6 +58,7 @@ const SCRATCH_PREFIXES: &[&str] = &[
     "emi-places-",
     "emi-report-",
     "emi-done-index-",
+    "emi-seccomp-",
 ];
 
 /// The process a scratch directory of this name belongs to: the name is a
@@ -79,7 +80,7 @@ pub fn scratch_owner(name: &str) -> Option<u32> {
     }
 }
 
-/// Remove the scratch directories that runs which no longer exist left in
+/// Remove the scratch directories and files that runs which no longer exist left in
 /// the temporary directory. A run that is killed (a harness timeout, an
 /// interrupt) cannot remove its copies of the repository, and they would
 /// otherwise stay until the machine restarts, often in memory. Only
@@ -101,11 +102,18 @@ pub fn sweep_stale_scratch() -> usize {
         let Some(pid) = scratch_owner(&name.to_string_lossy()) else {
             continue;
         };
-        let mine = entry.metadata().is_ok_and(|m| m.is_dir() && m.uid() == me);
-        if mine && !proc.join(pid.to_string()).exists() && fs::remove_dir_all(entry.path()).is_ok()
-        {
-            removed += 1;
+        let Some(meta) = entry.metadata().ok().filter(|m| m.uid() == me) else {
+            continue;
+        };
+        if proc.join(pid.to_string()).exists() {
+            continue;
         }
+        let gone = if meta.is_dir() {
+            fs::remove_dir_all(entry.path())
+        } else {
+            fs::remove_file(entry.path())
+        };
+        removed += usize::from(gone.is_ok());
     }
     removed
 }

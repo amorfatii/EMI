@@ -272,3 +272,35 @@ fn a_sandboxed_command_cannot_reach_the_hosts_services() {
     );
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+/// A program that crashes on purpose often lowers the core limit to zero
+/// first, and with zero the system's crash handler is called again. In the
+/// sandbox the limit stays where the executor put it.
+#[test]
+fn a_sandboxed_command_cannot_change_the_core_limit() {
+    if !emi_exec::bwrap_available() || !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
+        return;
+    }
+    let ws = scratch("corelimit");
+    let mut s = Spec::new(
+        &[
+            "/bin/sh",
+            "-c",
+            "ulimit -c 0 2>/dev/null; echo \"set: $?\"; grep 'Max core file size' /proc/self/limits; ulimit -n 64 && echo other limits change",
+        ],
+        &ws,
+    );
+    s.isolation = Isolation::Bwrap { network: false };
+    let o = run(&s);
+    assert_eq!(o.exit_code, Some(0), "{o:?}");
+    let lines: Vec<&str> = o.stdout.lines().collect();
+    assert_ne!(lines[0], "set: 0", "{}", o.stdout);
+    assert_eq!(
+        lines[1].split_whitespace().nth(4),
+        Some("1"),
+        "{}",
+        o.stdout
+    );
+    assert_eq!(lines[2], "other limits change", "{}", o.stdout);
+    let _ = std::fs::remove_dir_all(&ws);
+}
