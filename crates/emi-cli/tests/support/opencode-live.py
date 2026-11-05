@@ -113,11 +113,11 @@ def check(repo, env, url, provider, events_path):
         context = api("get", f"/api/session/{session_id}/context")["data"]
         pending = api("get", f"/api/session/{session_id}/inbox")["data"]
         text = json.dumps([context, pending])
-        if "Change evidence: proven" in text:
+        if "Change evidence: exercised" in text:
             assert len(provider.calls) == 3, provider.calls
             assert "repair round 1 of 3" in text and "repair round 2 of 3" in text, text
             assert len(pending) == 1 and pending[0]["delivery"] == "queue", pending
-            print("Native OpenCode: regression repair, redundancy repair, proven receipt; 3 scripted turns")
+            print("Native OpenCode: regression repair, redundancy repair, exercised receipt; 3 scripted turns")
             return
         if "INCOMPLETE" in text or "NOT VERIFIED" in text:
             raise AssertionError(text)

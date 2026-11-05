@@ -42,7 +42,7 @@ fn receipt(action: &str) -> Value {
         "assurance": {"setting": "cooperative", "isolation": "unsandboxed (stand-in)"},
         "regression": {"status": "held", "tests_run": 7, "failed": [], "missing": [], "reasons": []},
         "changed_old_tests": [],
-        "change": {"status": "unproven", "functions": [], "proving_tests": [],
+        "change": {"status": "unexercised", "functions": [], "proving_tests": [],
                    "redundant_tests": [], "unknown_tests": [], "not_measured": []},
         "action": action,
         "repair": [],

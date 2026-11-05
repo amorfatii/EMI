@@ -18,8 +18,12 @@ Restart or reload the harness after installation. Configure dependencies
 before the session: Linux bubblewrap, the project's pytest, and coverage.py
 >=7.9. EMI does not install project dependencies during a check.
 
-- **Claude Code:** command hooks for `UserPromptSubmit` and `Stop`, stored
-  in `.claude/settings.json`. A repair blocks Stop and gives one short fix.
+- **Claude Code:** command hooks for `UserPromptSubmit`, `Stop` and
+  `PreToolUse`, stored in `.claude/settings.json`. A repair blocks Stop and
+  gives the fix. `PreToolUse` (matching `Edit|Write|MultiEdit|NotebookEdit`)
+  is silent unless the configuration locks the laws (`"laws": {"lock":
+  true}`); it then refuses edits under the laws directory. The laws are
+  restored for every check either way.
 - **OpenCode V2:** a native plugin in `.opencode/plugins/emi/index.js`. It registers
   a prompt-admission hook and subscribes to `session.execution.succeeded`
   (`session.idle` where provided). OpenCode's turn
@@ -34,6 +38,11 @@ The first user message records the session baseline; later user messages
 reset the default three repair rounds. EMI's own marked repair prompts do
 not reset the counter. On a feature branch the branch baseline takes
 precedence. State lives outside the repository under the user's state directory.
+
+`emi intent preserve [PATH]...` records, for this repository, that the
+change must keep the modified functions' behaviour; every check the hook
+runs then compares them with the baseline's (docs/preserve.md) until `emi
+intent clear`.
 
 An unchanged tree after a completed check is skipped. Repair checks are not
 cached as successful. When rounds run out the agent may stop, but the person
@@ -52,12 +61,13 @@ cargo test --locked -p emi-cli --test opencode_v2 native_harness -- --ignored --
 This check requires OpenCode V2 installed; the ordinary suite skips it explicitly.
 It confirms two repairs, round numbering, and a final queued receipt with no
 fourth provider call. That tests integration, not usefulness. The experiment and owner
-trial remain separate release evidence; see `docs/plan.md`.
+trial remain separate release evidence.
 
 ## Warming the baseline
 
-The first check of a task runs the test command twice: once on the baseline,
-to have something to compare with, and once on the candidate. When the
+The first check of a task runs the test command three times: twice on the
+baseline, to have something to compare with and to quarantine tests whose
+outcome differs, and once on the candidate. When the
 person sends a message, the hook therefore starts `emi done --warm` in the
 background and returns at once. That run executes the baseline's tests and
 keeps the result; by the time the agent says it is finished, the check runs

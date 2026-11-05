@@ -48,7 +48,7 @@ pub fn state_home() -> Result<PathBuf, String> {
 }
 
 fn short_hash(text: &str) -> String {
-    emi_ir::pytext::sha256_hex(text.as_bytes())[..24].to_owned()
+    emi_kernel::hash::sha256_hex(text.as_bytes())[..24].to_owned()
 }
 
 impl Store {

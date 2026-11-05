@@ -63,6 +63,27 @@ fn setsid_daemons_are_reaped_as_orphans() {
 }
 
 #[test]
+fn a_run_leaves_daemons_it_did_not_start_alone() {
+    // Another thread's command (a git maintenance daemon, say) detaches
+    // into its own session while this run is going and is reparented to
+    // this process, the subreaper. It is not this run's, so it survives.
+    let runner = std::thread::spawn(|| run(&sh("sleep 0.6")));
+    std::thread::sleep(Duration::from_millis(150));
+    let other = std::process::Command::new("sh")
+        .args(["-c", "setsid sh -c 'sleep 305' >/dev/null 2>&1 &"])
+        .status();
+    assert!(other.is_ok_and(|s| s.success()));
+    let o = runner.join().unwrap_or_else(|_| panic!("the run panicked"));
+    assert_eq!(o.exit_code, Some(0));
+    std::thread::sleep(Duration::from_millis(50));
+    let survived = alive("sleep 305");
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "sleep 305"])
+        .status();
+    assert!(survived, "a run killed another's daemon: {:?}", o.receipt);
+}
+
+#[test]
 fn launch_failures_are_reported_not_hidden() {
     let o = run(&Spec::new(
         &["/nonexistent/emi-check-binary"],

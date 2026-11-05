@@ -1,4 +1,4 @@
-//! The receipt (`emi-done-receipt-0.4`): the two evidence parts, the
+//! The receipt (`emi-done-receipt-1.0`): the two evidence parts, the
 //! changed old tests, the action, and what none of it establishes. The
 //! change part arrives as a value ([`ChangeEvidence`]); everything else is
 //! assembled from what this crate measured.
@@ -8,19 +8,71 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::Setting;
-use crate::action::{self, Action};
 use crate::baseline::Baseline;
 use crate::candidate::Candidate;
 use crate::change::ChangeEvidence;
 use crate::config::{OnRedundant, OnUnproven};
 use crate::oldtests::Entry;
 use crate::regression::{Regression, Status};
+use emi_kernel::decide::{self, Action};
 
-pub const SCHEMA: &str = "emi-done-receipt-0.4";
+pub const SCHEMA: &str = "emi-done-receipt-1.0";
+
+/// What a decision is a function of: the two revisions, the configuration
+/// and the pins it ran under, the Python environment, the setting, and the
+/// version of EMI and of its decision rules. Two checks with the same
+/// inputs must reach the same decision; `emi replay` checks that they do.
+pub struct Inputs<'a> {
+    pub baseline: &'a Baseline,
+    pub candidate: &'a Candidate,
+    pub setting: Setting,
+    /// `None` when there is no configuration to read.
+    pub config: Option<&'a crate::Config>,
+    /// The environment digest, or why there is none.
+    pub environment: Option<&'a Result<String, String>>,
+    /// The digest of the laws the check held the candidate to.
+    pub laws: Option<String>,
+    /// What the person declared the change must keep (`preserve`).
+    pub intent: Value,
+}
+
+/// The receipt's `inputs`.
+pub fn inputs(i: &Inputs) -> Value {
+    json!({
+        "emi": env!("CARGO_PKG_VERSION"),
+        "policy": emi_kernel::decide::POLICY,
+        "baseline": i.baseline.sha,
+        "candidate": i.candidate.content_id,
+        "setting": i.setting.as_str(),
+        "config": i.config.map(|c| emi_kernel::json::digest("emi-config", &c.to_value())),
+        "pins": i.config.map(|c| c.pins.to_value()),
+        "environment": i.environment.and_then(|e| e.as_ref().ok()),
+        "laws": i.laws,
+        "intent": i.intent,
+    })
+}
+
+/// Everything of `receipt` that a replay must reproduce: all of it but
+/// where it was computed and the ids derived from the rest.
+fn identity(receipt: &Value) -> Value {
+    let mut v = receipt.clone();
+    if let Some(m) = v.as_object_mut() {
+        m.remove("meta");
+        m.remove("decision_id");
+    }
+    v
+}
+
+/// The id of a receipt's decision and the evidence it rests on.
+pub fn decision_id(receipt: &Value) -> String {
+    emi_kernel::json::digest("emi-decision", &identity(receipt))
+}
 
 /// Everything a receipt is made of.
 pub struct Parts<'a> {
     pub repo: &'a Path,
+    /// Everything the decision is a function of ([`inputs`]).
+    pub inputs: Value,
     pub baseline: &'a Baseline,
     pub candidate: &'a Candidate,
     pub setting: Setting,
@@ -29,8 +81,16 @@ pub struct Parts<'a> {
     pub regression: &'a Regression,
     pub old_tests: &'a [Entry],
     pub change: &'a ChangeEvidence,
+    pub laws: &'a emi_python::proving::laws::LawEvidence,
+    /// The behaviour comparison, when the person asked for it.
+    pub preserved: Option<&'a crate::preserve::Preserved>,
+    /// The mutants of the changed lines, when configured.
+    pub adequacy: Option<&'a crate::adequacy::Adequacy>,
+    /// Escape-hatch signals (report only).
+    pub signals: &'a [Value],
     pub on_unproven: OnUnproven,
     pub on_redundant: OnRedundant,
+    pub on_survivors: OnUnproven,
     /// Environment faults beyond those the two evidence parts carry.
     pub faults: Vec<String>,
     pub not_verified: Vec<String>,
@@ -41,7 +101,8 @@ pub struct Parts<'a> {
 /// Parts that could not be measured for an environment reason.
 fn faults(p: &Parts) -> Vec<String> {
     let mut out = p.faults.clone();
-    if p.regression.status == Status::Unknown {
+    // nondeterministic outcomes are their own row of the table
+    if p.regression.status == Status::Unknown && p.regression.nondeterministic.is_empty() {
         out.push(format!(
             "regression evidence could not be measured: {}",
             p.regression
@@ -49,6 +110,11 @@ fn faults(p: &Parts) -> Vec<String> {
                 .first()
                 .map_or("no reason given", String::as_str)
         ));
+    }
+    out.extend(p.laws.fault.clone());
+    let unknown_laws = p.laws.count("unknown");
+    if unknown_laws > 0 {
+        out.push(format!("{unknown_laws} law(s) could not be measured"));
     }
     // a break is established whatever else could not be measured, and a
     // suite the change stopped from starting cannot show the change either
@@ -91,23 +157,35 @@ fn failing_line(t: &crate::change::Failing) -> String {
     }
 }
 
-fn facts(p: &Parts) -> action::Facts {
+fn facts(p: &Parts) -> decide::Facts {
     let change = p.change.facts();
-    action::Facts {
+    decide::Facts {
         faults: faults(p),
         regression_broken: p.regression.status == Status::Broken,
         failing_tests: failing(p).len(),
         redundant_tests: change.redundant.len(),
+        unexercised_functions: change.unexercised.len(),
+        nondeterministic: p.regression.nondeterministic.len() + p.laws.count("nondeterministic"),
+        laws_broken: p.laws.count("broken"),
+        laws_unmet: p.laws.count("unmet"),
+        divergences: p.preserved.map_or(0, crate::preserve::Preserved::count),
+        survivors: p.adequacy.map_or(0, |a| a.survivors.len()),
+        unapproved: p.old_tests.iter().filter(|e| !e.approved).count(),
+    }
+}
+
+/// The configured treatment of each finding.
+fn policy(p: &Parts) -> decide::Policy {
+    decide::Policy {
         on_redundant: p.on_redundant,
-        unproven_functions: change.unproven.len(),
-        on_unproven: p.on_unproven,
-        unapproved_old_tests: p.old_tests.iter().filter(|e| !e.approved).count(),
+        on_unexercised: p.on_unproven,
+        on_survivors: p.on_survivors,
     }
 }
 
 /// The action the parts lead to.
 pub fn action_of(p: &Parts) -> Action {
-    action::decide(&facts(p))
+    decide::decide(&policy(p), &facts(p))
 }
 
 /// Most items one repair names: a proposer told about five failures has
@@ -148,6 +226,13 @@ fn redundant_line(t: &crate::change::Redundant) -> String {
 fn repair_lines(p: &Parts) -> Vec<String> {
     let r = p.regression;
     let change = p.change.facts();
+    let laws = crate::laws::repair_lines(p.laws);
+    let (broken_laws, unmet_laws): (Vec<String>, Vec<String>) = laws
+        .into_iter()
+        .partition(|l| l.contains("held at the baseline"));
+    if r.status != Status::Broken && !broken_laws.is_empty() {
+        return itemize(&broken_laws, String::clone);
+    }
     if r.status == Status::Broken {
         let mut out = itemize(&r.failed, |id| {
             format!(
@@ -163,21 +248,52 @@ fn repair_lines(p: &Parts) -> Vec<String> {
                 r.reasons.first().map_or("see the receipt", String::as_str)
             ));
         }
+        out.extend(itemize(&broken_laws, String::clone));
         return out;
     }
     let failing = failing(p);
-    if !failing.is_empty() {
-        return itemize(&failing, failing_line);
+    let diverged = p
+        .preserved
+        .map(crate::preserve::repair_lines)
+        .unwrap_or_default();
+    if !failing.is_empty() || !unmet_laws.is_empty() || !diverged.is_empty() {
+        let mut out = itemize(&failing, failing_line);
+        out.extend(itemize(&unmet_laws, String::clone));
+        out.extend(itemize(&diverged, String::clone));
+        return out;
     }
     if p.on_redundant == OnRedundant::Repair && !change.redundant.is_empty() {
         return itemize(&change.redundant, redundant_line);
     }
-    if p.on_unproven == OnUnproven::Repair {
-        return itemize(&change.unproven, |f| {
+    if p.on_unproven == OnUnproven::Repair && !change.unexercised.is_empty() {
+        return itemize(&change.unexercised, |f| {
             format!("No proving test runs {f}; add a test that fails without your change.")
         });
     }
+    if p.on_survivors == OnUnproven::Repair {
+        let lines = p
+            .adequacy
+            .map(crate::adequacy::repair_lines)
+            .unwrap_or_default();
+        return itemize(&lines, String::clone);
+    }
     Vec::new()
+}
+
+/// The change evidence with, on each changed function, the laws that
+/// execute what the change wrote in it.
+fn with_laws(mut change: Value, laws: &emi_python::proving::laws::LawEvidence) -> Value {
+    if let Some(functions) = change["functions"].as_array_mut() {
+        for f in functions {
+            let key = format!(
+                "{}::{}",
+                f["file"].as_str().unwrap_or(""),
+                f["function"].as_str().unwrap_or("")
+            );
+            f["laws"] = json!(laws.checked.get(&key).cloned().unwrap_or_default());
+        }
+    }
+    change
 }
 
 /// Assemble the receipt and return it with its action.
@@ -188,20 +304,29 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
     } else {
         Vec::new()
     };
-    let receipt = json!({
+    let mut receipt = json!({
         "schema": SCHEMA,
-        "repo": p.repo,
+        "policy": emi_kernel::decide::POLICY,
+        "input_id": emi_kernel::json::digest("emi-inputs", &p.inputs),
+        "inputs": p.inputs,
         "baseline": {"sha": p.baseline.sha, "source": p.baseline.source},
         "candidate": {"id": p.candidate.id, "content_id": p.candidate.content_id},
         "assurance": {"setting": p.setting.as_str(), "isolation": p.isolation},
         "regression": p.regression.to_value(),
         "changed_old_tests": p.old_tests.iter().map(Entry::to_value).collect::<Vec<_>>(),
-        "change": p.change.to_value(),
+        "change": with_laws(p.change.to_value(), p.laws),
+        "laws": p.laws.to_json(),
+        "preserve": p.preserved.map(crate::preserve::Preserved::to_value),
+        "adequacy": p.adequacy.map(crate::adequacy::Adequacy::to_value),
+        "signals": p.signals,
         "action": action.as_str(),
         "repair": repair,
         "not_verified": p.not_verified,
         "this_run": p.this_run,
     });
+    receipt["decision_id"] = json!(decision_id(&receipt));
+    // where it was computed: not part of what a replay reproduces
+    receipt["meta"] = json!({"repo": p.repo});
     (receipt, action)
 }
 
@@ -229,11 +354,11 @@ fn standing(l: &Limits) -> Vec<String> {
     let mut out = vec![
         "Behaviour that no test exercises: tests passing does not show the task's behaviour exists."
             .to_owned(),
-        "The baseline's tests are taken as correct, and they ran once: a flaky test could change the result."
+        "The baseline's tests are taken as correct. They ran twice under the same pins; a test whose outcome differed is quarantined, and an outcome that depends on something the pins do not hold (the clock, the network, another process) can still differ."
             .to_owned(),
         "Tests the baseline already skipped, expected to fail, could not collect or failed are not regression evidence: nothing is known about the behaviour they cover."
             .to_owned(),
-        "Guardrail heuristics (secret files, CI edits, test suppressions) were not run.".to_owned(),
+        "Escape hatches in the change (suppressions, test-runner sniffing, always-equal comparisons) are found by pattern only, and only in product lines it added.".to_owned(),
     ];
     out.push(match l.setting {
         Setting::Cooperative => "Cooperative verification: the proposer could alter the controller's inputs (the configuration, the recorded approvals, the dependencies the tests run). It catches a careless proposer, not a cheating one.".to_owned(),
@@ -281,6 +406,8 @@ mod tests {
             attributed: Vec::new(),
             complete: true,
             added_failing: Vec::new(),
+            quarantined: Vec::new(),
+            nondeterministic: Vec::new(),
         }
     }
 
@@ -329,7 +456,14 @@ mod tests {
             content_id: "b".repeat(40),
             rev: "c".repeat(40),
         };
+        let laws = emi_python::proving::laws::LawEvidence::default();
         f(&Parts {
+            laws: &laws,
+            preserved: None,
+            adequacy: None,
+            signals: &[],
+            on_survivors: OnUnproven::Report,
+            inputs: json!({"test": true}),
             repo: Path::new("/r"),
             baseline: &baseline,
             candidate: &candidate,
@@ -356,7 +490,11 @@ mod tests {
         assert_eq!(action, Action::Stop);
         for key in [
             "schema",
-            "repo",
+            "policy",
+            "input_id",
+            "inputs",
+            "decision_id",
+            "meta",
             "baseline",
             "candidate",
             "assurance",
@@ -371,6 +509,19 @@ mod tests {
         }
         assert_eq!(v["change"]["status"], "unknown");
         assert_eq!(v["repair"], json!([]));
+        assert_eq!(v["meta"]["repo"], "/r");
+    }
+
+    #[test]
+    fn the_decision_id_covers_the_evidence_and_not_where_it_ran() {
+        let (v, _) = with(&held(), &[], &unmeasured(), OnUnproven::Report, assemble);
+        assert_eq!(v["decision_id"], json!(decision_id(&v)));
+        let mut elsewhere = v.clone();
+        elsewhere["meta"]["repo"] = json!("/somewhere/else");
+        assert_eq!(decision_id(&elsewhere), decision_id(&v));
+        let mut other = v.clone();
+        other["regression"]["tests_run"] = json!(99);
+        assert_ne!(decision_id(&other), decision_id(&v));
     }
 
     #[test]
@@ -475,9 +626,9 @@ mod tests {
     }
 
     #[test]
-    fn redundant_tests_and_unproven_functions_repair_as_configured() {
-        let change = ChangeEvidence::Measured(json!({"status": "partly_proven",
-            "functions": [{"file": "src/a.py", "function": "g", "line": 20, "status": "unproven"}],
+    fn redundant_tests_and_unexercised_functions_repair_as_configured() {
+        let change = ChangeEvidence::Measured(json!({"status": "partly_exercised",
+            "functions": [{"file": "src/a.py", "function": "g", "line": 20, "status": "unexercised"}],
             "proving_tests": [], "redundant_tests": [], "unknown_tests": [], "not_measured": []}));
         let (v, action) = with(&held(), &[], &change, OnUnproven::Report, assemble);
         assert_eq!((action, v["repair"].clone()), (Action::Stop, json!([])));
@@ -489,7 +640,7 @@ mod tests {
                 .unwrap_or_default()
                 .contains("src/a.py:g (line 20)")
         );
-        let redundant = ChangeEvidence::Measured(json!({"status": "proven", "functions": [],
+        let redundant = ChangeEvidence::Measured(json!({"status": "exercised", "functions": [],
             "proving_tests": [], "redundant_tests": [{"id": "tests/t.py::test_extra"}],
             "unknown_tests": [], "not_measured": []}));
         // a test that passes before and after may guard what must stay:
@@ -509,7 +660,7 @@ mod tests {
 
     #[test]
     fn a_repair_names_every_item_of_one_kind_and_says_why() {
-        let change = ChangeEvidence::Measured(json!({"status": "proven", "functions": [],
+        let change = ChangeEvidence::Measured(json!({"status": "exercised", "functions": [],
             "proving_tests": [],
             "redundant_tests": [
                 {"id": "tests/t.py::test_a", "reason": "passes at the baseline"},

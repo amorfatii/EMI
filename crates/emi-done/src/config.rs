@@ -1,23 +1,30 @@
-//! `.emi/config.json` (`emi-config-0.1`): what the done check needs to know
-//! about a repository. A misspelt key or a value of the wrong type is an
+//! `.emi/config.json` (`emi-config-1.0`; `emi-config-0.1` is still read):
+//! what the done check needs to know about a repository. A misspelt key or a value of the wrong type is an
 //! error, never ignored: a key read as its default could switch a check off
 //! without a word.
 
 use std::path::Path;
 
-use emi_diff::snapshot;
+use emi_tree::snapshot;
 use serde_json::{Map, Value, json};
+
+use emi_kernel::pins::Pins;
 
 use crate::Error;
 
-pub const SCHEMA: &str = "emi-config-0.1";
+pub const SCHEMA: &str = "emi-config-1.0";
+/// The earlier schema, read as written (it has no pins, laws, preserve or
+/// adequacy sections and names `on_unexercised` `on_unproven`).
+pub const SCHEMA_0_1: &str = "emi-config-0.1";
+/// Where laws live when the configuration does not say.
+pub const DEFAULT_LAWS_DIR: &str = ".emi/laws";
 /// Where the configuration lives, relative to the repository root.
 pub const PATH: &str = ".emi/config.json";
 pub const DEFAULT_REPAIR_ROUNDS: u64 = 3;
 /// Rounds beyond this are a typing mistake, not a policy.
 const MAX_REPAIR_ROUNDS: u64 = 1000;
 
-const KEYS: &[&str] = &[
+const KEYS_0_1: &[&str] = &[
     "schema",
     "language",
     "source",
@@ -29,25 +36,27 @@ const KEYS: &[&str] = &[
     "on_unproven",
     "on_redundant",
 ];
+const KEYS: &[&str] = &[
+    "schema",
+    "language",
+    "source",
+    "default_branch",
+    "tests",
+    "link",
+    "python_path",
+    "repair_rounds",
+    "on_unexercised",
+    "on_redundant",
+    "pins",
+    "laws",
+    "preserve",
+    "adequacy",
+];
 const REQUIRED: &[&str] = &["schema", "language", "source", "default_branch", "tests"];
 
-/// What unproven functions do to the action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OnUnproven {
-    /// They are stated; the proposer may stop.
-    Report,
-    /// They send the proposer back once.
-    Repair,
-}
-
-impl OnUnproven {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OnUnproven::Report => "report",
-            OnUnproven::Repair => "repair",
-        }
-    }
-}
+/// What unexercised functions do to the action: stated (`report`, the
+/// default), sent back (`repair`), or left to a person (`ask_person`).
+pub use emi_kernel::decide::OnFinding as OnUnproven;
 
 /// What redundant tests do to the action: stated (the default; a test
 /// that passes before and after may still guard behaviour the change must
@@ -78,6 +87,64 @@ pub struct Config {
     pub repair_rounds: u64,
     pub on_unproven: OnUnproven,
     pub on_redundant: OnRedundant,
+    pub pins: Pins,
+    pub laws: Laws,
+    pub preserve: Preserve,
+    pub adequacy: Adequacy,
+}
+
+/// Where the person's laws live and whether the harness refuses edits there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Laws {
+    pub dir: String,
+    /// Refuse the agent's edits under `dir` as they are made, besides
+    /// restoring the laws for every check.
+    pub lock: bool,
+}
+
+impl Default for Laws {
+    fn default() -> Self {
+        Laws {
+            dir: DEFAULT_LAWS_DIR.to_owned(),
+            lock: false,
+        }
+    }
+}
+
+/// How behaviour preservation is checked when a person asks for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preserve {
+    /// Inputs generated from a fully annotated signature, besides the ones
+    /// the baseline's tests pass.
+    pub generated_examples: u32,
+    /// Bound on one call, in seconds.
+    pub call_timeout_s: u32,
+}
+
+impl Default for Preserve {
+    fn default() -> Self {
+        Preserve {
+            generated_examples: 200,
+            call_timeout_s: 2,
+        }
+    }
+}
+
+/// Mutants of the changed lines, run against the laws and proving tests.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Adequacy {
+    /// 0 turns the measurement off.
+    pub max_mutants: u32,
+    pub on_survivors: OnUnproven,
+}
+
+impl Default for Adequacy {
+    fn default() -> Self {
+        Adequacy {
+            max_mutants: 0,
+            on_survivors: OnUnproven::Report,
+        }
+    }
 }
 
 fn bad(at: &str, what: &str) -> Error {
@@ -128,10 +195,31 @@ fn tests(v: &Value) -> Result<Tests, Error> {
         obj.get(k)
             .ok_or_else(|| bad("tests", &format!("needs {k}")))
     };
+    let command = string_list(field("command")?, "tests.command", true)?;
+    if let Some(flag) = command.iter().find(|a| parallel(a)) {
+        return Err(bad(
+            "tests.command",
+            &format!(
+                "runs tests in parallel ({flag}); their order and what they share cannot be \
+                 pinned, so outcomes could differ between two runs of the same code: remove it"
+            ),
+        ));
+    }
     Ok(Tests {
-        command: string_list(field("command")?, "tests.command", true)?,
+        command,
         globs: string_list(field("globs")?, "tests.globs", true)?,
     })
+}
+
+/// A pytest-xdist option that spreads the tests over several processes.
+fn parallel(arg: &str) -> bool {
+    arg == "-n"
+        || (arg.starts_with("-n")
+            && arg[2..].chars().all(|c| c.is_ascii_alphanumeric())
+            && arg.len() > 2
+            && !arg.starts_with("-no"))
+        || arg.starts_with("--numprocesses")
+        || arg.starts_with("--dist")
 }
 
 fn rounds(v: Option<&Value>) -> Result<u64, Error> {
@@ -149,15 +237,103 @@ fn rounds(v: Option<&Value>) -> Result<u64, Error> {
     }
 }
 
-/// `report` (also when absent) or `repair`, for `on_unproven` and
-/// `on_redundant`.
+/// `report` (also when absent), `repair` or `ask_person`, for a finding
+/// the proposer could address.
 fn report_or_repair(v: Option<&Value>, key: &str) -> Result<OnUnproven, Error> {
-    match v.map(|x| x.as_str()) {
+    match v.map(|x| x.as_str().and_then(OnUnproven::from_name)) {
         None => Ok(OnUnproven::Report),
-        Some(Some("report")) => Ok(OnUnproven::Report),
-        Some(Some("repair")) => Ok(OnUnproven::Repair),
-        Some(_) => Err(bad(key, "must be report or repair")),
+        Some(Some(treatment)) => Ok(treatment),
+        Some(None) => Err(bad(key, "must be report, repair or ask_person")),
     }
+}
+
+fn object<'a>(v: &'a Value, at: &str, keys: &[&str]) -> Result<&'a Map<String, Value>, Error> {
+    let obj = v.as_object().ok_or_else(|| bad(at, "must be an object"))?;
+    only_keys(obj, keys, &format!("{at}."))?;
+    Ok(obj)
+}
+
+fn boolean(v: Option<&Value>, at: &str, default: bool) -> Result<bool, Error> {
+    v.map_or(Ok(default), |x| {
+        x.as_bool().ok_or_else(|| bad(at, "must be true or false"))
+    })
+}
+
+fn bounded(v: Option<&Value>, at: &str, default: u32, max: u32) -> Result<u32, Error> {
+    v.map_or(Ok(default), |x| {
+        x.as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n <= max)
+            .ok_or_else(|| bad(at, &format!("must be an integer from 0 to {max}")))
+    })
+}
+
+fn text<'a>(v: Option<&'a Value>, at: &str, default: &'a str) -> Result<&'a str, Error> {
+    v.map_or(Ok(default), |x| nonempty_string(x, at))
+}
+
+/// `pins`: what every run is held to. Each key may be left out.
+fn pins(v: &Value) -> Result<Pins, Error> {
+    let d = Pins::default();
+    let o = object(
+        v,
+        "pins",
+        &["hash_seed", "tz", "locale", "seed_random", "hypothesis"],
+    )?;
+    let hypothesis = match o.get("hypothesis").map(Value::as_str) {
+        None | Some(Some("derandomize")) => true,
+        Some(Some("off")) => false,
+        Some(_) => return Err(bad("pins.hypothesis", "must be derandomize or off")),
+    };
+    Ok(Pins {
+        hash_seed: bounded(o.get("hash_seed"), "pins.hash_seed", d.hash_seed, u32::MAX)?,
+        tz: text(o.get("tz"), "pins.tz", &d.tz)?.to_owned(),
+        locale: text(o.get("locale"), "pins.locale", &d.locale)?.to_owned(),
+        seed_random: boolean(o.get("seed_random"), "pins.seed_random", d.seed_random)?,
+        derandomize_hypothesis: hypothesis,
+    })
+}
+
+fn pins_value(p: &Pins) -> Value {
+    json!({"hash_seed": p.hash_seed, "tz": p.tz, "locale": p.locale, "seed_random": p.seed_random,
+           "hypothesis": if p.derandomize_hypothesis { "derandomize" } else { "off" }})
+}
+
+fn laws(v: &Value) -> Result<Laws, Error> {
+    let o = object(v, "laws", &["dir", "lock"])?;
+    Ok(Laws {
+        dir: o
+            .get("dir")
+            .map_or(Ok(DEFAULT_LAWS_DIR.to_owned()), |d| relative(d, "laws.dir"))?,
+        lock: boolean(o.get("lock"), "laws.lock", false)?,
+    })
+}
+
+fn preserve(v: &Value) -> Result<Preserve, Error> {
+    let d = Preserve::default();
+    let o = object(v, "preserve", &["generated_examples", "call_timeout_s"])?;
+    Ok(Preserve {
+        generated_examples: bounded(
+            o.get("generated_examples"),
+            "preserve.generated_examples",
+            d.generated_examples,
+            10_000,
+        )?,
+        call_timeout_s: bounded(
+            o.get("call_timeout_s"),
+            "preserve.call_timeout_s",
+            d.call_timeout_s,
+            600,
+        )?,
+    })
+}
+
+fn adequacy(v: &Value) -> Result<Adequacy, Error> {
+    let o = object(v, "adequacy", &["max_mutants", "on_survivors"])?;
+    Ok(Adequacy {
+        max_mutants: bounded(o.get("max_mutants"), "adequacy.max_mutants", 0, 500)?,
+        on_survivors: report_or_repair(o.get("on_survivors"), "adequacy.on_survivors")?,
+    })
 }
 
 fn language(v: &Value) -> Result<String, Error> {
@@ -174,7 +350,7 @@ impl Config {
     /// Parse and validate configuration text.
     pub fn parse(text: &str) -> Result<Config, Error> {
         let value =
-            emi_ledger::strict::loads(text).map_err(|e| Error::Config(format!("{PATH}: {e}")))?;
+            emi_kernel::strict::loads(text).map_err(|e| Error::Config(format!("{PATH}: {e}")))?;
         Config::from_value(&value)
     }
 
@@ -182,13 +358,16 @@ impl Config {
         let obj = v
             .as_object()
             .ok_or_else(|| Error::Config(format!("{PATH}: must be a JSON object")))?;
-        only_keys(obj, KEYS, "")?;
+        let old = match obj.get("schema").and_then(Value::as_str) {
+            Some(SCHEMA) => false,
+            Some(SCHEMA_0_1) => true,
+            _ => return Err(bad("schema", &format!("must be {SCHEMA}"))),
+        };
+        only_keys(obj, if old { KEYS_0_1 } else { KEYS }, "")?;
         if let Some(k) = REQUIRED.iter().find(|k| !obj.contains_key(**k)) {
             return Err(Error::Config(format!("{PATH}: missing key {k}")));
         }
-        if obj["schema"].as_str() != Some(SCHEMA) {
-            return Err(bad("schema", &format!("must be {SCHEMA}")));
-        }
+        let unexercised = if old { "on_unproven" } else { "on_unexercised" };
         Ok(Config {
             language: language(&obj["language"])?,
             source: relative(&obj["source"], "source")?,
@@ -201,8 +380,16 @@ impl Config {
                 .get("python_path")
                 .map_or(Ok(Vec::new()), |v| paths(v, "python_path"))?,
             repair_rounds: rounds(obj.get("repair_rounds"))?,
-            on_unproven: report_or_repair(obj.get("on_unproven"), "on_unproven")?,
+            on_unproven: report_or_repair(obj.get(unexercised), unexercised)?,
             on_redundant: report_or_repair(obj.get("on_redundant"), "on_redundant")?,
+            pins: obj.get("pins").map_or(Ok(Pins::default()), pins)?,
+            laws: obj.get("laws").map_or(Ok(Laws::default()), laws)?,
+            preserve: obj
+                .get("preserve")
+                .map_or(Ok(Preserve::default()), preserve)?,
+            adequacy: obj
+                .get("adequacy")
+                .map_or(Ok(Adequacy::default()), adequacy)?,
         })
     }
 
@@ -216,21 +403,35 @@ impl Config {
             "tests": {"command": self.tests.command, "globs": self.tests.globs},
             "link": self.link,
             "repair_rounds": self.repair_rounds,
-            "on_unproven": self.on_unproven.as_str(),
+            "on_unexercised": self.on_unproven.as_str(),
         });
         // written only when set, so a configuration without it reads back
         // as it was written
         if !self.python_path.is_empty() {
             v["python_path"] = json!(self.python_path);
         }
-        if self.on_redundant == OnRedundant::Repair {
+        if self.on_redundant != OnRedundant::Report {
             v["on_redundant"] = json!(self.on_redundant.as_str());
+        }
+        if self.pins != Pins::default() {
+            v["pins"] = pins_value(&self.pins);
+        }
+        if self.laws != Laws::default() {
+            v["laws"] = json!({"dir": self.laws.dir, "lock": self.laws.lock});
+        }
+        if self.preserve != Preserve::default() {
+            v["preserve"] = json!({"generated_examples": self.preserve.generated_examples,
+                                   "call_timeout_s": self.preserve.call_timeout_s});
+        }
+        if self.adequacy != Adequacy::default() {
+            v["adequacy"] = json!({"max_mutants": self.adequacy.max_mutants,
+                                   "on_survivors": self.adequacy.on_survivors.as_str()});
         }
         v
     }
 
     pub fn to_text(&self) -> String {
-        emi_ledger::pyfmt::dumps_pretty(&self.to_value()) + "\n"
+        emi_kernel::json::dumps_pretty(&self.to_value()) + "\n"
     }
 }
 
@@ -426,13 +627,69 @@ mod tests {
             "must be an integer",
         ),
         (
-            "unproven",
+            "unexercised",
             "/on_unproven",
             "\"ignore\"",
-            "must be report or repair",
+            "must be report, repair or ask_person",
         ),
         ("missing key", "/source", "-", "missing key source"),
+        (
+            "parallel runs",
+            "/tests/command",
+            "[\"pytest\", \"-n\", \"4\"]",
+            "runs tests in parallel (-n)",
+        ),
+        (
+            "parallel runs, joined",
+            "/tests/command",
+            "[\"pytest\", \"-nauto\"]",
+            "runs tests in parallel (-nauto)",
+        ),
+        (
+            "a newer section in an older file",
+            "/pins",
+            "{}",
+            "unknown key pins",
+        ),
     ];
+
+    const GOOD_1_0: &str = r#"{
+      "schema": "emi-config-1.0", "language": "python", "source": "src",
+      "default_branch": "main",
+      "tests": {"command": ["python", "-m", "pytest", "-q", "--no-header"], "globs": ["tests/*"]},
+      "on_unexercised": "ask_person",
+      "pins": {"hash_seed": 7, "hypothesis": "off"},
+      "laws": {"dir": "spec/laws", "lock": true},
+      "preserve": {"generated_examples": 50},
+      "adequacy": {"max_mutants": 20, "on_survivors": "repair"}
+    }"#;
+
+    #[test]
+    fn the_current_schema_reads_its_sections_and_round_trips() {
+        let c = Config::parse(GOOD_1_0).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(c.on_unproven, OnUnproven::AskPerson);
+        assert_eq!(
+            (c.pins.hash_seed, c.pins.derandomize_hypothesis),
+            (7, false)
+        );
+        assert_eq!(c.pins.tz, "UTC", "a key left out takes its default");
+        assert_eq!((c.laws.dir.as_str(), c.laws.lock), ("spec/laws", true));
+        assert_eq!(c.preserve.generated_examples, 50);
+        assert_eq!(c.adequacy.on_survivors, OnUnproven::Repair);
+        assert_eq!(Config::from_value(&c.to_value()).ok(), Some(c));
+        for (pointer, to, want) in [
+            ("/pins", r#"{"seed": 1}"#, "unknown key pins.seed"),
+            ("/pins", r#"{"hypothesis": "on"}"#, "derandomize or off"),
+            ("/laws", r#"{"dir": "/abs"}"#, "laws.dir must stay inside"),
+            ("/adequacy", r#"{"max_mutants": 9999}"#, "from 0 to 500"),
+            ("/on_unproven", r#""report""#, "unknown key on_unproven"),
+        ] {
+            let mut v: Value = serde_json::from_str(GOOD_1_0).unwrap_or_default();
+            patch(&mut v, pointer, to);
+            let got = message(Config::from_value(&v));
+            assert!(got.contains(want), "{pointer} = {to}: {got}");
+        }
+    }
 
     #[test]
     fn a_table_of_invalid_files_is_refused_with_the_reason() {

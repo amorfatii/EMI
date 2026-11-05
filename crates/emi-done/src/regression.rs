@@ -95,6 +95,14 @@ pub struct Regression {
     /// evidence (nothing old broke); the action table reads them as
     /// failing added tests.
     pub added_failing: Vec<String>,
+    /// Tests whose outcome differed between the baseline's two pinned
+    /// runs: they are not regression evidence either way.
+    pub quarantined: Vec<String>,
+    /// Old tests that failed on the candidate and passed when the same run
+    /// was repeated under the same pins, with nothing restored: their
+    /// outcome is not decided by the code, so they are neither held nor
+    /// broken.
+    pub nondeterministic: Vec<String>,
 }
 
 impl Regression {
@@ -108,12 +116,15 @@ impl Regression {
             complete: false,
             attributed: Vec::new(),
             added_failing: Vec::new(),
+            quarantined: Vec::new(),
+            nondeterministic: Vec::new(),
         }
     }
 
     pub fn to_value(&self) -> Value {
         json!({"status": self.status.as_str(), "tests_run": self.tests_run,
-               "failed": self.failed, "missing": self.missing, "reasons": self.reasons})
+               "failed": self.failed, "missing": self.missing, "reasons": self.reasons,
+               "quarantined": self.quarantined, "nondeterministic": self.nondeterministic})
     }
 
     /// Whether the baseline version of the test file `path` passes on the
@@ -285,6 +296,8 @@ pub fn from_decision(
         complete,
         attributed,
         added_failing: Vec::new(),
+        quarantined: Vec::new(),
+        nondeterministic: Vec::new(),
     };
     verdict(base, decision, ok, scope)
 }
@@ -412,6 +425,8 @@ pub fn from_outcomes(
         } else {
             Vec::new()
         },
+        quarantined: Vec::new(),
+        nondeterministic: Vec::new(),
     };
     let mut r = verdict(draft, decision, all_verified(decision), scope);
     let already_failing = cand.failed.intersection(&base.failed).count();
@@ -447,6 +462,22 @@ pub fn cleared(
     r
 }
 
+/// `r` with the failures in `ids` taken out as nondeterministic: they
+/// failed, and passed when the same run was repeated under the same pins.
+/// A failure left after that is still a break; without one, nothing can be
+/// said to hold or to be broken.
+pub fn not_reproduced(
+    mut r: Regression,
+    ids: &BTreeSet<String>,
+    decision: &Value,
+    scope: &Scope,
+) -> Regression {
+    r.failed.retain(|id| !ids.contains(id));
+    r.nondeterministic = ids.iter().cloned().collect();
+    r.status = Status::Held;
+    verdict(r, decision, all_verified(decision), scope)
+}
+
 /// Settle the status from what was attributed.
 fn verdict(mut r: Regression, decision: &Value, ok: bool, scope: &Scope) -> Regression {
     let inventory_state = decision["gates"]["verification"]["inventory"]["state"].as_str();
@@ -472,6 +503,14 @@ fn verdict(mut r: Regression, decision: &Value, ok: bool, scope: &Scope) -> Regr
         r.reasons = vec![why.to_owned()];
         r
     };
+    if let Some(first) = r.nondeterministic.first().cloned() {
+        let why = format!(
+            "{} old test(s) failed and then passed when the same run was repeated under the \
+             same pins, so their outcome is not decided by the code (first: {first})",
+            r.nondeterministic.len()
+        );
+        return unknown(r, &why);
+    }
     if !r.complete {
         return unknown(
             r,
@@ -626,6 +665,36 @@ mod tests {
         assert_eq!(
             (held.status, held.failed.len(), held.reasons.clone()),
             (Status::Held, 0, vec!["note".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_failure_that_does_not_reproduce_is_neither_held_nor_broken() {
+        let base = outcomes(5, &[], &[]);
+        let cand = outcomes(3, &["tests/a.py::test_x", "tests/b.py::test_y"], &[]);
+        let d = decision("rejected", "failed");
+        let broken = compare(&d, 1, &base, &cand, &Scope::default());
+        // one failure reproduced: the break stands, the other is named
+        let one: BTreeSet<String> = ["tests/a.py::test_x".to_owned()].into();
+        let still = not_reproduced(broken.clone(), &one, &d, &Scope::default());
+        assert_eq!(still.status, Status::Broken);
+        assert_eq!(still.failed, ["tests/b.py::test_y"]);
+        assert_eq!(still.nondeterministic, ["tests/a.py::test_x"]);
+        // none reproduced: nothing can be said, and the reason says why
+        let both: BTreeSet<String> = cand.failed.clone();
+        let unknown = not_reproduced(broken, &both, &d, &Scope::default());
+        assert_eq!(unknown.status, Status::Unknown);
+        assert!(unknown.failed.is_empty());
+        assert!(
+            unknown.reasons[0].contains("not decided by the code"),
+            "{:?}",
+            unknown.reasons
+        );
+        assert_eq!(
+            unknown.to_value()["nondeterministic"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
         );
     }
 

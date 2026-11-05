@@ -58,7 +58,7 @@ pub fn repo_dir(state_root: &Path, repo: &Path) -> PathBuf {
             }
         })
         .collect();
-    let id = emi_ir::pytext::sha256_hex(repo.to_string_lossy().as_bytes());
+    let id = emi_kernel::hash::sha256_hex(repo.to_string_lossy().as_bytes());
     state_root
         .join("repos")
         .join(format!("{name}-{}", &id[..16]))
@@ -82,7 +82,7 @@ impl Approval {
     fn to_value(&self) -> Value {
         json!({"schema": APPROVAL_SCHEMA, "item": self.item,
                "baseline": self.baseline, "content": self.content,
-               "at": emi_diff::trajectory::utc_now_iso()})
+               "at": emi_exec::clock::utc_now_iso()})
     }
 
     fn from_value(v: &Value) -> Option<Approval> {

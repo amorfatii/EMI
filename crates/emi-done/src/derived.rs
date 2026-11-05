@@ -4,13 +4,14 @@
 //! test-runner configuration restored to their baseline versions (except
 //! files a person approved changing), run sandboxed without network.
 //! Everything else (restoring, comparing the inventory of tests, the
-//! sandbox) is `emi-controller`'s.
+//! sandbox) is the engine's ([`crate::engine`]).
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use emi_controller::{Candidate, Store, contract, runner_config, verify};
-use emi_ledger::pyfmt::digest;
+use crate::engine::{Candidate, Store, contract, runner_config, verify};
+use emi_kernel::json::digest;
+use emi_kernel::pins::Pins;
 use serde_json::{Value, json};
 
 use crate::Error;
@@ -93,7 +94,7 @@ pub fn own_names(view: &Path, baseline: &str, config: &Config) -> Result<Vec<Str
             .tests
             .globs
             .iter()
-            .any(|g| emi_scan::walk::fnmatch(p, g))
+            .any(|g| emi_kernel::glob::fnmatch(p, g))
     };
     let mut names: BTreeSet<String> = BTreeSet::new();
     for path in raw.split(|b| *b == 0).filter(|p| !p.is_empty()) {
@@ -115,10 +116,25 @@ pub fn own_names(view: &Path, baseline: &str, config: &Config) -> Result<Vec<Str
 const TEST_TIMEOUT_S: u64 = 1800;
 const INVENTORY_TIMEOUT_S: u64 = 600;
 
+/// The Python the configured test command runs, when it is pytest.
+pub fn interpreter(config: &Config) -> Option<String> {
+    emi_python::proving::pytest::Command::parse(&config.tests.command)
+        .ok()
+        .map(|c| c.interpreter().to_owned())
+}
+
 /// Whether the configured test command runs pytest, whose output and exit
 /// statuses the receipt knows how to read.
 pub fn is_pytest(command: &[String]) -> bool {
-    emi_proving::pytest::Command::parse(command).is_ok()
+    emi_python::proving::pytest::Command::parse(command).is_ok()
+}
+
+/// The globs of the files restored from the baseline for every run: the
+/// tests, and the laws (should the test command collect them).
+pub fn trusted_globs(config: &Config) -> Vec<String> {
+    let mut globs = config.tests.globs.clone();
+    globs.push(format!("{}/*", config.laws.dir));
+    globs
 }
 
 /// A glob that matches exactly `path`: the controller's trusted set is a
@@ -151,7 +167,7 @@ pub fn trusted(
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .filter(|p| !approved.contains(p))
         .filter(|p| {
-            runner_config::matches(p) || globs.iter().any(|g| emi_scan::walk::fnmatch(p, g))
+            runner_config::matches(p) || globs.iter().any(|g| emi_kernel::glob::fnmatch(p, g))
         })
         .map(|p| literal(&p))
         .collect();
@@ -161,22 +177,21 @@ pub fn trusted(
 
 /// The task spec for `config` at `baseline`, trusting the files `trusted`
 /// lists. There are no budgets: repair rounds are counted by the hook, and
-/// a repeated check must not run out. The guardrail heuristics are off;
-/// they are review hints, and what they look for in tests is covered by
-/// restoring the originals. Test-runner configuration a candidate adds
+/// a repeated check must not run out. What a weakened test would do is
+/// covered by restoring the originals. Test-runner configuration a candidate adds
 /// cannot be restored, so it is a review item, which the receipt turns
 /// into a question for a person.
 pub fn spec(
     repo: &Path,
     config: &Config,
     baseline: &str,
-    trusted: &[String],
-    own: &[String],
+    (trusted, own): (&[String], &[String]),
+    environment: Option<&str>,
 ) -> Value {
     let mut command = config.tests.command.clone();
     let mut verification = json!({"trusted": trusted, "runner_config": "review"});
     let mut evidence = Value::Null;
-    if let Ok(pytest) = emi_proving::pytest::Command::parse(&config.tests.command) {
+    if let Ok(pytest) = emi_python::proving::pytest::Command::parse(&config.tests.command) {
         // one outcome line per test, so this run can be compared test by
         // test with the baseline's: a test the baseline already skipped is
         // not a regression, one that stopped running is
@@ -191,11 +206,24 @@ pub fn spec(
         // (an early exit) or with skips is not regression evidence.
         evidence = json!({"format": "pytest"});
     }
-    let mut execution = json!({"isolation": "best", "network": false, "link": config.link});
-    if !config.python_path.is_empty() {
-        // relative: each run resolves it in its own copy of the code
-        execution["env"] = json!({"PYTHONPATH": config.python_path.join(":")});
+    // the pins, and the import path: relative, so each run resolves it in
+    // its own copy of the code (the project's roots, then the pins plugin)
+    let mut env: serde_json::Map<String, Value> = config
+        .pins
+        .env()
+        .into_iter()
+        .map(|(k, v)| (k, json!(v)))
+        .collect();
+    env.insert(
+        "PYTHONPATH".to_owned(),
+        json!(Pins::python_path(&config.python_path)),
+    );
+    // which installed code the tests run against: another environment is
+    // another task, so the baseline's recorded runs are not reused for it
+    if let Some(id) = environment {
+        env.insert("EMI_ENVIRONMENT".to_owned(), json!(id));
     }
+    let execution = json!({"isolation": "best", "network": false, "link": config.link, "env": env});
     let mut spec = json!({
         "task_id": "",
         "repo": repo,
@@ -203,14 +231,12 @@ pub fn spec(
         "objective": "The baseline's tests still pass on the candidate.",
         "requirements": [{"id": "R1", "acceptance": "every test the baseline had still passes, with the trusted tests restored", "checks": [CHECK]}],
         "checks": {CHECK: {"command": command, "success": {"exit_code": 0}, "timeout_s": TEST_TIMEOUT_S, "evidence": evidence}},
-        "envelope": {"permitted_paths": ["*"]},
-        "guardrails": false,
         "verification": verification,
         "execution": execution,
     });
     // the tests prove something about the candidate only if they import it
     if let (Ok(pytest), false) = (
-        emi_proving::pytest::Command::parse(&config.tests.command),
+        emi_python::proving::pytest::Command::parse(&config.tests.command),
         own.is_empty(),
     ) {
         let mut argv = vec![
@@ -288,34 +314,52 @@ fn foreign_imports(store: &Store, decision: &Value) -> Result<Option<String>, St
     })
 }
 
-/// The recorded run of the test check on the baseline itself, under the
+/// How many times the baseline's tests run under the same pins: a test
+/// whose outcome differs between them is not regression evidence.
+pub const BASELINE_RUNS: usize = 2;
+
+/// The recorded runs of the test check on the baseline itself, under the
 /// task's current contract: what the candidate's run is compared with. The
-/// baseline's outcomes do not change, so one run serves every later check
-/// of the same task; a contract revision (new dependencies) runs it again.
-pub fn baseline_check(store: &Store, baseline: &str) -> Result<Option<Value>, String> {
+/// baseline's outcomes do not change, so the runs serve every later check
+/// of the same task; a contract revision (new dependencies) runs them again.
+pub fn baseline_checks(store: &Store, baseline: &str) -> Result<Vec<Value>, String> {
     let contract = store.contract()?;
     let id = contract["contract_id"].as_str().unwrap_or("");
-    if let Some(known) = store.latest_decision(baseline, id)? {
-        // a run recorded by an older reader names its tests differently
-        let kept = recorded_check(store, &known, CHECK)?
-            .filter(|c| c["evidence"]["reader"] == emi_controller::evidence::READER);
-        if kept.is_some() {
-            return Ok(kept);
+    // a run recorded by an older reader names its tests differently
+    let kept = |store: &Store| -> Result<Vec<Value>, String> {
+        Ok(store
+            .rows("check_run")?
+            .into_iter()
+            .filter(|r| {
+                r["check_id"] == CHECK
+                    && r["candidate_id"] == baseline
+                    && r["contract_id"] == id
+                    && r["evidence"]["reader"] == crate::engine::evidence::READER
+            })
+            .collect())
+    };
+    let mut runs = kept(store)?;
+    while runs.len() < BASELINE_RUNS {
+        let decision = verify(store, &Candidate::Ref(baseline.to_owned()))?;
+        if recorded_check(store, &decision, CHECK)?.is_none() {
+            // the check did not run at all: running it again says no more
+            return Ok(runs);
         }
+        runs = kept(store)?;
     }
-    let decision = verify(store, &Candidate::Ref(baseline.to_owned()))?;
-    recorded_check(store, &decision, CHECK)
+    runs.truncate(BASELINE_RUNS);
+    Ok(runs)
 }
 
-/// [`baseline_check`], one run at a time for a repository: a check that
+/// [`baseline_checks`], one run at a time for a repository: a check that
 /// arrives while another process is running the baseline (the hook warms
 /// it when the person sends a message) waits for that run and reads its
 /// result instead of running the suite a second time beside it.
-pub fn baseline_check_once(
+pub fn baseline_checks_once(
     store: &Store,
     baseline: &str,
     authority: &Path,
-) -> Result<Option<Value>, String> {
+) -> Result<Vec<Value>, String> {
     let path = authority.join("baseline.lock");
     let lock = std::fs::File::options()
         .create(true)
@@ -324,7 +368,7 @@ pub fn baseline_check_once(
         .map_err(|e| format!("lock {}: {e}", path.display()))?;
     lock.lock()
         .map_err(|e| format!("lock {}: {e}", path.display()))?;
-    baseline_check(store, baseline)
+    baseline_checks(store, baseline)
 }
 
 fn recorded_check(store: &Store, decision: &Value, id: &str) -> Result<Option<Value>, String> {
@@ -385,6 +429,10 @@ mod tests {
             repair_rounds: 3,
             on_unproven: OnUnproven::Report,
             on_redundant: OnUnproven::Report,
+            pins: Default::default(),
+            laws: Default::default(),
+            preserve: Default::default(),
+            adequacy: Default::default(),
         }
     }
 
@@ -402,11 +450,9 @@ mod tests {
     fn the_spec_trusts_listed_files_and_validates_as_a_contract() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let trusted = vec!["tests/test_a.py".to_owned()];
-        let spec = spec(dir.path(), &config(), SHA, &trusted, &[]);
+        let spec = spec(dir.path(), &config(), SHA, (&trusted, &[]), None);
         assert_eq!(names(&spec["verification"]["trusted"]), ["tests/test_a.py"]);
         assert_eq!(spec["verification"]["runner_config"], "review");
-        assert_eq!(spec["envelope"]["permitted_paths"], json!(["*"]));
-        assert!(spec["envelope"].get("protected_paths").is_none());
         let inventory = names(&spec["verification"]["inventory"]["command"]);
         assert_eq!((inventory[0], inventory[1]), (".venv/bin/python", "-c"));
         assert!(
@@ -415,7 +461,16 @@ mod tests {
         );
         assert_eq!(
             inventory[3..],
-            ["--collect-only", "-q", "-p", "no:cacheprovider"]
+            [
+                "--collect-only",
+                "-q",
+                "-p",
+                "emi_pins",
+                "-p",
+                "no:randomly",
+                "-p",
+                "no:cacheprovider"
+            ]
         );
         let command = names(&spec["checks"]["tests"]["command"]);
         assert_eq!((command[0], command[1]), (".venv/bin/python", "-c"));
@@ -425,7 +480,17 @@ mod tests {
         );
         assert_eq!(
             command[3..],
-            ["-q", "--tb=no", "--continue-on-collection-errors"]
+            [
+                "-q",
+                "--tb=no",
+                "--continue-on-collection-errors",
+                "-p",
+                "emi_pins",
+                "-p",
+                "no:randomly",
+                "-p",
+                "no:cacheprovider"
+            ]
         );
         assert!(
             spec.get("budgets").is_none(),
@@ -443,8 +508,9 @@ mod tests {
         let mut c = config();
         c.python_path = vec!["src".into()];
         let own = vec!["app".to_owned()];
-        let spec = spec(dir.path(), &c, SHA, &[], &own);
-        assert_eq!(spec["execution"]["env"], json!({"PYTHONPATH": "src"}));
+        let spec = spec(dir.path(), &c, SHA, (&[], &own), None);
+        assert_eq!(spec["execution"]["env"]["PYTHONPATH"], "src:.emi-pins");
+        assert_eq!(spec["execution"]["env"]["PYTHONHASHSEED"], "0");
         let argv = names(&spec["checks"]["imports"]["command"]);
         assert_eq!(
             (argv[0], argv[1], argv[3]),
@@ -454,9 +520,9 @@ mod tests {
         let mut named = spec.clone();
         named["task_id"] = json!(task_id(&spec));
         assert!(contract::freeze(&named, &dir.path().to_string_lossy(), SHA).is_ok());
-        // without a src layout or known names, the contract is as before
-        let plain = super::spec(dir.path(), &config(), SHA, &[], &[]);
-        assert!(plain["execution"].get("env").is_none());
+        // without a src layout or known names: the pins alone, no import check
+        let plain = super::spec(dir.path(), &config(), SHA, (&[], &[]), None);
+        assert_eq!(plain["execution"]["env"]["PYTHONPATH"], ".emi-pins");
         assert!(plain["checks"].get("imports").is_none());
     }
 
@@ -491,7 +557,7 @@ mod tests {
         let mut c = config();
         c.tests.command = vec!["python3".into(), "-m".into(), "unittest".into()];
         assert!(
-            spec(dir.path(), &c, SHA, &[], &[])["verification"]
+            spec(dir.path(), &c, SHA, (&[], &[]), None)["verification"]
                 .get("inventory")
                 .is_none()
         );
@@ -502,7 +568,7 @@ mod tests {
     fn the_same_inputs_name_the_same_task_and_any_change_names_another() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let id = |c: &Config, sha: &str, trusted: &[String]| {
-            task_id(&spec(dir.path(), c, sha, trusted, &[]))
+            task_id(&spec(dir.path(), c, sha, (trusted, &[]), None))
         };
         let files = vec!["tests/a.py".to_owned()];
         let base = id(&config(), SHA, &files);
@@ -552,7 +618,7 @@ mod tests {
             ]
         );
         for (path, glob) in [("tests/test_[b].py", &all[2]), ("tests/test_b.py", &all[2])] {
-            let hit = emi_scan::walk::fnmatch(path, glob);
+            let hit = emi_kernel::glob::fnmatch(path, glob);
             assert_eq!(hit, path == "tests/test_[b].py", "{path} against {glob}");
         }
         let approved: BTreeSet<String> = ["tests/test_a.py".to_owned()].into();

@@ -56,9 +56,9 @@ fn regression_line(r: &Value) -> String {
 
 fn change_line(c: &Value) -> String {
     let functions = c["functions"].as_array().map_or(0, Vec::len);
-    let proven = c["functions"]
-        .as_array()
-        .map_or(0, |f| f.iter().filter(|x| x["status"] == "proven").count());
+    let exercised = c["functions"].as_array().map_or(0, |f| {
+        f.iter().filter(|x| x["status"] == "exercised").count()
+    });
     let edited = c["proving_tests"]
         .as_array()
         .map_or(0, |t| t.iter().filter(|x| x["edited"] == true).count());
@@ -69,12 +69,12 @@ fn change_line(c: &Value) -> String {
         n => format!("; {n} of the proving tests are old tests the change edited"),
     };
     match c["status"].as_str() {
-        Some("proven") => format!("proven ({functions} changed functions{by})."),
-        Some("partly_proven") => {
-            format!("partly proven ({proven} of {functions} changed functions{by}).")
+        Some("exercised") => format!("exercised ({functions} changed functions{by})."),
+        Some("partly_exercised") => {
+            format!("partly exercised ({exercised} of {functions} changed functions{by}).")
         }
-        Some("unproven") => {
-            format!("unproven ({functions} changed functions, none run by a proving test).")
+        Some("unexercised") => {
+            format!("unexercised ({functions} changed functions, none run by a proving test).")
         }
         Some("none") => match c["proving_tests"].as_array().map_or(0, Vec::len) {
             0 => "nothing to prove (no function changed).".to_owned(),
@@ -87,6 +87,40 @@ fn change_line(c: &Value) -> String {
 }
 
 /// One changed file: what happened to it and what the person is asked.
+/// The laws in one line: how many held, and what is still wrong.
+fn laws_line(laws: &Value) -> Option<String> {
+    let all = laws["laws"].as_array().map_or(&[][..], Vec::as_slice);
+    if all.is_empty() {
+        return laws["fault"]
+            .as_str()
+            .map(|f| format!("Laws: unknown ({f})"));
+    }
+    let count = |status: &str| all.iter().filter(|l| l["status"] == status).count();
+    let mut parts = vec![format!(
+        "{} of {} hold",
+        count("holds") + count("now_holds"),
+        all.len()
+    )];
+    for (status, words) in [
+        ("now_holds", "newly hold"),
+        ("broken", "broken by the change"),
+        ("unmet", "not yet met"),
+        ("nondeterministic", "did not reproduce"),
+        ("pending", "pending"),
+        ("unknown", "unknown"),
+    ] {
+        let n = count(status);
+        if n > 0 {
+            parts.push(format!("{n} {words}"));
+        }
+    }
+    let checked = laws["checked_functions"].as_object().map_or(0, |m| m.len());
+    if checked > 0 {
+        parts.push(format!("{checked} changed function(s) law-checked"));
+    }
+    Some(format!("Laws: {}.", parts.join(", ")))
+}
+
 fn old_test_line(t: &Value) -> String {
     let path = t["path"].as_str().unwrap_or("?");
     let item = t["item"].as_str().unwrap_or("?");
@@ -159,6 +193,7 @@ pub fn render_with(receipt: &Value, detail: Detail) -> String {
         format!("Regression: {}", regression_line(&receipt["regression"])),
         format!("New behaviour: {}", change_line(&receipt["change"])),
     ];
+    lines.extend(laws_line(&receipt["laws"]));
     let redundant = receipt["change"]["redundant_tests"]
         .as_array()
         .map_or(&[][..], Vec::as_slice);
@@ -273,14 +308,29 @@ mod tests {
     #[test]
     fn proof_that_rests_on_edited_old_tests_says_so() {
         let mut r = receipt();
-        r["change"] = json!({"status": "proven",
-            "functions": [{"file": "a.py", "function": "f", "line": 1, "status": "proven"}],
+        r["change"] = json!({"status": "exercised",
+            "functions": [{"file": "a.py", "function": "f", "line": 1, "status": "exercised"}],
             "proving_tests": [{"id": "t.py::test_a", "baseline_result": "failed", "edited": true},
                               {"id": "t.py::test_b", "baseline_result": "failed", "edited": false}]});
         let text = render(&r);
         assert!(
-            text.contains("New behaviour: proven (1 changed functions; 1 of the proving tests are old tests the change edited)."),
+            text.contains("New behaviour: exercised (1 changed functions; 1 of the proving tests are old tests the change edited)."),
             "{text}"
         );
+    }
+
+    #[test]
+    fn the_laws_are_summed_up_in_one_line() {
+        let laws = json!({"laws": [
+            {"id": "a", "status": "holds"}, {"id": "b", "status": "now_holds"},
+            {"id": "c", "status": "unmet"}],
+            "checked_functions": {"app.py::add": ["b"]}});
+        assert_eq!(
+            laws_line(&laws).as_deref(),
+            Some(
+                "Laws: 2 of 3 hold, 1 newly hold, 1 not yet met, 1 changed function(s) law-checked."
+            )
+        );
+        assert_eq!(laws_line(&json!({"laws": []})), None);
     }
 }

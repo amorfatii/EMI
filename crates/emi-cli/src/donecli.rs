@@ -71,6 +71,13 @@ pub struct DoneArgs {
     /// (`old-test:PATH`); repeatable.
     #[arg(long, value_name = "ITEM")]
     approve: Vec<String>,
+    /// The change must keep the behaviour of the functions it modifies
+    /// (under these paths; none for all): each is compared with the
+    /// baseline's on the inputs the tests pass it and inputs drawn from its
+    /// annotations. Without the flag, the intent `emi intent` recorded on
+    /// this machine applies (cooperative setting only).
+    #[arg(long, value_name = "PATH", num_args = 0..)]
+    preserve: Option<Vec<String>>,
     /// Run the baseline's tests now and keep the result, so that the first
     /// check finds it waiting; prints nothing and checks nothing. The hook
     /// starts this when the person sends a message.
@@ -135,7 +142,7 @@ fn change_evidence(context: &ChangeContext) -> ChangeEvidence {
         context.baseline,
         context.candidate,
     );
-    match emi_proving::measure_in(&req, context.view) {
+    match emi_python::proving::measure_in(&req, context.view) {
         Ok(evidence) => ChangeEvidence::Measured(evidence.to_json()),
         Err(why) => ChangeEvidence::Failed(format!("change evidence could not be measured: {why}")),
     }
@@ -165,6 +172,7 @@ pub fn done(a: &DoneArgs) -> anyhow::Result<u8> {
             SettingArg::Enforced => Setting::Enforced,
         },
         approve: &a.approve,
+        preserve: a.preserve.clone(),
     };
     if a.warm {
         emi_done::warm(&request)?;
@@ -190,8 +198,83 @@ pub fn done(a: &DoneArgs) -> anyhow::Result<u8> {
         )?;
     } else {
         let mut json = String::new();
-        emi_ledger::pyfmt::canonical(&outcome.receipt, &mut json);
+        emi_kernel::json::canonical(&outcome.receipt, &mut json);
         writeln!(out, "{json}")?;
     }
     Ok(outcome.action.exit_code())
+}
+
+#[derive(Args)]
+pub struct ReplayArgs {
+    /// A receipt `emi done --format json` printed.
+    receipt: PathBuf,
+    /// Repository root (default: current directory).
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+}
+
+/// `emi replay`: the receipt computed again from nothing cached. Prints
+/// whether the decision is the same and, if not, which parts differ.
+pub fn replay(a: &ReplayArgs) -> anyhow::Result<u8> {
+    let text = std::fs::read_to_string(&a.receipt)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", a.receipt.display()))?;
+    let original = emi_kernel::strict::loads(&text)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", a.receipt.display()))?;
+    let state_root = emi_done::state::root_from_env()?;
+    let replayed = emi_done::replay::replay(&a.repo, &state_root, &original, change_evidence)?;
+    let mut json = String::new();
+    emi_kernel::json::canonical(&replayed.to_value(), &mut json);
+    writeln!(std::io::stdout().lock(), "{json}")?;
+    Ok(if replayed.same { 0 } else { 1 })
+}
+
+#[derive(clap::Subcommand)]
+pub enum IntentCommand {
+    /// The change must keep the behaviour of the functions it modifies
+    /// (under these paths; none for all), until cleared.
+    Preserve {
+        paths: Vec<String>,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+    /// The change may alter behaviour (the default).
+    Clear {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+    /// Print the intent recorded for the repository.
+    Show {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+}
+
+/// `emi intent`: what the person declares about the change, recorded on
+/// this machine for the cooperative check (and so for the hook).
+pub fn intent(c: &IntentCommand) -> anyhow::Result<u8> {
+    let state_root = emi_done::state::root_from_env()?;
+    let (repo, wanted) = match c {
+        IntentCommand::Preserve { paths, repo } => (
+            repo,
+            Some(emi_done::preserve::Intent {
+                preserve: true,
+                paths: paths.clone(),
+            }),
+        ),
+        IntentCommand::Clear { repo } => (repo, Some(emi_done::preserve::Intent::default())),
+        IntentCommand::Show { repo } => (repo, None),
+    };
+    let repo = emi_done::repo_root(repo)?;
+    let dir = emi_done::state::repo_dir(&state_root, &repo);
+    if let Some(intent) = wanted {
+        emi_done::preserve::write(&dir, &intent)?;
+    }
+    let now = emi_done::preserve::read(&dir)?;
+    let mut out = std::io::stdout().lock();
+    match (now.preserve, now.paths.is_empty()) {
+        (false, _) => writeln!(out, "No intent: the change may alter behaviour.")?,
+        (true, true) => writeln!(out, "Preserve: every function the change modifies.")?,
+        (true, false) => writeln!(out, "Preserve: functions under {}.", now.paths.join(", "))?,
+    }
+    Ok(0)
 }

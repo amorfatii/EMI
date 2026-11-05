@@ -1,7 +1,7 @@
 //! The done check: when a coding agent says it is finished, what was
-//! actually proven? [`done`] reads `.emi/config.json`, resolves the
+//! actually exercised? [`done`] reads `.emi/config.json`, resolves the
 //! baseline, derives a task contract, verifies the candidate through
-//! `emi-controller`, finds the old tests the candidate changed, and
+//! the engine, finds the old tests the candidate changed, and
 //! assembles the receipt and its action (plan.md, interfaces 1 to 3).
 //!
 //! The change evidence (did the requested behaviour come into being) is
@@ -12,29 +12,35 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-pub mod action;
+pub mod adequacy;
 pub mod baseline;
 pub mod candidate;
 pub mod change;
 pub mod config;
 pub mod derived;
 pub mod detect;
+pub mod engine;
+pub mod environment;
+pub mod laws;
 pub mod oldtests;
 pub mod outcomes;
+pub mod preserve;
 pub mod pytest;
 pub mod receipt;
 pub mod regression;
+pub mod replay;
 mod run;
+pub mod signals;
 pub mod state;
 pub mod text;
 
 #[cfg(test)]
 mod testutil;
 
-pub use action::Action;
 pub use baseline::{Baseline, Given};
 pub use change::ChangeEvidence;
 pub use config::Config;
+pub use emi_kernel::decide::Action;
 pub use run::proving_request;
 
 /// The candidate id of the working tree.
@@ -93,6 +99,10 @@ pub struct Request<'a> {
     pub setting: Setting,
     /// Items to approve (`old-test:PATH`), recorded before checking.
     pub approve: &'a [String],
+    /// Keep the behaviour of the functions the change modifies (under these
+    /// paths; empty for all). `None` reads the intent recorded on this
+    /// machine (`emi intent`), in the cooperative setting only.
+    pub preserve: Option<Vec<String>>,
 }
 
 /// What a change measurer is told about the run.
@@ -190,7 +200,7 @@ pub fn done(
 ) -> Result<Outcome, Error> {
     let repo = repo_root(req.repo)?;
     // what killed runs left behind would fill the temporary directory
-    emi_diff::snapshot::sweep_stale_scratch();
+    emi_tree::snapshot::sweep_stale_scratch();
     let view = emi_git::CleanView::of(&repo).map_err(Error::Usage)?;
     let cand = candidate::read(&repo, view.path(), &req.candidate)?;
     let (config, baseline) = match req.setting {
@@ -218,7 +228,7 @@ pub fn warm(req: &Request) -> Result<(), Error> {
         return Ok(());
     }
     let repo = repo_root(req.repo)?;
-    emi_diff::snapshot::sweep_stale_scratch();
+    emi_tree::snapshot::sweep_stale_scratch();
     let view = emi_git::CleanView::of(&repo).map_err(Error::Usage)?;
     let config = config::read_file(&repo)?;
     let baseline = resolve_baseline(&repo, req, Some(&config))?;
@@ -248,8 +258,22 @@ fn unconfigured(
         change: &change,
         config_note: None,
     };
+    let laws = emi_python::proving::laws::LawEvidence::default();
     let parts = receipt::Parts {
+        laws: &laws,
+        preserved: None,
+        adequacy: None,
+        signals: &[],
         repo,
+        inputs: receipt::inputs(&receipt::Inputs {
+            baseline,
+            candidate: cand,
+            setting: req.setting,
+            config: None,
+            environment: None,
+            laws: None,
+            intent: serde_json::Value::Null,
+        }),
         baseline,
         candidate: cand,
         setting: req.setting,
@@ -259,6 +283,7 @@ fn unconfigured(
         change: &change,
         on_unproven: config::OnUnproven::Report,
         on_redundant: config::OnRedundant::Report,
+        on_survivors: config::OnUnproven::Report,
         faults: Vec::new(),
         not_verified: receipt::not_verified(&limits),
         this_run: receipt::this_run(&limits),

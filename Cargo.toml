@@ -10,51 +10,28 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-emi-ir = { path = "crates/emi-ir" }
-emi-lang-python = { path = "crates/emi-lang-python" }
-emi-lang-js = { path = "crates/emi-lang-js" }
-emi-lang-rust = { path = "crates/emi-lang-rust" }
-emi-lang-common = { path = "crates/emi-lang-common" }
-emi-lang-go = { path = "crates/emi-lang-go" }
-emi-scan = { path = "crates/emi-scan" }
-emi-history = { path = "crates/emi-history" }
-emi-rules = { path = "crates/emi-rules" }
-emi-guard = { path = "crates/emi-guard" }
+emi-kernel = { path = "crates/emi-kernel" }
+emi-python = { path = "crates/emi-python" }
 emi-exec = { path = "crates/emi-exec" }
 emi-git = { path = "crates/emi-git" }
-emi-controller = { path = "crates/emi-controller" }
+emi-tree = { path = "crates/emi-tree" }
 emi-done = { path = "crates/emi-done" }
-emi-lsp = { path = "crates/emi-lsp" }
-emi-panel = { path = "crates/emi-panel" }
-emi-profile = { path = "crates/emi-profile" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-rayon = "1"
 roxmltree = "0.21"
-shlex = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.10"
 hex = "0.4"
-indexmap = "2"
-yaml_serde = "0.10"
 rustix = { version = "1", features = ["process", "fs"] }
-regex = "1"
-thiserror = "2"
 tempfile = "3"
+shlex = "2"
 
-# Measurement contract pins: changing any of these changes measurements and
-# requires a profile bump (the PROFILE constants in the adapter crates).
+# The parser pin: changing it can change which lines EMI attributes to which
+# function, so it moves only on purpose.
 tree-sitter = "=0.26.2"
-tree-sitter-javascript = "=0.25.0"
-tree-sitter-typescript = "=0.23.2"
 tree-sitter-python = "=0.25.0"
-tree-sitter-rust = "=0.24.2"
-tree-sitter-go = "=0.25.0"
-ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.16.9" }
-ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.16.9" }
-ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.16.9" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

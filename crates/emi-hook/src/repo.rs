@@ -3,7 +3,8 @@
 //! identity of the working tree.
 //!
 //! The done check owns the validation of `.emi/config.json`. The hook reads
-//! only `default_branch` and `repair_rounds` and tolerates everything else.
+//! only `default_branch`, `repair_rounds` and the laws lock, and tolerates
+//! everything else.
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,25 @@ const DEFAULT_REPAIR_ROUNDS: u32 = 3;
 pub struct Config {
     pub default_branch: Option<String>,
     pub repair_rounds: u32,
+    /// The laws directory, when the configuration locks it against the
+    /// agent's edits (`laws.lock`).
+    pub locked_laws: Option<String>,
+}
+
+/// The laws directory when `laws.lock` is true.
+fn locked_laws(config: &Value) -> Result<Option<String>, String> {
+    let laws = &config["laws"];
+    match laws.get("lock") {
+        None | Some(Value::Bool(false)) => Ok(None),
+        Some(Value::Bool(true)) => Ok(Some(
+            laws.get("dir")
+                .and_then(Value::as_str)
+                .unwrap_or(".emi/laws")
+                .trim_end_matches('/')
+                .to_owned(),
+        )),
+        Some(_) => Err(format!("{CONFIG}: laws.lock must be true or false")),
+    }
 }
 
 /// The directory at or above `cwd` that holds `.emi/config.json`, canonical.
@@ -62,6 +82,7 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     Ok(Config {
         default_branch: optional_string(&config, "default_branch")?,
         repair_rounds: repair_rounds(&config)?,
+        locked_laws: locked_laws(&config)?,
     })
 }
 
@@ -96,7 +117,7 @@ pub fn on_default_branch(root: &Path, default_branch: Option<&str>) -> Result<bo
 pub fn content_id(root: &Path) -> Result<String, String> {
     let view = emi_git::CleanView::of(root)?;
     let commit =
-        emi_diff::snapshot::commit_worktree(root, view.path(), &view.path().join("emi-snapshot"))?;
+        emi_tree::snapshot::commit_worktree(root, view.path(), &view.path().join("emi-snapshot"))?;
     git_line(view.path(), &["rev-parse", &format!("{commit}^{{tree}}")])
 }
 
@@ -112,9 +133,25 @@ mod tests {
             c,
             Config {
                 default_branch: None,
-                repair_rounds: 3
+                repair_rounds: 3,
+                locked_laws: None,
             }
         );
+    }
+
+    #[test]
+    fn a_laws_lock_names_the_directory() {
+        let c = parse_config(r#"{"laws":{"lock":true}}"#).expect("parse");
+        assert_eq!(c.locked_laws.as_deref(), Some(".emi/laws"));
+        let c = parse_config(r#"{"laws":{"dir":"spec/laws/","lock":true}}"#).expect("parse");
+        assert_eq!(c.locked_laws.as_deref(), Some("spec/laws"));
+        assert_eq!(
+            parse_config(r#"{"laws":{"dir":"x"}}"#)
+                .expect("parse")
+                .locked_laws,
+            None
+        );
+        assert!(parse_config(r#"{"laws":{"lock":"yes"}}"#).is_err());
     }
 
     #[test]

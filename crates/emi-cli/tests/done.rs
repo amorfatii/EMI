@@ -47,7 +47,7 @@ fn init_proposes_without_a_terminal_and_writes_only_with_yes() {
     let asked = emi(&fx, &["init"]);
     assert_eq!(asked.code, 2, "{}", asked.stderr);
     assert!(
-        asked.stdout.contains("emi-config-0.1"),
+        asked.stdout.contains("emi-config-1.0"),
         "the proposal is printed: {}",
         asked.stdout
     );
@@ -92,7 +92,8 @@ fn done_exits_with_the_action_and_prints_canonical_json() {
     let held = fx.emi(&["done", "--format", "json"], None);
     assert!(held.status.success(), "{held:?}");
     assert!(
-        held.stdout.starts_with(br#"{"action":"stop","assurance":"#),
+        held.stdout
+            .starts_with(br#"{"action":"stop","adequacy":null,"assurance":"#),
         "{:?}",
         held.stdout
     );

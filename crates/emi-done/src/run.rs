@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use emi_controller::Candidate as Subject;
+use crate::engine::Candidate as Subject;
 
 use crate::baseline::Baseline;
 use crate::candidate::{self, Candidate};
@@ -24,17 +24,19 @@ pub fn proving_request(
     config: &Config,
     baseline: &Baseline,
     cand: &Candidate,
-) -> emi_proving::Request {
-    let mut req = emi_proving::Request::new(repo, &baseline.sha, config.tests.command.clone());
-    req.candidate = emi_proving::Candidate::Ref(cand.rev.clone());
-    req.language = emi_proving::Language::from_name(&config.language);
+) -> emi_python::proving::Request {
+    let mut req =
+        emi_python::proving::Request::new(repo, &baseline.sha, config.tests.command.clone());
+    req.candidate = emi_python::proving::Candidate::Ref(cand.rev.clone());
+    req.language = emi_python::proving::Language::from_name(&config.language);
     req.test_globs.clone_from(&config.tests.globs);
     req.source.clone_from(&config.source);
     req.link.clone_from(&config.link);
-    if !config.python_path.is_empty() {
-        req.env
-            .push(("PYTHONPATH".to_owned(), config.python_path.join(":")));
-    }
+    req.env.extend(config.pins.env());
+    req.env.push((
+        "PYTHONPATH".to_owned(),
+        emi_kernel::pins::Pins::python_path(&config.python_path),
+    ));
     req
 }
 
@@ -45,7 +47,7 @@ struct Second<'a> {
     config: &'a Config,
     baseline: &'a Baseline,
     cand: &'a Candidate,
-    store: &'a emi_controller::Store,
+    store: &'a crate::engine::Store,
     subject: &'a Subject,
     decision: &'a serde_json::Value,
     scope: &'a regression::Scope,
@@ -63,9 +65,11 @@ fn first_of(ids: &BTreeSet<String>) -> &str {
 /// - with old test files restored, they fail only beside the baseline
 ///   versions of files the change edited (a fixture, a helper, expected
 ///   output): the person's question, like a restored test that fails;
-/// - with nothing restored, the whole suite runs once more, and a test
-///   that passes in it was flaky. One that fails again depends on what
-///   ran before it, which the change altered: still a break.
+/// - with nothing restored, the whole suite runs once more under the same
+///   pins. A test that fails again depends on what ran before it, which the
+///   change altered: still a break. One that passes did not reproduce: its
+///   outcome is not decided by the code, so it is neither held nor broken
+///   and the check is incomplete. A failure is never cleared by a lucky run.
 ///
 /// Anything that cannot be run a second time leaves the first verdict.
 fn confirm(r: Regression, s: &Second) -> Regression {
@@ -73,7 +77,7 @@ fn confirm(r: Regression, s: &Second) -> Regression {
         return r;
     }
     let req = proving_request(s.repo, s.config, s.baseline, s.cand);
-    let alone = match emi_proving::passing(&req, s.view, &r.failed) {
+    let alone = match emi_python::proving::passing(&req, s.view, &r.failed) {
         Ok(alone) if !alone.is_empty() => alone,
         _ => return r,
     };
@@ -90,20 +94,14 @@ fn confirm(r: Regression, s: &Second) -> Regression {
         .ok()
         .and_then(|v| Outcomes::of(v.check.as_ref()));
     let Some(again) = again else { return r };
-    let flaky: BTreeSet<String> = alone
+    let unreproduced: BTreeSet<String> = alone
         .into_iter()
         .filter(|id| !again.not_passing(id))
         .collect();
-    if flaky.is_empty() {
+    if unreproduced.is_empty() {
         return r;
     }
-    let note = format!(
-        "{} test(s) failed once and passed when run again, alone and in the whole suite \
-         (first: {}): flaky, not a break",
-        flaky.len(),
-        first_of(&flaky)
-    );
-    regression::cleared(r, &flaky, note, s.decision, s.scope)
+    regression::not_reproduced(r, &unreproduced, s.decision, s.scope)
 }
 
 /// What the verification found, or why it found nothing.
@@ -127,48 +125,68 @@ fn measured_unknown(why: String) -> Measured {
 /// the result is in the task's store, and a failure here is found again,
 /// and reported, by the check itself.
 pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: &Baseline) {
-    if !derived::is_pytest(&config.tests.command) {
+    let Some(interpreter) = derived::interpreter(config) else {
         return;
-    }
-    let Ok(trusted) = derived::trusted(view, &baseline.sha, &config.tests.globs, &BTreeSet::new())
-    else {
+    };
+    let environment = crate::environment::id(repo, &interpreter).ok();
+    let Ok(trusted) = derived::trusted(
+        view,
+        &baseline.sha,
+        &derived::trusted_globs(config),
+        &BTreeSet::new(),
+    ) else {
         return;
     };
     let Ok(own) = derived::own_names(view, &baseline.sha, config) else {
         return;
     };
-    let spec = derived::spec(repo, config, &baseline.sha, &trusted, &own);
+    let spec = derived::spec(
+        repo,
+        config,
+        &baseline.sha,
+        (&trusted, &own),
+        environment.as_deref(),
+    );
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
     if let Ok(store) = derived::open(&authority, repo, &baseline.sha, &spec) {
-        let _ = derived::baseline_check_once(&store, &baseline.sha, &authority);
+        let _ = derived::baseline_checks_once(&store, &baseline.sha, &authority);
     }
 }
 
 /// The regression evidence from the candidate's run. When that run named
-/// its tests one by one, it is compared with the baseline's own run
-/// instead of demanding a suite with no skips.
+/// its tests one by one, it is compared with the baseline's own runs
+/// instead of demanding a suite with no skips: a test the two baseline
+/// runs disagree on is quarantined, and the rest are compared with what
+/// either baseline run showed.
 fn compared(
-    (store, authority): (&emi_controller::Store, &Path),
+    (store, authority): (&crate::engine::Store, &Path),
     baseline: &Baseline,
     verified: &derived::Verified,
     pytest: bool,
     scope: &regression::Scope,
 ) -> Result<Regression, String> {
     let check = verified.check.as_ref();
-    let base = if pytest {
-        let base = derived::baseline_check_once(store, &baseline.sha, authority)?;
-        Outcomes::of(base.as_ref())
+    let (base, unstable) = if pytest {
+        let runs = derived::baseline_checks_once(store, &baseline.sha, authority)?;
+        let outcomes: Option<Vec<Outcomes>> = runs.iter().map(|r| Outcomes::of(Some(r))).collect();
+        match outcomes.as_deref() {
+            Some([one, two]) => (Some(one.merged(two)), one.unstable(two)),
+            Some([one]) => (Some(one.clone()), BTreeSet::new()),
+            _ => (None, BTreeSet::new()),
+        }
     } else {
-        None
+        (None, BTreeSet::new())
     };
-    Ok(match (&base, Outcomes::of(check)) {
+    let mut r = match (&base, Outcomes::of(check)) {
         (Some(base), Some(cand)) => {
             regression::from_outcomes(&verified.decision, check, (base, &cand), scope)
         }
         (Some(base), None) => regression::not_started(check, base)
             .unwrap_or_else(|| regression::from_decision(&verified.decision, check, pytest, scope)),
         (None, _) => regression::from_decision(&verified.decision, check, pytest, scope),
-    })
+    };
+    r.quarantined = unstable.into_iter().collect();
+    Ok(r)
 }
 
 fn try_measure(
@@ -176,17 +194,17 @@ fn try_measure(
     view: &Path,
     req: &Request,
     (config, baseline, cand): (&Config, &Baseline, &Candidate),
-    entries: &[Entry],
+    (entries, environment): (&[Entry], Option<&str>),
 ) -> Result<Measured, String> {
     let trusted = derived::trusted(
         view,
         &baseline.sha,
-        &config.tests.globs,
+        &derived::trusted_globs(config),
         &oldtests::approved_paths(entries),
     )
     .map_err(|e| e.to_string())?;
     let own = derived::own_names(view, &baseline.sha, config).map_err(|e| e.to_string())?;
-    let spec = derived::spec(repo, config, &baseline.sha, &trusted, &own);
+    let spec = derived::spec(repo, config, &baseline.sha, (&trusted, &own), environment);
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
     let store = derived::open(&authority, repo, &baseline.sha, &spec).map_err(|e| e.to_string())?;
     let subject = match req.candidate {
@@ -317,6 +335,103 @@ fn config_note(repo: &Path, req: &Request, config: &Config, baseline: &Baseline)
     }
 }
 
+/// The evidence beyond the regression and the proposer's tests: the laws,
+/// the kept behaviour when asked for, the mutants when configured, and the
+/// escape-hatch signals.
+struct Beyond {
+    laws: emi_python::proving::laws::LawEvidence,
+    preserved: Option<crate::preserve::Preserved>,
+    adequacy: Option<crate::adequacy::Adequacy>,
+    signals: Vec<serde_json::Value>,
+}
+
+fn beyond(
+    repo: &Path,
+    view: &Path,
+    (config, baseline, cand): (&Config, &Baseline, &Candidate),
+    (old_tests, change): (&[Entry], &ChangeEvidence),
+    intent: &crate::preserve::Intent,
+) -> Beyond {
+    let laws = crate::laws::measure(repo, view, (config, baseline, cand), old_tests);
+    let preserved = intent
+        .preserve
+        .then(|| crate::preserve::measure(repo, view, (config, baseline, cand), intent));
+    let adequacy = crate::adequacy::measure(
+        repo,
+        view,
+        (config, baseline, cand),
+        (&change.to_value(), &laws),
+    );
+    let not_product = |p: &str| {
+        crate::oldtests::in_dir(p, &config.laws.dir)
+            || config
+                .tests
+                .globs
+                .iter()
+                .any(|g| emi_kernel::glob::fnmatch(p, g))
+            || emi_kernel::paths::is_test(p)
+    };
+    let signals = crate::signals::find(view, (&baseline.sha, &cand.rev), not_product);
+    Beyond {
+        laws,
+        preserved,
+        adequacy,
+        signals,
+    }
+}
+
+/// What the person declared about the change: the request's, or, in the
+/// cooperative setting, the one recorded on this machine.
+fn intent(req: &Request, repo_dir: &Path) -> Result<crate::preserve::Intent, Error> {
+    match (&req.preserve, req.setting) {
+        (Some(paths), _) => Ok(crate::preserve::Intent {
+            preserve: true,
+            paths: paths.clone(),
+        }),
+        (None, Setting::Cooperative) => crate::preserve::read(repo_dir),
+        (None, Setting::Enforced) => Ok(crate::preserve::Intent::default()),
+    }
+}
+
+/// What the receipt does not establish: in general, and in this run.
+fn limits(
+    (repo, req, config, baseline): (&Path, &Request, &Config, &Baseline),
+    change: &ChangeEvidence,
+    more: &Beyond,
+    (approval_fault, environment): (Option<&String>, Option<&Result<String, String>>),
+) -> (Vec<String>, Vec<String>) {
+    let limits = receipt::Limits {
+        setting: req.setting,
+        link: &config.link,
+        pytest: derived::is_pytest(&config.tests.command),
+        change,
+        config_note: config_note(repo, req, config, baseline),
+    };
+    let mut not_verified = receipt::not_verified(&limits);
+    let mut this_run = receipt::this_run(&limits);
+    let mut extra: Vec<String> = approval_fault.cloned().into_iter().collect();
+    if let Some(Err(why)) = environment {
+        extra.push(why.clone());
+    }
+    extra.extend(crate::laws::limits(&more.laws, &config.laws.dir));
+    extra.extend(
+        more.preserved
+            .as_ref()
+            .map(crate::preserve::limits)
+            .unwrap_or_default(),
+    );
+    extra.extend(
+        more.adequacy
+            .as_ref()
+            .map(crate::adequacy::limits)
+            .unwrap_or_default(),
+    );
+    extra.extend(crate::signals::limits(&more.signals));
+    not_verified.extend(extra.iter().cloned());
+    this_run.extend(extra);
+    (not_verified, this_run)
+}
+
 /// Check `cand` against `baseline` under `config`.
 pub fn check(
     repo: &Path,
@@ -326,11 +441,24 @@ pub fn check(
     change: impl FnOnce(&ChangeContext) -> ChangeEvidence,
 ) -> Result<Outcome, Error> {
     let repo_dir = state::repo_dir(req.state_root, repo);
-    let changed = oldtests::find(view, &baseline.sha, &cand.rev, &config.tests.globs)?;
+    let changed = oldtests::find(
+        view,
+        &baseline.sha,
+        &cand.rev,
+        (&config.tests.globs, &config.laws.dir),
+    )?;
     approve(req, &repo_dir, &changed, baseline)?;
     let (approvals, approval_fault) = approvals(req, &repo_dir, &changed);
     let mut old_tests = oldtests::mark(changed, &approvals, &baseline.sha);
-    let measured = match try_measure(repo, view, req, (config, baseline, cand), &old_tests) {
+    let environment = derived::interpreter(config).map(|py| crate::environment::id(repo, &py));
+    let env_id = environment.as_ref().and_then(|e| e.as_deref().ok());
+    let measured = match try_measure(
+        repo,
+        view,
+        req,
+        (config, baseline, cand),
+        (&old_tests, env_id),
+    ) {
         Ok(m) => m,
         Err(e) => measured_unknown(e),
     };
@@ -344,19 +472,31 @@ pub fn check(
         view,
         regression: &measured.regression,
     });
-    let limits = receipt::Limits {
-        setting: req.setting,
-        link: &config.link,
-        pytest: derived::is_pytest(&config.tests.command),
-        change: &change,
-        config_note: config_note(repo, req, config, baseline),
-    };
-    let mut not_verified = receipt::not_verified(&limits);
-    not_verified.extend(approval_fault.clone());
-    let mut this_run = receipt::this_run(&limits);
-    this_run.extend(approval_fault.clone());
+    let intent = intent(req, &repo_dir)?;
+    let more = beyond(
+        repo,
+        view,
+        (config, baseline, cand),
+        (&old_tests, &change),
+        &intent,
+    );
+    let (not_verified, this_run) = limits(
+        (repo, req, config, baseline),
+        &change,
+        &more,
+        (approval_fault.as_ref(), environment.as_ref()),
+    );
     let parts = receipt::Parts {
         repo,
+        inputs: receipt::inputs(&receipt::Inputs {
+            baseline,
+            candidate: cand,
+            setting: req.setting,
+            config: Some(config),
+            environment: environment.as_ref(),
+            laws: more.laws.digest.clone(),
+            intent: intent.to_value(),
+        }),
         baseline,
         candidate: cand,
         setting: req.setting,
@@ -364,8 +504,13 @@ pub fn check(
         regression: &measured.regression,
         old_tests: &old_tests,
         change: &change,
+        laws: &more.laws,
+        preserved: more.preserved.as_ref(),
+        adequacy: more.adequacy.as_ref(),
+        signals: &more.signals,
         on_unproven: config.on_unproven,
         on_redundant: config.on_redundant,
+        on_survivors: config.adequacy.on_survivors,
         faults: approval_fault.into_iter().collect(),
         not_verified,
         this_run,

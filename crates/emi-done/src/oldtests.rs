@@ -25,6 +25,10 @@ pub enum What {
     OldTest,
     /// A file that decides how tests run (`conftest.py`, `pyproject.toml`).
     RunnerConfig,
+    /// A file in the laws directory: the person's statement of what the
+    /// code must do. Any change to one, an added law included, changes the
+    /// specification and waits for a person.
+    Law,
 }
 
 impl What {
@@ -32,6 +36,7 @@ impl What {
         match self {
             What::OldTest => "old-test",
             What::RunnerConfig => "runner-config",
+            What::Law => "law",
         }
     }
 }
@@ -40,7 +45,8 @@ impl What {
 pub enum Kind {
     Modified,
     Deleted,
-    /// Only test-runner configuration can be added: an added test is new.
+    /// Only test-runner configuration and laws can be added: an added
+    /// test is new.
     Added,
 }
 
@@ -83,21 +89,29 @@ impl Changed {
 /// Which sort of file a changed path is, if it needs a decision. A file
 /// that is both a test and runner configuration (`tests/conftest.py`) is
 /// runner configuration.
-fn classify(path: &str, globs: &[String]) -> Option<What> {
-    if emi_controller::runner_config::matches(path) {
+fn classify(path: &str, globs: &[String], laws: &str) -> Option<What> {
+    if in_dir(path, laws) {
+        Some(What::Law)
+    } else if crate::engine::runner_config::matches(path) {
         Some(What::RunnerConfig)
-    } else if globs.iter().any(|g| emi_scan::walk::fnmatch(path, g)) {
+    } else if globs.iter().any(|g| emi_kernel::glob::fnmatch(path, g)) {
         Some(What::OldTest)
     } else {
         None
     }
 }
 
+/// Whether `path` is inside the directory `dir`.
+pub fn in_dir(path: &str, dir: &str) -> bool {
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn kind_of(what: What, change: &str) -> Option<Kind> {
     match (what, change) {
         (_, "delete") => Some(Kind::Deleted),
         (_, "modify") => Some(Kind::Modified),
-        (What::RunnerConfig, "add") => Some(Kind::Added),
+        (What::RunnerConfig | What::Law, "add") => Some(Kind::Added),
         _ => None,
     }
 }
@@ -120,23 +134,23 @@ fn only_adds(view: &Path, baseline: &str, rev: &str, path: &str) -> bool {
 }
 
 /// The files `rev` changed that need a decision, sorted by path: baseline
-/// test files (matching `globs`) it modified or deleted, and test-runner
-/// configuration it modified, deleted or added. `view` is a clean view of
-/// the repository holding `rev`.
+/// test files (matching `globs`) it modified or deleted, test-runner
+/// configuration it modified, deleted or added, and any change in the laws
+/// directory `laws`. `view` is a clean view of the repository holding `rev`.
 pub fn find(
     view: &Path,
     baseline: &str,
     rev: &str,
-    globs: &[String],
+    (globs, laws): (&[String], &str),
 ) -> Result<Vec<Changed>, Error> {
-    let changes = emi_controller::verify::changes(view, baseline, rev).map_err(|e| {
+    let changes = crate::engine::verify::changes(view, baseline, rev).map_err(|e| {
         Error::Usage(format!(
             "cannot compare the candidate with the baseline: {e}"
         ))
     })?;
     let mut out = Vec::new();
     for (path, change) in changes {
-        let Some(what) = classify(&path, globs) else {
+        let Some(what) = classify(&path, globs, laws) else {
             continue;
         };
         let Some(kind) = kind_of(what, change) else {
@@ -196,7 +210,7 @@ pub fn scope(entries: &[Entry]) -> Scope {
             (true, _, _) => {
                 scope.approved.insert(path);
             }
-            (false, What::OldTest, _) => {
+            (false, What::OldTest | What::Law, _) => {
                 scope.restored.insert(path);
             }
             (false, What::RunnerConfig, Kind::Added) => scope.added_runner.push(path),
@@ -224,6 +238,8 @@ pub fn settle(entries: &mut [Entry], regression: &Regression) {
         e.restored = match (e.approved, e.changed.what) {
             (true, _) => Restored::Unknown,
             (false, What::OldTest) => regression.restored_result(&e.changed.path),
+            // how a law fares is the laws' evidence, not the regression's
+            (false, What::Law) => Restored::Unknown,
             (false, What::RunnerConfig) if regression.status == Status::Unknown => {
                 Restored::Unknown
             }
@@ -290,8 +306,13 @@ mod tests {
         );
         let head = git_out(dir.path(), &["rev-parse", "HEAD"]);
         let view = emi_git::CleanView::of(dir.path()).unwrap_or_else(|e| panic!("{e}"));
-        let found = find(view.path(), &baseline, &head, &["tests/*".to_owned()])
-            .unwrap_or_else(|e| panic!("{e}"));
+        let found = find(
+            view.path(),
+            &baseline,
+            &head,
+            (&["tests/*".to_owned()], ".emi/laws"),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         let shown: Vec<(&str, What, Kind)> = found
             .iter()
             .map(|c| (c.path.as_str(), c.what, c.kind))
@@ -369,6 +390,8 @@ mod tests {
             complete: true,
             attributed: vec!["tests/a.py::t".into()],
             added_failing: Vec::new(),
+            quarantined: Vec::new(),
+            nondeterministic: Vec::new(),
         };
         settle(&mut entries, &regression);
         let got: Vec<Restored> = entries.iter().map(|e| e.restored).collect();

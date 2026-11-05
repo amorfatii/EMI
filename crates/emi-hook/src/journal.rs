@@ -37,7 +37,7 @@ pub struct Check<'a> {
 
 /// The journal file of `repo` (already canonical) under `state_home`.
 pub fn path(state_home: &Path, repo: &Path) -> PathBuf {
-    let key = emi_ir::pytext::sha256_hex(repo.to_string_lossy().as_bytes());
+    let key = emi_kernel::hash::sha256_hex(repo.to_string_lossy().as_bytes());
     state_home
         .join("emi")
         .join("hook")
@@ -62,9 +62,9 @@ fn append(file: &Path, row: &Value) -> Result<(), String> {
 
 /// Record one check; returns the id a person labels it by.
 pub fn record(state_home: &Path, repo: &Path, check: &Check) -> Result<String, String> {
-    let at = emi_diff::trajectory::utc_now_iso();
+    let at = emi_exec::clock::utc_now_iso();
     let seed = format!("{}\n{}\n{at}", check.session, check.content_id);
-    let id = emi_ir::pytext::sha256_hex(seed.as_bytes())[..10].to_owned();
+    let id = emi_kernel::hash::sha256_hex(seed.as_bytes())[..10].to_owned();
     let row = json!({
         "schema": SCHEMA, "kind": "check", "id": id, "at": at,
         "repo": repo.to_string_lossy(), "session": check.session,
@@ -158,7 +158,7 @@ pub fn label(
         }
     };
     let row = json!({"schema": SCHEMA, "kind": "label", "id": id,
-        "at": emi_diff::trajectory::utc_now_iso(), "label": label.as_str(), "note": note});
+        "at": emi_exec::clock::utc_now_iso(), "label": label.as_str(), "note": note});
     append(&path(state_home, repo), &row)?;
     Ok(id)
 }

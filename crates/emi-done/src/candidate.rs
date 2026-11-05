@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use emi_diff::snapshot;
+use emi_tree::snapshot;
 
 use crate::Error;
 

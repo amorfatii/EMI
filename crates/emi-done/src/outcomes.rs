@@ -44,6 +44,37 @@ impl Outcomes {
     pub fn not_passing(&self, id: &str) -> bool {
         self.failed.contains(id) || self.skipped.contains(id)
     }
+
+    /// Tests whose outcome differs between two runs of the same code under
+    /// the same pins: what happens to them is not decided by the code.
+    pub fn unstable(&self, other: &Outcomes) -> BTreeSet<String> {
+        let status = |o: &Outcomes, id: &str| (o.failed.contains(id), o.skipped.contains(id));
+        self.failed
+            .iter()
+            .chain(&self.skipped)
+            .chain(&other.failed)
+            .chain(&other.skipped)
+            .filter(|id| status(self, id) != status(other, id))
+            .cloned()
+            .collect()
+    }
+
+    /// Two runs taken together, conservatively: a test that did not pass
+    /// in either is not passing.
+    pub fn merged(&self, other: &Outcomes) -> Outcomes {
+        let failed: BTreeSet<String> = self.failed.union(&other.failed).cloned().collect();
+        let skipped: BTreeSet<String> = self
+            .skipped
+            .union(&other.skipped)
+            .filter(|id| !failed.contains(*id))
+            .cloned()
+            .collect();
+        Outcomes {
+            passed: self.passed.min(other.passed),
+            failed,
+            skipped,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -58,6 +89,26 @@ mod tests {
         let o = Outcomes::of(Some(&check)).unwrap_or_default();
         assert_eq!((o.passed, o.reported()), (3, 6));
         assert!(o.not_passing("t.py::a") && o.not_passing("t.py::c") && !o.not_passing("t.py::z"));
+    }
+
+    #[test]
+    fn two_runs_name_their_unstable_tests_and_merge_conservatively() {
+        let run = |failed: &[&str], skipped: &[&str]| Outcomes {
+            passed: 5,
+            failed: failed.iter().map(|s| (*s).to_owned()).collect(),
+            skipped: skipped.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        let a = run(&["t::flaky", "t::always"], &["t::skip"]);
+        let b = run(
+            &["t::always", "t::sometimes_skips"],
+            &["t::skip", "t::flaky"],
+        );
+        let unstable: Vec<String> = a.unstable(&b).into_iter().collect();
+        assert_eq!(unstable, ["t::flaky", "t::sometimes_skips"]);
+        let both = a.merged(&b);
+        assert!(both.failed.contains("t::flaky") && !both.skipped.contains("t::flaky"));
+        assert!(both.not_passing("t::sometimes_skips") && both.not_passing("t::skip"));
+        assert!(a.unstable(&a).is_empty());
     }
 
     #[test]
