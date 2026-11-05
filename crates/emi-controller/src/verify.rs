@@ -6,21 +6,13 @@ use std::path::{Path, PathBuf};
 
 use std::time::Duration;
 
-use emi_diff::snapshot;
 use emi_exec::{Isolation, Spec, Status};
-use emi_ledger::pyfmt::digest;
+use emi_kernel::json::digest;
+use emi_tree::snapshot;
 use serde_json::{Value, json};
 
 use crate::contract::Result;
 use crate::store::Store;
-
-mod drift;
-mod mutation;
-#[cfg(test)]
-mod reduce_table;
-#[cfg(test)]
-mod scope_errors;
-mod shake;
 
 /// What a contract without a test inventory cannot rule out.
 pub const NO_INVENTORY: &str = "no test inventory: each check passes on its exit code alone, so code \
@@ -122,79 +114,6 @@ fn globs(v: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The envelope gate: violations of the frozen scope.
-fn envelope_gate(contract: &Value, changed: &[(String, &'static str)]) -> Value {
-    let env = &contract["envelope"];
-    let matches = |path: &str, key: &str| {
-        globs(&env[key])
-            .iter()
-            .any(|g| emi_scan::walk::fnmatch(path, g))
-    };
-    let kinds = globs(&env["change_kinds"]);
-    let mut violations = Vec::new();
-    for (path, kind) in changed {
-        let reason = if matches(path, "protected_paths") {
-            Some("protected check/runtime configuration path; needs a controller revision")
-        } else if matches(path, "excluded_paths") {
-            Some("explicitly excluded from this task")
-        } else if !kinds.iter().any(|k| k == kind) {
-            Some("change kind not permitted by the envelope")
-        } else if !matches(path, "permitted_paths") {
-            Some("outside the permitted task scope")
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            violations.push(json!({"path": path, "change_kind": kind, "reason": reason}));
-        }
-    }
-    json!({"state": if violations.is_empty() { "pass" } else { "fail" }, "changed": changed.len(), "violations": violations})
-}
-
-/// The guardrails gate: verifiable checks on the change (weakened tests,
-/// prohibited files, new suppressions, growth). Scope is the envelope's.
-fn guardrails_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &str) -> Value {
-    let spec = &contract["guardrails"];
-    if spec.is_null() {
-        return json!({"state": "not_required"});
-    }
-    let mut policy = match emi_guard::Policy::from_json(spec) {
-        Ok(p) => p,
-        Err(e) => return json!({"state": "unverified", "error": e}),
-    };
-    policy.tiers.insert("scope".into(), emi_guard::Tier::Off);
-    match emi_guard::guard_commits(repo, baseline, candidate, &policy) {
-        Ok(report) => {
-            let state = match report.decision() {
-                "block" => "fail",
-                "review" => "needs_review",
-                _ => "pass",
-            };
-            let active: Vec<Value> = report
-                .violations
-                .iter()
-                .filter(|v| v.tier != emi_guard::Tier::Off)
-                .map(emi_guard::Violation::to_json)
-                .collect();
-            json!({"state": state, "schema": emi_guard::SCHEMA, "violations": active})
-        }
-        Err(e) => json!({"state": "unverified", "error": e}),
-    }
-}
-
-/// `id` list of the guardrail violations with the given tier.
-fn guard_ids(gate: &Value, tier: &str) -> String {
-    let mut ids: Vec<&str> = gate["violations"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|v| v["tier"] == tier)
-        .filter_map(|v| v["id"].as_str())
-        .collect();
-    ids.dedup();
-    ids.join(", ")
-}
-
 /// Materialize `candidate` into `dest` and link the ignored dependency
 /// directories (node_modules, .venv) the checks need. Returns the linked
 /// sources, which a sandbox mounts back read-only inside the hidden
@@ -244,7 +163,7 @@ fn trusted_changes(trusted: &[String], changed: &[(String, &'static str)]) -> Ve
         .iter()
         .filter(|(p, kind)| {
             matches!(*kind, "modify" | "delete")
-                && trusted.iter().any(|g| emi_scan::walk::fnmatch(p, g))
+                && trusted.iter().any(|g| emi_kernel::glob::fnmatch(p, g))
         })
         .map(|(p, _)| p.clone())
         .collect()
@@ -261,7 +180,7 @@ fn restore_trusted(
 ) -> Result<Vec<String>> {
     let mut restored = Vec::new();
     for (path, kind) in changed {
-        let is_trusted = trusted.iter().any(|g| emi_scan::walk::fnmatch(path, g));
+        let is_trusted = trusted.iter().any(|g| emi_kernel::glob::fnmatch(path, g));
         if !is_trusted || !matches!(*kind, "modify" | "delete") {
             continue;
         }
@@ -410,7 +329,7 @@ fn files_matching(repo: &Path, rev: &str, globs: &[String]) -> Result<Vec<String
     Ok(raw
         .split(|b| *b == 0)
         .map(|p| String::from_utf8_lossy(p).into_owned())
-        .filter(|p| globs.iter().any(|g| emi_scan::walk::fnmatch(p, g)))
+        .filter(|p| globs.iter().any(|g| emi_kernel::glob::fnmatch(p, g)))
         .collect())
 }
 
@@ -575,7 +494,7 @@ fn verification_gate(
         .iter()
         .filter(|(p, kind)| {
             matches!(*kind, "modify" | "delete")
-                && emi_scan::classify::is_test(p)
+                && emi_kernel::paths::is_test(p)
                 && !restored.contains(p)
         })
         .map(|(p, _)| p)
@@ -626,24 +545,6 @@ fn verification_gate(
     gate
 }
 
-/// Fold the shaken reruns into the verification gate: a check that failed
-/// when shaken needs review, one that could not rerun is unverified; a
-/// failed gate stays failed.
-fn merge_shake(gate: &mut Value, shaken: Value) {
-    let state = match (gate["state"].as_str(), shaken["state"].as_str()) {
-        (Some("fail"), _) | (_, Some("pass" | "not_required")) => None,
-        (Some("unverified"), _) | (_, Some("unverified")) => Some("unverified"),
-        (_, Some("disagree")) => Some("needs_review"),
-        _ => None,
-    };
-    if gate.is_object() && gate["state"] != "not_required" {
-        gate["shake"] = shaken;
-        if let Some(state) = state {
-            gate["state"] = json!(state);
-        }
-    }
-}
-
 fn isolation(execution: &Value) -> Isolation {
     let network = execution["network"].as_bool().unwrap_or(false);
     match execution["isolation"].as_str().unwrap_or("best") {
@@ -676,20 +577,6 @@ fn run_check(
 ) -> (String, String, Value) {
     let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
     run_check_within(id, def, timeout, workspace, execution, mounts, true)
-}
-
-/// [`run_check`] for reruns that compare against the check's own first run
-/// (shaken, mutated): they judge by the exit status alone, so a renamed
-/// test id or a mutant's summary never reads as missing evidence.
-fn run_check_status_only(
-    id: &str,
-    def: &Value,
-    workspace: &Path,
-    execution: &Value,
-    mounts: Mounts,
-) -> (String, String, Value) {
-    let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
-    run_check_within(id, def, timeout, workspace, execution, mounts, false)
 }
 
 /// [`run_check`] bounded by `timeout` seconds instead of the check's own.
@@ -867,60 +754,6 @@ fn evidence_record(ev: &crate::evidence::Evidence, state: &str, reason: &str) ->
            "passed": passed, "failed": failed, "skipped": skipped, "reason": reason})
 }
 
-/// The structural gate: EMI measures baseline -> candidate itself.
-fn structural_gate(contract: &Value, repo: &Path, baseline: &str, candidate: &str) -> Value {
-    let s = &contract["structural"];
-    if s.is_null() {
-        return json!({"state": "not_required"});
-    }
-    let Some(probe) = emi_scan::Probe::from_name(s["probe"].as_str().unwrap_or("")) else {
-        return json!({"state": "unverified",
-                      "detail": format!("structural.probe {} is not a language EMI measures", s["probe"])});
-    };
-    let mut req = emi_diff::Request::new(
-        repo,
-        s["source"].as_str().unwrap_or("src"),
-        baseline,
-        candidate,
-        probe,
-    );
-    req.tolerate_syntax_errors = true;
-    let profile = s["profile"].as_str().unwrap_or("precise");
-    let Some(profile) = emi_scan::Profile::from_name(profile) else {
-        return json!({"state": "unverified",
-                      "detail": format!("structural.profile must be parity, precise or graded, got {profile}")});
-    };
-    req.profile = profile;
-    let allowance = s["allowance"].as_f64().unwrap_or(10.0);
-    let headroom = s["headroom"].as_f64();
-    let verdict = emi_diff::build_change(&req)
-        .and_then(|c| emi_ledger::review(&c))
-        .and_then(|r| {
-            let policy = emi_ledger::gate::Policy {
-                compact: true,
-                allowance,
-                headroom,
-                ..emi_ledger::gate::Policy::default()
-            };
-            emi_ledger::gate::apply(r, &policy).map(|g| g.output)
-        });
-    let treatment = contract["warning_policy"]["treatment"]
-        .as_str()
-        .unwrap_or("review");
-    match verdict {
-        Err(e) => json!({"state": "unverified", "detail": e}),
-        Ok(v) => {
-            let state = match (v["decision"].as_str(), treatment) {
-                (Some("block"), _) | (Some("warn"), "blocking") => "fail",
-                (Some("warn"), "review") => "needs_review",
-                (Some("pass" | "warn"), _) => "pass",
-                _ => "unverified",
-            };
-            json!({"state": state, "verdict": v})
-        }
-    }
-}
-
 /// Requirement ledger: verified when every bound check passed.
 fn ledger(contract: &Value, statuses: &BTreeMap<String, String>) -> Vec<Value> {
     contract["requirements"]
@@ -947,13 +780,8 @@ fn ledger(contract: &Value, statuses: &BTreeMap<String, String>) -> Vec<Value> {
 
 /// The gates a decision reduces over.
 struct Gates<'a> {
-    envelope: &'a Value,
-    structural: &'a Value,
-    guardrails: &'a Value,
     verification: &'a Value,
-    refactor: &'a Value,
     dependencies: &'a Value,
-    escalation: &'a Value,
 }
 
 /// Ids of the requirements in `state`.
@@ -977,39 +805,17 @@ fn unresolved_ids(ledger: &[Value]) -> Vec<String> {
 
 /// The states each gate reports. A gate in any other state, or in none,
 /// has not said it passed.
-const GATE_STATES: [(&str, &[&str]); 7] = [
-    ("envelope", &["pass", "fail"]),
-    (
-        "structural",
-        &["not_required", "pass", "needs_review", "unverified", "fail"],
-    ),
-    (
-        "guardrails",
-        &["not_required", "pass", "needs_review", "unverified", "fail"],
-    ),
+const GATE_STATES: [(&str, &[&str]); 2] = [
     (
         "verification",
         &["not_required", "pass", "needs_review", "unverified", "fail"],
     ),
-    (
-        "refactor",
-        &["not_required", "pass", "needs_review", "unverified", "fail"],
-    ),
     ("dependencies", &["not_required", "pass", "unverified"]),
-    ("escalation", &["none", "open", "unverified"]),
 ];
 
 /// One line per gate whose state is not one it reports.
 fn unknown_gate_states(g: &Gates) -> Vec<String> {
-    let reported = [
-        g.envelope,
-        g.structural,
-        g.guardrails,
-        g.verification,
-        g.refactor,
-        g.dependencies,
-        g.escalation,
-    ];
+    let reported = [g.verification, g.dependencies];
     GATE_STATES
         .iter()
         .zip(reported)
@@ -1024,41 +830,24 @@ fn unknown_gate_states(g: &Gates) -> Vec<String> {
         .collect()
 }
 
-/// One reason for a decision and the signals it rests on.
+/// One reason for a decision and the structural check it rests on (none
+/// for a gap in the evidence).
 struct Reason {
     text: String,
-    signals: Vec<Signal>,
-}
-
-/// What a reason rests on: a structural check (`envelope`,
-/// `verification.inventory`, ...) or a guardrail finding, whose kind its
-/// id decides.
-enum Signal {
-    Structural(String),
-    Guard { id: String, path: String },
+    signal: Option<String>,
 }
 
 impl Reason {
     fn new(text: String, signal: &str) -> Reason {
         Reason {
             text,
-            signals: vec![Signal::Structural(signal.to_owned())],
+            signal: Some(signal.to_owned()),
         }
     }
-}
 
-/// The guardrail findings of one tier, as a reason's signals.
-fn guard_signals(gate: &Value, tier: &str) -> Vec<Signal> {
-    gate["violations"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|v| v["tier"] == tier)
-        .map(|v| Signal::Guard {
-            id: v["id"].as_str().unwrap_or("").to_owned(),
-            path: v["path"].as_str().unwrap_or("").to_owned(),
-        })
-        .collect()
+    fn gap(text: String) -> Reason {
+        Reason { text, signal: None }
+    }
 }
 
 /// Why the verification gate rejects the candidate: tests missing from
@@ -1100,78 +889,23 @@ fn rejections(ledger: &[Value], g: &Gates) -> Vec<Reason> {
             "requirements",
         ));
     }
-    if g.refactor["state"] == "fail" {
-        reasons.push(Reason::new(
-            format!(
-                "the refactor target's cognitive complexity fell {:.0}%, below the required {:.0}%",
-                g.refactor["cognitive_reduction"].as_f64().unwrap_or(0.0) * 100.0,
-                g.refactor["required"].as_f64().unwrap_or(0.0) * 100.0
-            ),
-            "refactor",
-        ));
-    }
-    if g.envelope["state"] == "fail" {
-        reasons.push(Reason::new(
-            format!(
-                "{} change(s) outside the task envelope",
-                g.envelope["violations"].as_array().map_or(0, Vec::len)
-            ),
-            "envelope",
-        ));
-    }
-    if g.guardrails["state"] == "fail" {
-        reasons.push(Reason {
-            text: format!(
-                "blocking guardrail violations: {}",
-                guard_ids(g.guardrails, "block")
-            ),
-            signals: guard_signals(g.guardrails, "block"),
-        });
-    }
     reasons.extend(verification_rejections(g.verification));
-    if g.structural["state"] == "fail" {
-        reasons.push(Reason::new(
-            format!(
-                "structural gate: {}",
-                g.structural["verdict"]["reasons"][0]
-                    .as_str()
-                    .unwrap_or("block")
-            ),
-            "structural_gate",
-        ));
-    }
     reasons
 }
 
 /// What could not be verified (empty: everything was).
-fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
+fn gaps(ledger: &[Value], g: &Gates) -> Vec<String> {
     let mut reasons = Vec::new();
     let unverified = unresolved_ids(ledger);
-    if require_all && !unverified.is_empty() {
+    if !unverified.is_empty() {
         reasons.push(format!(
             "requirements not verified (errors, timeouts or unverified cleanup): {}",
             unverified.join(", ")
         ));
     }
     reasons.extend(unknown_gate_states(g));
-    if g.structural["state"] == "unverified" {
-        reasons.push("structural gate could not measure the candidate".into());
-    }
-    if g.guardrails["state"] == "unverified" {
-        reasons.push("guardrails could not be checked".into());
-    }
     if g.verification["state"] == "unverified" {
-        reasons.push(if g.verification["shake"]["state"] == "unverified" {
-            "a shaken rerun of a passing check could not complete".into()
-        } else {
-            "the test inventory could not be taken".into()
-        });
-    }
-    if g.refactor["state"] == "unverified" {
-        reasons.push("the refactor targets could not be measured".into());
-    }
-    if g.escalation["state"] == "unverified" {
-        reasons.push("escalations could not be read".into());
+        reasons.push("the test inventory could not be taken".into());
     }
     if g.dependencies["state"] == "unverified" {
         reasons.push(format!(
@@ -1183,7 +917,7 @@ fn gaps(ledger: &[Value], g: &Gates, require_all: bool) -> Vec<String> {
 }
 
 /// What in the verification gate a person should look at.
-fn verification_reviews(v: &Value) -> Vec<Reason> {
+fn reviews(v: &Value) -> Vec<Reason> {
     let mut reasons = Vec::new();
     if v["state"] != "needs_review" {
         return reasons;
@@ -1208,69 +942,8 @@ fn verification_reviews(v: &Value) -> Vec<Reason> {
             "verification.runner_config",
         ));
     }
-    if v["shake"]["state"] == "disagree" {
-        let ids: Vec<&str> = v["shake"]["changed"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|c| c["check"].as_str())
-            .collect();
-        reasons.push(Reason::new(
-            format!(
-                "checks passed as written but failed with the tests renamed, moved and reseeded: {}",
-                ids.join(", ")
-            ),
-            "verification.shake",
-        ));
-    }
-    reasons
-}
-
-/// What a person should look at before accepting (empty: nothing).
-fn reviews(g: &Gates) -> Vec<Reason> {
-    let mut reasons = Vec::new();
-    if g.refactor["state"] == "needs_review" {
-        reasons.push(Reason::new(
-            "the refactor lowered cognitive complexity but raised graded erosion".into(),
-            "refactor",
-        ));
-    }
-    if g.structural["state"] == "needs_review" {
-        reasons.push(Reason::new(
-            "structural gate warned; the task's warning policy asks for review".into(),
-            "structural_gate",
-        ));
-    }
-    if g.guardrails["state"] == "needs_review" {
-        reasons.push(Reason {
-            text: format!(
-                "guardrails need review: {}",
-                guard_ids(g.guardrails, "review")
-            ),
-            signals: guard_signals(g.guardrails, "review"),
-        });
-    }
-    reasons.extend(verification_reviews(g.verification));
-    if g.escalation["state"] == "open" {
-        reasons.extend(
-            g.escalation["escalations"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|e| {
-                    Reason::new(
-                        format!(
-                            "the agent reported a contract conflict (escalation {}): {}",
-                            e["index"],
-                            e["reason"].as_str().unwrap_or("")
-                        ),
-                        &format!("escalation:{}", e["index"]),
-                    )
-                }),
-        );
-    }
-    let untrusted = globs(&g.verification["untrusted_test_changes"]);
-    if g.verification["state"] == "needs_review" && !untrusted.is_empty() {
+    let untrusted = globs(&v["untrusted_test_changes"]);
+    if !untrusted.is_empty() {
         reasons.push(Reason::new(
             format!(
                 "test files outside the trusted set changed (verified as the candidate left them): {}",
@@ -1282,17 +955,14 @@ fn reviews(g: &Gates) -> Vec<Reason> {
     reasons
 }
 
-/// A decision's reasons and the signals behind them (none for a gap).
-fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, Vec<Reason>) {
-    let gap = |text: String| Reason {
-        text,
-        signals: Vec::new(),
-    };
+/// The decision and its reasons. Precedence: rejected, then incomplete,
+/// then needs_review, then accepted.
+fn reduce(ledger: &[Value], gates: &Gates) -> (&'static str, Vec<Reason>) {
     if ledger.is_empty() {
         // nothing required is nothing verified
         return (
             "incomplete",
-            vec![gap(
+            vec![Reason::gap(
                 "the contract has no requirements, so nothing was verified".into(),
             )],
         );
@@ -1301,89 +971,34 @@ fn reduce(ledger: &[Value], gates: &Gates, require_all: bool) -> (&'static str, 
     if !rejected.is_empty() {
         return ("rejected", rejected);
     }
-    let missing = gaps(ledger, gates, require_all);
+    let missing = gaps(ledger, gates);
     if !missing.is_empty() {
-        return ("incomplete", missing.into_iter().map(gap).collect());
+        return ("incomplete", missing.into_iter().map(Reason::gap).collect());
     }
-    // only reachable without `require_all` when a requirement is unverified:
-    // the decision then says it accepted on that policy
-    let waived = if require_all {
-        Vec::new()
-    } else {
-        unresolved_ids(ledger)
-    };
-    let waiver = (!waived.is_empty()).then(|| {
-        gap(format!(
-            "accepted although requirements were not verified, because \
-             {REQUIRE_ALL_POLICY} is false: {}",
-            waived.join(", ")
-        ))
-    });
-    let mut review = reviews(gates);
+    let review = reviews(gates.verification);
     if !review.is_empty() {
-        review.extend(waiver);
         return ("needs_review", review);
     }
-    let accepted = waiver.unwrap_or_else(|| {
-        gap("every requirement verified by its frozen checks; all gates pass".into())
-    });
-    ("accepted", vec![accepted])
+    (
+        "accepted",
+        vec![Reason::gap(
+            "every requirement verified by its frozen checks; all gates pass".into(),
+        )],
+    )
 }
 
-/// The contract setting that lets a decision stand with requirements
-/// unverified.
-const REQUIRE_ALL_POLICY: &str = "completion_policy.require_all_requirements_verified";
-
-/// The requirements a decision stood on without verifying them, when it
-/// did so on the contract's policy and nothing else.
-fn policy_reliance(decision: &str, ledger: &[Value], require_all: bool) -> Option<Value> {
-    let unverified = unresolved_ids(ledger);
-    if require_all || unverified.is_empty() || !matches!(decision, "accepted" | "needs_review") {
-        return None;
-    }
-    Some(json!({"policy": REQUIRE_ALL_POLICY, "value": false,
-                "unverified_requirements": unverified}))
-}
-
-/// What kind of evidence a decision rests on: the structural signals and
-/// the pattern (guardrail heuristic) findings behind its reasons, and
-/// which kind carries it. A guardrail id with no kind is listed as
-/// `unclassified` and never counted as either.
+/// What a decision rests on: the structural checks behind its reasons, and
+/// how the checks ran.
 fn assurance(reasons: &[Reason], isolation: &str) -> Value {
-    let (mut structural, mut pattern, mut unclassified) = (Vec::new(), Vec::new(), Vec::new());
-    for signal in reasons.iter().flat_map(|r| &r.signals) {
-        match signal {
-            Signal::Structural(name) => structural.push(name.clone()),
-            Signal::Guard { id, path } => {
-                let entry = format!("{id}:{path}");
-                match emi_guard::kind(id) {
-                    Some(emi_guard::Kind::Structural) => structural.push(entry),
-                    Some(emi_guard::Kind::Pattern) => pattern.push(entry),
-                    None => unclassified.push(entry),
-                }
-            }
-        }
-    }
-    for list in [&mut structural, &mut pattern, &mut unclassified] {
-        list.sort();
-        list.dedup();
-    }
-    let catch_kind = match (
-        structural.is_empty(),
-        unclassified.is_empty(),
-        pattern.is_empty(),
-    ) {
-        (false, _, _) => "structural",
-        (true, false, _) => "unclassified",
-        (true, true, false) => "pattern",
-        _ => "none",
+    let mut structural: Vec<String> = reasons.iter().filter_map(|r| r.signal.clone()).collect();
+    structural.sort();
+    structural.dedup();
+    let catch_kind = if structural.is_empty() {
+        "none"
+    } else {
+        "structural"
     };
-    let mut out = json!({"structural": structural, "pattern": pattern,
-                         "catch_kind": catch_kind, "isolation": isolation});
-    if !unclassified.is_empty() {
-        out["unclassified"] = json!(unclassified);
-    }
-    out
+    json!({"structural": structural, "catch_kind": catch_kind, "isolation": isolation})
 }
 
 /// What the checks' results are worth: sandboxed runs, or an explicit
@@ -1394,21 +1009,6 @@ fn isolation_of(contract: &Value) -> &'static str {
     } else {
         "unsandboxed (execution.isolation = none)"
     }
-}
-
-fn budget_exhausted(contract: &Value, state: &Value) -> Option<String> {
-    let used = state["cumulative"]["retries"].as_u64().unwrap_or(0);
-    let spent = state["cumulative"]["time_s"].as_f64().unwrap_or(0.0);
-    if let Some(max) = contract["budgets"]["max_retries"]
-        .as_u64()
-        .filter(|m| used >= *m)
-    {
-        return Some(format!("retry budget exhausted ({used} of {max})"));
-    }
-    contract["budgets"]["max_time_s"]
-        .as_f64()
-        .filter(|m| spent >= *m)
-        .map(|m| format!("time budget exhausted ({spent:.0}s of {m:.0}s)"))
 }
 
 /// Run every frozen check in `workspace`, recording each run.
@@ -1448,13 +1048,6 @@ fn check_summary(r: &Value) -> Value {
            "verified_clean": r["receipt"]["verified_clean"], "isolation": r["receipt"]["isolation"]})
 }
 
-/// The checks' outcomes and the verification gate.
-struct Verified {
-    statuses: BTreeMap<String, String>,
-    runs: Vec<Value>,
-    gate: Value,
-}
-
 /// What one verification reads: the pinned baseline and one commit holding
 /// the candidate (the submitted commit, or the working tree frozen into
 /// one), so every gate and every run sees the same content.
@@ -1463,7 +1056,7 @@ struct Subject {
     /// A clean view of the repository's objects (no config, attributes,
     /// hooks or replace refs of the agent's repository apply to reads).
     objects: PathBuf,
-    /// The authority root (every task's contracts and held-out files).
+    /// The authority root (every task's contracts).
     authority: PathBuf,
     baseline: String,
     /// The commit every gate and check reads.
@@ -1472,35 +1065,11 @@ struct Subject {
     candidate_id: String,
 }
 
-/// The checks the requirements bind, each once, in the contract's order.
-fn required_checks(contract: &Value) -> Vec<(&String, &Value)> {
-    let bound: Vec<String> = contract["requirements"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .flat_map(|r| globs(&r["checks"]))
-        .collect();
-    contract["checks"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter(|(id, _)| bound.contains(id))
-        .collect()
-}
-
-/// What the review signals (mutation, drift) work from: they run after
-/// the requirement checks, in workspaces prepared like theirs, and never
-/// change the decision.
-struct Signals<'a> {
-    store: &'a Store,
-    setup: &'a RunSetup<'a>,
-    scratch: &'a Path,
-    statuses: &'a BTreeMap<String, String>,
-    /// The unmutated check runs.
-    runs: &'a [Value],
-    candidate_id: &'a str,
-    /// The candidate as submitted (never executed in).
-    tree: &'a Path,
+/// The checks' outcomes and the verification gate.
+struct Verified {
+    statuses: BTreeMap<String, String>,
+    runs: Vec<Value>,
+    gate: Value,
 }
 
 /// Run the inventory and every check, each in a fresh workspace with
@@ -1510,10 +1079,8 @@ fn run_verified(
     contract: &Value,
     subject: &Subject,
     changed: &[(String, &'static str)],
-    (scratch, tree): (&Scratch, &Path),
+    scratch: &Scratch,
 ) -> Result<Verified> {
-    // verification policy: the checks see trusted files as they were at the
-    // baseline (read-only), plus the held-out files the candidate never saw
     let vspec = &contract["verification"];
     let trusted = globs(&vspec["trusted"]);
     let setup = RunSetup {
@@ -1544,26 +1111,7 @@ fn run_verified(
         ))
     };
     let (statuses, runs) = run_checks(store, &setup, &scratch.0, &subject.candidate_id)?;
-    let shaken = shake::gate(store, &setup, &scratch.0, &statuses, &subject.candidate_id)?;
-    let mut gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
-    if !vspec.is_null() {
-        merge_shake(&mut gate, shaken);
-        let signals = Signals {
-            store,
-            setup: &setup,
-            scratch: &scratch.0,
-            statuses: &statuses,
-            runs: &runs,
-            candidate_id: &subject.candidate_id,
-            tree,
-        };
-        if let Some(m) = mutation::gate(&signals) {
-            gate["mutation"] = m;
-        }
-        if let Some(d) = drift::gate(&signals) {
-            gate["drift"] = d;
-        }
-    }
+    let gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
     Ok(Verified {
         statuses,
         runs,
@@ -1580,28 +1128,15 @@ struct Evaluation {
 
 /// Run the checks and compute every gate over `subject`.
 fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evaluation> {
-    let (repo, baseline, rev) = (&subject.repo, &subject.baseline, &subject.rev);
-    let objects = &subject.objects;
-    let changed = changes(objects, baseline, rev)?;
-    let envelope = envelope_gate(contract, &changed);
+    let changed = changes(&subject.objects, &subject.baseline, &subject.rev)?;
     let scratch = Scratch::new()?;
-    // the submitted tree, measured and never executed in (checks run in
-    // their own copies and cannot rewrite what is measured)
-    let workspace = scratch.0.join("candidate");
-    materialize(objects, repo, rev, &workspace, contract)?;
     // checked before and after the runs: the checks execute these tools
-    let drifted = crate::deps::drift(repo, contract);
-    let verified = run_verified(store, contract, subject, &changed, (&scratch, &workspace))?;
-    let dependencies = crate::deps::gate(repo, contract, drifted);
-    let structural = structural_gate(contract, objects, baseline, rev);
-    let guardrails = guardrails_gate(contract, objects, baseline, rev);
-    let refactor = crate::refactor::gate(contract, objects, baseline, &workspace, &changed);
+    let drifted = crate::deps::drift(&subject.repo, contract);
+    let verified = run_verified(store, contract, subject, &changed, &scratch)?;
+    let dependencies = crate::deps::gate(&subject.repo, contract, drifted);
     Ok(Evaluation {
         ledger: ledger(contract, &verified.statuses),
-        gates: json!({"envelope": envelope, "structural": structural, "guardrails": guardrails,
-                      "verification": verified.gate, "refactor": refactor,
-                      "dependencies": dependencies,
-                      "escalation": crate::escalate::gate(store, contract["contract_id"].as_str().unwrap_or(""))}),
+        gates: json!({"verification": verified.gate, "dependencies": dependencies}),
         runs: verified.runs,
     })
 }
@@ -1623,7 +1158,7 @@ fn candidate_rev(
 }
 
 /// Verify a candidate: run every frozen check, compute the gates, reduce,
-/// charge the budget, and record the evidence.
+/// and record the evidence.
 pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     let contract = store.contract()?;
     let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
@@ -1635,19 +1170,6 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         Candidate::Ref(r) => snapshot::resolve_ref(&repo, r)?,
         Candidate::Worktree => WORKTREE.to_owned(),
     };
-    let state = store.state()?;
-    let head = |decision: &str, reasons: Vec<String>| {
-        json!({"task_id": contract["task_id"], "contract_id": contract["contract_id"],
-               "candidate_id": candidate_id, "decision": decision, "reasons": reasons})
-    };
-    if let Some(why) = budget_exhausted(&contract, &state) {
-        // nothing was verified, so nothing was caught
-        let mut d = head("rejected", vec![why]);
-        d["assurance"] = assurance(&[], isolation_of(&contract));
-        store.append("decision", &d)?;
-        return Ok(d);
-    }
-    let started = std::time::Instant::now();
     let view = emi_git::CleanView::of(&repo)?;
     let rev = candidate_rev(&repo, view.path(), candidate, &candidate_id)?;
     let subject = Subject {
@@ -1659,132 +1181,23 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
         candidate_id: candidate_id.clone(),
     };
     let eval = evaluate(store, &contract, &subject)?;
-    let require_all = contract["completion_policy"]["require_all_requirements_verified"]
-        .as_bool()
-        .unwrap_or(true);
     let g = &eval.gates;
     let gates = Gates {
-        envelope: &g["envelope"],
-        structural: &g["structural"],
-        guardrails: &g["guardrails"],
         verification: &g["verification"],
-        refactor: &g["refactor"],
         dependencies: &g["dependencies"],
-        escalation: &g["escalation"],
     };
-    let (decision, reasons) = reduce(&eval.ledger, &gates, require_all);
-    let reliance = policy_reliance(decision, &eval.ledger, require_all);
-    let state = store.charge(started.elapsed().as_secs_f64())?;
-    let mut d = head(decision, reasons.iter().map(|r| r.text.clone()).collect());
+    let (decision, reasons) = reduce(&eval.ledger, &gates);
+    let mut d = json!({"task_id": contract["task_id"], "contract_id": contract["contract_id"],
+                       "candidate_id": candidate_id, "decision": decision,
+                       "reasons": reasons.iter().map(|r| r.text.clone()).collect::<Vec<_>>()});
     d["content_id"] = json!(subject.rev);
     d["requirements"] = Value::Array(eval.ledger);
     d["gates"] = eval.gates;
     d["checks"] = Value::Array(eval.runs.iter().map(check_summary).collect());
-    if decision == "needs_review" {
-        d["review_items"] = json!(crate::approve::review_items(&d));
-    }
     d["assurance"] = assurance(&reasons, isolation_of(&contract));
-    let mut limits = Vec::new();
     if contract["verification"]["inventory"].is_null() {
-        limits.push(NO_INVENTORY.to_owned());
+        d["limits"] = json!([NO_INVENTORY]);
     }
-    if let Some(r) = reliance {
-        limits.push(format!(
-            "requirements left unverified were accepted under {REQUIRE_ALL_POLICY} = false: {}",
-            globs(&r["unverified_requirements"]).join(", ")
-        ));
-        d["relied_on_policy"] = r;
-    }
-    if !limits.is_empty() {
-        d["limits"] = json!(limits);
-    }
-    d["budget"] =
-        json!({"retries_used": state["cumulative"]["retries"], "budgets": contract["budgets"]});
     store.append("decision", &d)?;
     Ok(d)
-}
-
-/// Completion: only a commit whose latest decision under the current
-/// contract is `accepted`, or `needs_review` with an approval of exactly
-/// that decision.
-/// Escalations filed under the contract that the decision did not see: a
-/// conflict reported after a candidate was accepted still needs a person.
-fn unseen_escalations(store: &Store, contract_id: &str, decision: Option<&Value>) -> Result<usize> {
-    let open = crate::escalate::open_escalations(store, contract_id)?.len();
-    let seen = decision
-        .and_then(|d| d["gates"]["escalation"]["escalations"].as_array())
-        .map_or(0, Vec::len);
-    Ok(open.saturating_sub(seen))
-}
-
-/// Why an accepted decision completes, naming the policy it relied on.
-fn accepted_reason(decision: &Value) -> String {
-    match decision.get("relied_on_policy") {
-        Some(r) => format!(
-            "accepted under the current contract, relying on {REQUIRE_ALL_POLICY} = false \
-             (unverified: {})",
-            globs(&r["unverified_requirements"]).join(", ")
-        ),
-        None => "accepted under the current contract".to_owned(),
-    }
-}
-
-pub fn complete(store: &Store, reference: &str) -> Result<(bool, Value)> {
-    let contract = store.contract()?;
-    let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
-    let sha = snapshot::resolve_ref(&repo, reference)?;
-    let cid = contract["contract_id"].as_str().unwrap_or("");
-    let latest = store.latest_decision(&sha, cid)?;
-    let approval = match latest.as_ref().filter(|d| d["decision"] == "needs_review") {
-        Some(d) => crate::approve::approval_for(store, d)?,
-        None => None,
-    };
-    let unseen = unseen_escalations(store, cid, latest.as_ref())?;
-    let accepted = unseen == 0 && latest.as_ref().is_some_and(|d| d["decision"] == "accepted");
-    let approval = approval.filter(|_| unseen == 0);
-    let reason = match (&latest, &approval) {
-        (None, _) => "no verification of this commit under the current contract".to_owned(),
-        (Some(_), _) if unseen > 0 => format!(
-            "{unseen} escalation(s) filed after the latest verification; verify again so a person reviews them"
-        ),
-        (Some(_), Some(a)) => format!(
-            "needs_review approved by {}: {}",
-            a["actor"].as_str().unwrap_or(""),
-            a["reason"].as_str().unwrap_or("")
-        ),
-        (Some(d), None) if !accepted => format!("latest decision is {}", d["decision"]),
-        (Some(d), None) => accepted_reason(d),
-    };
-    let accepted = accepted || approval.is_some();
-    let record = json!({"task_id": contract["task_id"], "contract_id": cid, "candidate_id": sha,
-                        "completed": accepted, "reason": reason, "approval": approval});
-    store.append("completion", &record)?;
-    if accepted {
-        crate::store::atomic_write(&store.dir.join("completion.json"), &record)?;
-    }
-    Ok((accepted, record))
-}
-
-/// Pre-push check: the pushed commit must be the completed candidate.
-pub fn hook_check(store: &Store, reference: &str) -> Result<(bool, String)> {
-    let contract = store.contract()?;
-    let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
-    let sha = snapshot::resolve_ref(&repo, reference)?;
-    let cid = contract["contract_id"].as_str().unwrap_or("");
-    let done = store.rows("completion")?.into_iter().any(|c| {
-        c["candidate_id"] == sha.as_str() && c["contract_id"] == cid && c["completed"] == true
-    });
-    let task = contract["task_id"].as_str().unwrap_or("");
-    let mut msg = if done {
-        format!("{sha} completed task {task}")
-    } else {
-        format!("{sha} has not completed task {task} under its current contract")
-    };
-    let open = crate::escalate::open_escalations(store, cid)?.len();
-    if !done && open > 0 {
-        msg.push_str(&format!(
-            "; {open} open escalation(s); a person must review and approve, or revise the contract"
-        ));
-    }
-    Ok((done, msg))
 }

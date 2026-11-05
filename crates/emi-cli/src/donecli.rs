@@ -135,7 +135,7 @@ fn change_evidence(context: &ChangeContext) -> ChangeEvidence {
         context.baseline,
         context.candidate,
     );
-    match emi_proving::measure_in(&req, context.view) {
+    match emi_python::proving::measure_in(&req, context.view) {
         Ok(evidence) => ChangeEvidence::Measured(evidence.to_json()),
         Err(why) => ChangeEvidence::Failed(format!("change evidence could not be measured: {why}")),
     }
@@ -190,7 +190,7 @@ pub fn done(a: &DoneArgs) -> anyhow::Result<u8> {
         )?;
     } else {
         let mut json = String::new();
-        emi_ledger::pyfmt::canonical(&outcome.receipt, &mut json);
+        emi_kernel::json::canonical(&outcome.receipt, &mut json);
         writeln!(out, "{json}")?;
     }
     Ok(outcome.action.exit_code())

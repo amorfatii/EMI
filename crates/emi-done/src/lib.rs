@@ -190,7 +190,7 @@ pub fn done(
 ) -> Result<Outcome, Error> {
     let repo = repo_root(req.repo)?;
     // what killed runs left behind would fill the temporary directory
-    emi_diff::snapshot::sweep_stale_scratch();
+    emi_tree::snapshot::sweep_stale_scratch();
     let view = emi_git::CleanView::of(&repo).map_err(Error::Usage)?;
     let cand = candidate::read(&repo, view.path(), &req.candidate)?;
     let (config, baseline) = match req.setting {
@@ -218,7 +218,7 @@ pub fn warm(req: &Request) -> Result<(), Error> {
         return Ok(());
     }
     let repo = repo_root(req.repo)?;
-    emi_diff::snapshot::sweep_stale_scratch();
+    emi_tree::snapshot::sweep_stale_scratch();
     let view = emi_git::CleanView::of(&repo).map_err(Error::Usage)?;
     let config = config::read_file(&repo)?;
     let baseline = resolve_baseline(&repo, req, Some(&config))?;

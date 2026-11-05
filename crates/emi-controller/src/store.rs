@@ -27,14 +27,14 @@ fn canonical(p: &Path) -> PathBuf {
 /// Write via a temporary file and rename, so readers never see a torn file.
 pub fn atomic_write(path: &Path, value: &Value) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    let text = emi_ledger::pyfmt::dumps_pretty(value) + "\n";
+    let text = emi_kernel::json::dumps_pretty(value) + "\n";
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn read(path: &Path) -> Result<Value> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    emi_ledger::strict::loads(&text).map_err(|e| format!("{}: {e}", path.display()))
+    emi_kernel::strict::loads(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 impl Store {
@@ -195,8 +195,7 @@ impl Store {
             .open(self.dir.join("evidence.jsonl"))
             .map_err(|e| e.to_string())?;
         let mut line =
-            json!({"kind": kind, "at": emi_diff::trajectory::utc_now_iso(), "record": row})
-                .to_string();
+            json!({"kind": kind, "at": emi_exec::clock::utc_now_iso(), "record": row}).to_string();
         line.push('\n');
         file.write_all(line.as_bytes()).map_err(|e| e.to_string())
     }

@@ -96,7 +96,7 @@ pub fn on_default_branch(root: &Path, default_branch: Option<&str>) -> Result<bo
 pub fn content_id(root: &Path) -> Result<String, String> {
     let view = emi_git::CleanView::of(root)?;
     let commit =
-        emi_diff::snapshot::commit_worktree(root, view.path(), &view.path().join("emi-snapshot"))?;
+        emi_tree::snapshot::commit_worktree(root, view.path(), &view.path().join("emi-snapshot"))?;
     git_line(view.path(), &["rev-parse", &format!("{commit}^{{tree}}")])
 }
 

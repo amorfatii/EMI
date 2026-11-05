@@ -1,101 +1,51 @@
 name: EMI
 description: >
-  Check a completion claim with enforced EMI verification, publish the
-  receipt as a required job status, and optionally report structural burden.
+  Check a completion claim with enforced EMI verification and publish the
+  receipt as a required job status. EMI reports; it never merges.
 branding:
   icon: activity
   color: blue
 inputs:
-  mode:
-    description: done (completion receipt) or burden (legacy structural gate).
-    default: done
   baseline:
     description: Trusted baseline ref; defaults to the pull request base SHA. Required outside a PR.
     default: ""
   candidate:
     description: Candidate ref; defaults to the pull request head SHA, otherwise HEAD.
     default: ""
-  source:
-    description: Product scope directory (repository-relative).
-    default: src
-  probe:
-    description: python, js or rust
-    default: python
-  profile:
-    description: precise (default) or parity
-    default: precise
-  allow-growth:
-    description: Burden units of proven growth tolerated.
-    default: "10"
-  allow-headroom:
-    description: Possible growth behind missing evidence tolerated before a warn.
-    default: "50"
-  fail-on-warn:
-    description: Fail the job on warn as well as block.
-    default: "false"
   comment:
-    description: Post (or update) the verdict as a PR comment.
+    description: Post (or update) the receipt summary as a PR comment.
     default: "true"
-  sarif:
-    description: Upload scan and rule findings to code scanning.
-    default: "false"
   emi-version:
     description: Git ref of emi to build.
     default: main
 outputs:
   action:
-    description: stop, repair, ask_person, or incomplete (done mode).
+    description: stop, repair, ask_person, or incomplete.
     value: ${{ steps.done.outputs.action }}
   regression:
-    description: held, broken, or unknown (done mode).
+    description: held, broken, or unknown.
     value: ${{ steps.done.outputs.regression }}
   change:
-    description: Level of change evidence (done mode).
+    description: Level of change evidence.
     value: ${{ steps.done.outputs.change }}
 runs:
   using: composite
   steps:
-    - name: Validate mode
-      shell: bash
-      env:
-        MODE: ${{ inputs.mode }}
-      run: |
-        case "$MODE" in done|burden) ;; *) echo "mode must be done or burden" >&2; exit 2 ;; esac
     - name: Install emi
       shell: bash
       run: |
         if ! command -v emi >/dev/null; then
           cargo install --locked --git https://github.com/amorfatii/EMI --rev "${{ inputs.emi-version }}" emi-cli
         fi
-    - name: Gate
-      id: gate
-      if: ${{ inputs.mode == 'burden' }}
-      shell: bash
-      env:
-        BASE: ${{ github.event.pull_request.base.sha }}
-        HEAD: ${{ github.event.pull_request.head.sha }}
-        LINK: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}
-      run: |
-        set +e
-        flags=""
-        [ "${{ inputs.fail-on-warn }}" = "true" ] && flags="--fail-on-warn"
-        emi diff --repo . --source "${{ inputs.source }}" --probe "${{ inputs.probe }}" \
-          --profile "${{ inputs.profile }}" --before "$BASE" --after "$HEAD" --merge-base \
-          --guardrail --allow-growth "${{ inputs.allow-growth }}" \
-          --allow-headroom "${{ inputs.allow-headroom }}" $flags \
-          --format markdown --link-base "$LINK" -o emi-comment.md
-        echo "code=$?" >> "$GITHUB_OUTPUT"
-        cat emi-comment.md >> "$GITHUB_STEP_SUMMARY"
     - name: Completion evidence
       id: done
-      if: ${{ inputs.mode == 'done' }}
       shell: bash
       env:
         BASELINE: ${{ inputs.baseline || github.event.pull_request.base.sha }}
         CANDIDATE: ${{ inputs.candidate || github.event.pull_request.head.sha || 'HEAD' }}
       run: bash "${{ github.action_path }}/ci/done-status.sh"
     - name: Upload completion receipt
-      if: ${{ inputs.mode == 'done' && always() }}
+      if: ${{ always() }}
       uses: actions/upload-artifact@v4
       with:
         name: emi-completion-receipt
@@ -111,22 +61,8 @@ runs:
       run: |
         gh pr comment "${{ github.event.pull_request.number }}" --edit-last --body-file emi-comment.md \
           || gh pr comment "${{ github.event.pull_request.number }}" --body-file emi-comment.md
-    - name: Findings
-      if: ${{ inputs.sarif == 'true' }}
-      shell: bash
-      run: |
-        emi scan "${{ inputs.source }}" --probe "${{ inputs.probe }}" --profile "${{ inputs.profile }}" \
-          --tolerate-syntax-errors --format sarif -o emi-scan.sarif
-        emi check "${{ inputs.source }}" --format sarif --fail-on never -o emi-rules.sarif
-        emi sarif-merge emi-scan.sarif emi-rules.sarif -o emi.sarif
-    - name: Upload findings
-      if: ${{ inputs.sarif == 'true' }}
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: emi.sarif
-        category: emi
     - name: Verdict
       shell: bash
       env:
-        CODE: ${{ steps.done.outputs.code || steps.gate.outputs.code }}
+        CODE: ${{ steps.done.outputs.code }}
       run: exit "${CODE:-5}"

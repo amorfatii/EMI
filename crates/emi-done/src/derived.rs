@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use emi_controller::{Candidate, Store, contract, runner_config, verify};
-use emi_ledger::pyfmt::digest;
+use emi_kernel::json::digest;
 use serde_json::{Value, json};
 
 use crate::Error;
@@ -93,7 +93,7 @@ pub fn own_names(view: &Path, baseline: &str, config: &Config) -> Result<Vec<Str
             .tests
             .globs
             .iter()
-            .any(|g| emi_scan::walk::fnmatch(p, g))
+            .any(|g| emi_kernel::glob::fnmatch(p, g))
     };
     let mut names: BTreeSet<String> = BTreeSet::new();
     for path in raw.split(|b| *b == 0).filter(|p| !p.is_empty()) {
@@ -118,7 +118,7 @@ const INVENTORY_TIMEOUT_S: u64 = 600;
 /// Whether the configured test command runs pytest, whose output and exit
 /// statuses the receipt knows how to read.
 pub fn is_pytest(command: &[String]) -> bool {
-    emi_proving::pytest::Command::parse(command).is_ok()
+    emi_python::proving::pytest::Command::parse(command).is_ok()
 }
 
 /// A glob that matches exactly `path`: the controller's trusted set is a
@@ -151,7 +151,7 @@ pub fn trusted(
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .filter(|p| !approved.contains(p))
         .filter(|p| {
-            runner_config::matches(p) || globs.iter().any(|g| emi_scan::walk::fnmatch(p, g))
+            runner_config::matches(p) || globs.iter().any(|g| emi_kernel::glob::fnmatch(p, g))
         })
         .map(|p| literal(&p))
         .collect();
@@ -161,9 +161,8 @@ pub fn trusted(
 
 /// The task spec for `config` at `baseline`, trusting the files `trusted`
 /// lists. There are no budgets: repair rounds are counted by the hook, and
-/// a repeated check must not run out. The guardrail heuristics are off;
-/// they are review hints, and what they look for in tests is covered by
-/// restoring the originals. Test-runner configuration a candidate adds
+/// a repeated check must not run out. What a weakened test would do is
+/// covered by restoring the originals. Test-runner configuration a candidate adds
 /// cannot be restored, so it is a review item, which the receipt turns
 /// into a question for a person.
 pub fn spec(
@@ -176,7 +175,7 @@ pub fn spec(
     let mut command = config.tests.command.clone();
     let mut verification = json!({"trusted": trusted, "runner_config": "review"});
     let mut evidence = Value::Null;
-    if let Ok(pytest) = emi_proving::pytest::Command::parse(&config.tests.command) {
+    if let Ok(pytest) = emi_python::proving::pytest::Command::parse(&config.tests.command) {
         // one outcome line per test, so this run can be compared test by
         // test with the baseline's: a test the baseline already skipped is
         // not a regression, one that stopped running is
@@ -203,14 +202,12 @@ pub fn spec(
         "objective": "The baseline's tests still pass on the candidate.",
         "requirements": [{"id": "R1", "acceptance": "every test the baseline had still passes, with the trusted tests restored", "checks": [CHECK]}],
         "checks": {CHECK: {"command": command, "success": {"exit_code": 0}, "timeout_s": TEST_TIMEOUT_S, "evidence": evidence}},
-        "envelope": {"permitted_paths": ["*"]},
-        "guardrails": false,
         "verification": verification,
         "execution": execution,
     });
     // the tests prove something about the candidate only if they import it
     if let (Ok(pytest), false) = (
-        emi_proving::pytest::Command::parse(&config.tests.command),
+        emi_python::proving::pytest::Command::parse(&config.tests.command),
         own.is_empty(),
     ) {
         let mut argv = vec![
@@ -405,8 +402,6 @@ mod tests {
         let spec = spec(dir.path(), &config(), SHA, &trusted, &[]);
         assert_eq!(names(&spec["verification"]["trusted"]), ["tests/test_a.py"]);
         assert_eq!(spec["verification"]["runner_config"], "review");
-        assert_eq!(spec["envelope"]["permitted_paths"], json!(["*"]));
-        assert!(spec["envelope"].get("protected_paths").is_none());
         let inventory = names(&spec["verification"]["inventory"]["command"]);
         assert_eq!((inventory[0], inventory[1]), (".venv/bin/python", "-c"));
         assert!(
@@ -552,7 +547,7 @@ mod tests {
             ]
         );
         for (path, glob) in [("tests/test_[b].py", &all[2]), ("tests/test_b.py", &all[2])] {
-            let hit = emi_scan::walk::fnmatch(path, glob);
+            let hit = emi_kernel::glob::fnmatch(path, glob);
             assert_eq!(hit, path == "tests/test_[b].py", "{path} against {glob}");
         }
         let approved: BTreeSet<String> = ["tests/test_a.py".to_owned()].into();

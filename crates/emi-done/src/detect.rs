@@ -246,7 +246,7 @@ fn generated(repo: &Path, files: &[String], python_path: &[String]) -> Result<Ve
 fn test_globs(files: &[String]) -> Result<Vec<String>, Error> {
     let tests: Vec<&String> = files
         .iter()
-        .filter(|f| is_python(f) && emi_scan::classify::is_test(f))
+        .filter(|f| is_python(f) && emi_kernel::paths::is_test(f))
         .collect();
     if tests.is_empty() {
         return Err(Error::Config(
@@ -635,7 +635,7 @@ mod tests {
             test_globs(&files)
                 .unwrap_or_default()
                 .iter()
-                .any(|g| emi_scan::walk::fnmatch(path, g))
+                .any(|g| emi_kernel::glob::fnmatch(path, g))
         };
         assert!(
             !glob_hits("src/latest_news.py"),

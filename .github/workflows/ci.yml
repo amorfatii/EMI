@@ -13,5 +13,5 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: fmt, clippy, tests, release build, golden parity
+      - name: fmt, clippy, kernel purity, tests, release build
         run: scripts/check.sh

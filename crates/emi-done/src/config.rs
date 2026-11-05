@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use emi_diff::snapshot;
+use emi_tree::snapshot;
 use serde_json::{Map, Value, json};
 
 use crate::Error;
@@ -174,7 +174,7 @@ impl Config {
     /// Parse and validate configuration text.
     pub fn parse(text: &str) -> Result<Config, Error> {
         let value =
-            emi_ledger::strict::loads(text).map_err(|e| Error::Config(format!("{PATH}: {e}")))?;
+            emi_kernel::strict::loads(text).map_err(|e| Error::Config(format!("{PATH}: {e}")))?;
         Config::from_value(&value)
     }
 
@@ -230,7 +230,7 @@ impl Config {
     }
 
     pub fn to_text(&self) -> String {
-        emi_ledger::pyfmt::dumps_pretty(&self.to_value()) + "\n"
+        emi_kernel::json::dumps_pretty(&self.to_value()) + "\n"
     }
 }
 

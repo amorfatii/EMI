@@ -3,12 +3,12 @@
 
 use std::collections::BTreeSet;
 
-use emi_ledger::pyfmt::digest;
+use emi_kernel::json::digest;
 use serde_json::{Map, Value, json};
 
 pub type Result<T> = std::result::Result<T, String>;
 
-pub const SCHEMA: &str = "emi-task-contract-0.1";
+pub const SCHEMA: &str = "emi-task-contract-0.2";
 
 const TASK_ID_CHARS: &str = "._-";
 
@@ -170,26 +170,9 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "baseline",
             "objective",
             "requirements",
-            "exclusions",
             "checks",
-            "envelope",
-            "guardrails",
             "execution",
-            "structural",
-            "budgets",
-            "warning_policy",
-            "completion_policy",
             "verification",
-            "refactor",
-        ],
-    ),
-    (
-        "envelope",
-        &[
-            "permitted_paths",
-            "excluded_paths",
-            "protected_paths",
-            "change_kinds",
         ],
     ),
     ("requirement", &["id", "acceptance", "checks"]),
@@ -197,30 +180,10 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("check.success", &["exit_code"]),
     ("check.evidence", &["format"]),
     (
-        "structural",
-        &["probe", "source", "allowance", "headroom", "profile"],
-    ),
-    ("warning_policy", &["treatment"]),
-    (
-        "guardrails",
-        &["tiers", "allow_classes", "max_net_sloc", "max_files"],
-    ),
-    (
         "verification",
-        &[
-            "trusted",
-            "held_out",
-            "inventory",
-            "shake",
-            "runner_config",
-            "mutation",
-            "drift",
-        ],
+        &["trusted", "held_out", "inventory", "runner_config"],
     ),
     ("verification.held_out", &["content", "file"]),
-    ("verification.mutation", &["max_mutants"]),
-    // reserved for options; `{}` turns the comparison on
-    ("verification.drift", &[]),
     (
         "verification.inventory",
         &["command", "format", "timeout_s", "collection_errors"],
@@ -238,30 +201,6 @@ fn known_keys(part: &str, obj: &Map<String, Value>, at: &str) -> Result<()> {
         Some(k) => Err(format!("{at}: unknown key {k}")),
         None => Ok(()),
     }
-}
-
-fn envelope(v: Option<&Value>) -> Result<Value> {
-    let Some(e) = v.and_then(Value::as_object) else {
-        return Err("envelope must be an object".into());
-    };
-    known_keys("envelope", e, "envelope")?;
-    let permitted = string_list(e.get("permitted_paths"), "envelope.permitted_paths", true)?;
-    let kinds = match e.get("change_kinds") {
-        None => vec!["add".to_owned(), "modify".into(), "delete".into()],
-        Some(k) => string_list(Some(k), "envelope.change_kinds", true)?,
-    };
-    if kinds
-        .iter()
-        .any(|k| !matches!(k.as_str(), "add" | "modify" | "delete"))
-    {
-        return Err("envelope.change_kinds must list add/modify/delete".into());
-    }
-    let excluded = string_list(e.get("excluded_paths"), "envelope.excluded_paths", false)?;
-    let protected = string_list(e.get("protected_paths"), "envelope.protected_paths", false)?;
-    Ok(
-        json!({"permitted_paths": permitted, "excluded_paths": excluded,
-              "protected_paths": protected, "change_kinds": kinds}),
-    )
 }
 
 fn requirements(v: Option<&Value>, checks: &Map<String, Value>) -> Result<Value> {
@@ -292,119 +231,6 @@ fn requirements(v: Option<&Value>, checks: &Map<String, Value>) -> Result<Value>
     Ok(Value::Array(reqs.clone()))
 }
 
-fn budgets(v: Option<&Value>) -> Result<Value> {
-    let b = v.cloned().unwrap_or_else(|| json!({}));
-    let Some(map) = b.as_object() else {
-        return Err("budgets must be an object".into());
-    };
-    for (k, x) in map {
-        let ok = match k.as_str() {
-            "max_retries" => x.as_u64().is_some(),
-            "max_time_s" => x.as_f64().is_some_and(|t| t >= 0.0),
-            // a limit nothing checks would read as protection that is not there
-            "max_tokens" => {
-                return Err(
-                    "budgets.max_tokens is not supported: the controller cannot observe \
-                            token use, so it could never enforce it; use max_retries or max_time_s"
-                        .into(),
-                );
-            }
-            _ => return Err(format!("unknown budget key: {k:?}")),
-        };
-        if !ok {
-            return Err(format!("budget {k} must be a nonnegative number"));
-        }
-    }
-    Ok(b)
-}
-
-/// Optional structural gate: EMI measures baseline -> candidate.
-fn structural(v: Option<&Value>) -> Result<Value> {
-    let Some(s) = v.filter(|v| !v.is_null()) else {
-        return Ok(Value::Null);
-    };
-    let Some(m) = s.as_object() else {
-        return Err("structural must be an object".into());
-    };
-    known_keys("structural", m, "structural")?;
-    if !matches!(
-        m.get("probe").and_then(Value::as_str),
-        Some("python" | "js" | "rust" | "go")
-    ) {
-        return Err("structural.probe must be python, js, rust or go".into());
-    }
-    if !nonempty_str(m.get("source")) {
-        return Err("structural.source must be a scope directory".into());
-    }
-    for k in ["allowance", "headroom"] {
-        if m.get(k)
-            .is_some_and(|x| !x.as_f64().is_some_and(|f| f >= 0.0))
-        {
-            return Err(format!("structural.{k} must be nonnegative"));
-        }
-    }
-    Ok(s.clone())
-}
-
-/// The guardrail policy frozen into the contract: `false` disables the
-/// guardrails gate; an object (default `{}`) is an `emi_guard::Policy`
-/// whose tiers, allowed classes and budgets apply (scope stays with the
-/// envelope).
-fn guardrails(v: Option<&Value>) -> Result<Value> {
-    match v {
-        Some(Value::Bool(false)) => Ok(Value::Null),
-        None | Some(Value::Bool(true)) => Ok(json!({})),
-        Some(policy @ Value::Object(fields)) => {
-            guardrail_settings(fields)?;
-            emi_guard::Policy::from_json(policy).map_err(|e| format!("guardrails: {e}"))?;
-            Ok(policy.clone())
-        }
-        Some(_) => Err("guardrails must be false or a policy object".into()),
-    }
-}
-
-/// Scope keys of a guardrail policy: the controller switches the scope
-/// guardrail off and enforces the envelope instead, so they would do nothing.
-const SCOPE_KEYS: [&str; 4] = [
-    "permitted_paths",
-    "excluded_paths",
-    "protected_paths",
-    "change_kinds",
-];
-
-/// The guardrail settings the controller reads, each with the type the
-/// policy parser would otherwise drop without a word (a budget written as
-/// a string disables the budget).
-fn guardrail_settings(fields: &Map<String, Value>) -> Result<()> {
-    if let Some(k) = SCOPE_KEYS.iter().find(|k| fields.contains_key(**k)) {
-        return Err(format!(
-            "guardrails.{k} is not read here: scope is the envelope's (set envelope.{k})"
-        ));
-    }
-    known_keys("guardrails", fields, "guardrails")?;
-    let typed: [(&str, bool, &str); 3] = [
-        (
-            "tiers",
-            fields.get("tiers").is_none_or(Value::is_object),
-            "an object",
-        ),
-        (
-            "max_net_sloc",
-            fields.get("max_net_sloc").is_none_or(Value::is_i64),
-            "an integer",
-        ),
-        (
-            "max_files",
-            fields.get("max_files").is_none_or(Value::is_u64),
-            "a nonnegative integer",
-        ),
-    ];
-    match typed.iter().find(|(_, ok, _)| !ok) {
-        Some((key, _, want)) => Err(format!("guardrails.{key} must be {want}")),
-        None => Ok(()),
-    }
-}
-
 /// Most bytes of held-out files one contract may carry.
 const MAX_HELD_OUT_BYTES: usize = 2_000_000;
 
@@ -429,13 +255,8 @@ fn safe_relative(path: &str) -> bool {
 /// - `inventory`: a command listing test ids (one per line; `format`
 ///   `pytest` keeps `path::name` lines); an id the baseline has and the
 ///   candidate lacks rejects the candidate.
-/// - `shake`: `{"rounds": 1..=3}` reruns every passing check with the
-///   trusted tests renamed, at another path and hash seed; a check that
-///   stops passing needs review.
 /// - `runner_config`: what added test-runner configuration does to the
 ///   decision, `reject` (the default) or `review`.
-/// - `mutation`: `{"max_mutants": 1..=200}` mutants on the lines the
-///   candidate added, run through the checks; a review signal only.
 /// - `drift`: `{}` replays the baseline tests' inputs against the old and
 ///   new Python functions; a review signal only.
 pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
@@ -450,52 +271,10 @@ pub fn verification(v: Option<&Value>) -> Result<Option<Value>> {
     let mut out = json!({"trusted": trusted, "held_out": held_out(obj.get("held_out"))?,
                          "inventory": inventory(obj.get("inventory"))?});
     // absent unless asked for, so contracts frozen without them keep their identity
-    if let Some(rounds) = shake(obj.get("shake"))? {
-        out["shake"] = json!({"rounds": rounds});
-    }
     if let Some(policy) = runner_config_policy(obj.get("runner_config"))? {
         out["runner_config"] = json!(policy);
     }
-    if let Some(max) = mutation(obj.get("mutation"))? {
-        out["mutation"] = json!({"max_mutants": max});
-    }
-    if let Some(drift) = drift(obj.get("drift"))? {
-        out["drift"] = drift;
-    }
     Ok(Some(out))
-}
-
-/// Most mutants one verification may run: each costs a run of the checks.
-pub const MAX_MUTANTS: u64 = 200;
-
-/// The mutant budget (`verification.mutation.max_mutants`).
-fn mutation(v: Option<&Value>) -> Result<Option<u64>> {
-    let Some(v) = v.filter(|v| !v.is_null()) else {
-        return Ok(None);
-    };
-    let Some(fields) = v.as_object() else {
-        return Err("verification.mutation must be an object".into());
-    };
-    known_keys("verification.mutation", fields, "verification.mutation")?;
-    match fields.get("max_mutants").and_then(Value::as_u64) {
-        Some(n @ 1..=MAX_MUTANTS) => Ok(Some(n)),
-        _ => Err(format!(
-            "verification.mutation.max_mutants must be an integer in 1..={MAX_MUTANTS}"
-        )),
-    }
-}
-
-/// The drift comparison (`verification.drift`): an object whose keys are
-/// reserved for options, so `{}` turns it on.
-fn drift(v: Option<&Value>) -> Result<Option<Value>> {
-    let Some(v) = v.filter(|v| !v.is_null()) else {
-        return Ok(None);
-    };
-    let Some(fields) = v.as_object() else {
-        return Err("verification.drift must be an object ({} turns it on)".into());
-    };
-    known_keys("verification.drift", fields, "verification.drift")?;
-    Ok(Some(json!({})))
 }
 
 /// The held-out files, read and frozen with their digests.
@@ -598,63 +377,6 @@ fn runner_config_policy(v: Option<&Value>) -> Result<Option<&str>> {
     }
 }
 
-/// The number of shaken rerun rounds (`verification.shake.rounds`).
-fn shake(v: Option<&Value>) -> Result<Option<u64>> {
-    let Some(v) = v.filter(|v| !v.is_null()) else {
-        return Ok(None);
-    };
-    match v.get("rounds").and_then(Value::as_u64) {
-        Some(n @ 1..=3) if v.as_object().is_some_and(|o| o.len() == 1) => Ok(Some(n)),
-        _ => Err("verification.shake must be {\"rounds\": 1, 2 or 3}".into()),
-    }
-}
-
-/// Prose exclusions nothing checks: only an empty list (kept in the frozen
-/// contract so earlier contracts keep their shape) is accepted.
-fn exclusions(v: Option<&Value>) -> Result<Value> {
-    let listed = string_list(v, "exclusions", false)?;
-    if listed.is_empty() {
-        Ok(json!(listed))
-    } else {
-        Err(
-            "exclusions is not enforced, so it would only look like a protection; \
-             put paths the change must not touch in envelope.excluded_paths"
-                .into(),
-        )
-    }
-}
-
-fn warning_policy(v: Option<&Value>) -> Result<Value> {
-    if let Some(fields) = v.and_then(Value::as_object) {
-        known_keys("warning_policy", fields, "warning_policy")?;
-    }
-    let treatment = v
-        .map_or(Some("review"), |w| {
-            w.get("treatment").and_then(Value::as_str)
-        })
-        .unwrap_or("");
-    if matches!(treatment, "blocking" | "review" | "advisory") {
-        Ok(json!({"treatment": treatment}))
-    } else {
-        Err("warning_policy.treatment must be one of advisory, blocking, review".into())
-    }
-}
-
-fn completion_policy(v: Option<&Value>) -> Result<Value> {
-    let Some(v) = v else {
-        return Ok(json!({"require_all_requirements_verified": true}));
-    };
-    let valid = v.as_object().is_some_and(|m| {
-        m.iter()
-            .all(|(k, x)| k == "require_all_requirements_verified" && x.is_boolean())
-    });
-    if valid {
-        Ok(v.clone())
-    } else {
-        Err("completion_policy may only set require_all_requirements_verified (a boolean)".into())
-    }
-}
-
 /// One section of a revision, validated like at freeze (the value stored
 /// is the validated one). Identity, baseline and derived fields cannot be
 /// revised. Requirement bindings are checked by [`rebind`] once every
@@ -676,16 +398,8 @@ pub fn revised(key: &str, v: &Value) -> Result<Value> {
             }
             Ok(v.clone())
         }
-        "envelope" => envelope(some),
-        "guardrails" => guardrails(some),
-        "structural" => structural(some),
-        "budgets" => budgets(some),
-        "warning_policy" => warning_policy(some),
-        "completion_policy" => completion_policy(some),
         "execution" => execution(some),
-        "exclusions" => exclusions(some),
         "verification" => verification(some).map(|x| x.unwrap_or(Value::Null)),
-        "refactor" => crate::refactor::spec(some).map(|x| x.unwrap_or(Value::Null)),
         _ => Err(format!("{key} cannot be revised")),
     }
 }
@@ -695,9 +409,6 @@ pub fn revised(key: &str, v: &Value) -> Result<Value> {
 pub fn rebind(core: &mut Value) -> Result<()> {
     let checks = core["checks"].as_object().cloned().unwrap_or_default();
     requirements(Some(&core["requirements"]), &checks)?;
-    let structural = core["structural"].clone();
-    core["measurement_contract_id"] = json!(measurement_contract_id(&structural));
-    core["gate_policy_id"] = json!(gate_policy_id(&structural));
     Ok(())
 }
 
@@ -731,10 +442,7 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
     for (id, def) in checks {
         check_definition(id, def)?;
     }
-    let structural = structural(spec.get("structural"))?;
-    let warning_policy = warning_policy(spec.get("warning_policy"))?;
     let verification = verification(spec.get("verification"))?;
-    let refactor = crate::refactor::spec(spec.get("refactor"))?;
     let mut core = json!({
         "schema_version": SCHEMA,
         "task_id": task_id,
@@ -742,27 +450,14 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
         "predecessor": null,
         "objective": spec["objective"].as_str().unwrap_or("").trim(),
         "requirements": requirements(spec.get("requirements"), checks)?,
-        "exclusions": exclusions(spec.get("exclusions"))?,
         "repo": {"path": repo_path},
         "baseline": {"sha": baseline_sha, "ref": spec.get("baseline").cloned().unwrap_or(Value::Null)},
-        "measurement_contract_id": measurement_contract_id(&structural),
-        "gate_policy_id": gate_policy_id(&structural),
         "checks": checks,
-        "envelope": envelope(spec.get("envelope"))?,
-        "guardrails": guardrails(spec.get("guardrails"))?,
         "execution": execution(spec.get("execution"))?,
-        "structural": structural,
-        "budgets": budgets(spec.get("budgets"))?,
-        "warning_policy": warning_policy,
-        "completion_policy": completion_policy(spec.get("completion_policy"))?,
-        "exceptions": [],
     });
     // only when configured, so contracts without it keep their ids
     if let Some(v) = verification {
         core["verification"] = v;
-    }
-    if let Some(r) = refactor {
-        core["refactor"] = r;
     }
     if let Some(d) = crate::deps::pin(std::path::Path::new(repo_path), &core["execution"])? {
         core["dependencies"] = d;
@@ -780,25 +475,6 @@ pub fn finalize(mut core: Value) -> Value {
     let id = digest("task-contract", &core);
     core["contract_id"] = json!(id);
     core
-}
-
-fn measurement_contract_id(structural: &Value) -> String {
-    digest(
-        "measurement-contract",
-        &json!({"structural": structural, "engine": emi_scan::ENGINE}),
-    )
-}
-
-fn gate_policy_id(structural: &Value) -> String {
-    let allowance = structural
-        .get("allowance")
-        .and_then(Value::as_f64)
-        .unwrap_or(10.0);
-    let headroom = structural
-        .get("headroom")
-        .and_then(Value::as_f64)
-        .unwrap_or(allowance);
-    emi_ledger::gate::gate_policy_id(allowance, headroom)
 }
 
 /// Contract integrity: the stored id must match the content.

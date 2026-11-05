@@ -86,7 +86,7 @@ impl Changed {
 fn classify(path: &str, globs: &[String]) -> Option<What> {
     if emi_controller::runner_config::matches(path) {
         Some(What::RunnerConfig)
-    } else if globs.iter().any(|g| emi_scan::walk::fnmatch(path, g)) {
+    } else if globs.iter().any(|g| emi_kernel::glob::fnmatch(path, g)) {
         Some(What::OldTest)
     } else {
         None

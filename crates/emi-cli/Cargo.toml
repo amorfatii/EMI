@@ -12,28 +12,13 @@ name = "emi"
 path = "src/main.rs"
 
 [dependencies]
-emi-git.workspace = true
-emi-ir.workspace = true
-emi-scan.workspace = true
-emi-ledger = { path = "../emi-ledger" }
-emi-diff = { path = "../emi-diff" }
-emi-history.workspace = true
-emi-mcp = { path = "../emi-mcp" }
-emi-rules.workspace = true
-emi-guard.workspace = true
-emi-exec.workspace = true
-emi-controller.workspace = true
+emi-kernel.workspace = true
 emi-done.workspace = true
-emi-lsp.workspace = true
-emi-panel.workspace = true
-emi-profile.workspace = true
-emi-proving = { path = "../emi-proving" }
+emi-python.workspace = true
 emi-hook = { path = "../emi-hook" }
 anyhow.workspace = true
 clap.workspace = true
-rayon.workspace = true
 serde_json.workspace = true
-shlex.workspace = true
 
 [lints]
 workspace = true

@@ -20,7 +20,7 @@ pub fn tree_digest(root: &Path) -> Result<String> {
     let mut lines = Vec::new();
     walk(root, root, &mut lines)?;
     lines.sort();
-    Ok(emi_ir::pytext::sha256_hex(lines.concat().as_bytes()))
+    Ok(emi_kernel::hash::sha256_hex(lines.concat().as_bytes()))
 }
 
 fn walk(root: &Path, dir: &Path, lines: &mut Vec<String>) -> Result<()> {
@@ -40,7 +40,7 @@ fn walk(root: &Path, dir: &Path, lines: &mut Vec<String>) -> Result<()> {
             "d".to_owned()
         } else if meta.is_file() {
             let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            format!("f {} {}", mode(&meta), emi_ir::pytext::sha256_hex(&bytes))
+            format!("f {} {}", mode(&meta), emi_kernel::hash::sha256_hex(&bytes))
         } else {
             "o".to_owned()
         };
@@ -78,8 +78,12 @@ fn state_of(repo: &Path, rel: &str) -> Result<String> {
     // by its own content and mode
     if meta.is_file() {
         let bytes = std::fs::read(&path).map_err(|e| format!("cannot pin linked {rel}: {e}"))?;
-        let line = format!("f {} {}\n", mode(&meta), emi_ir::pytext::sha256_hex(&bytes));
-        return Ok(emi_ir::pytext::sha256_hex(line.as_bytes()));
+        let line = format!(
+            "f {} {}\n",
+            mode(&meta),
+            emi_kernel::hash::sha256_hex(&bytes)
+        );
+        return Ok(emi_kernel::hash::sha256_hex(line.as_bytes()));
     }
     tree_digest(&path).map_err(|e| format!("cannot pin linked {rel}: {e}"))
 }

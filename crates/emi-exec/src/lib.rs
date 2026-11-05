@@ -13,6 +13,8 @@
 //!   whether the group was verified empty afterwards. It never claims an
 //!   isolation that was not applied.
 
+pub mod clock;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

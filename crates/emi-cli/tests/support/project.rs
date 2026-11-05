@@ -1,7 +1,7 @@
 //! A configured project with real pytest, used by the integrated done loop.
 #![allow(clippy::expect_used, dead_code)]
 
-#[path = "../../../emi-proving/tests/support/venv.rs"]
+#[path = "../../../emi-python/tests/support/venv.rs"]
 mod python;
 
 use serde_json::Value;

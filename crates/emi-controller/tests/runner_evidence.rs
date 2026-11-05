@@ -113,8 +113,6 @@ impl Task {
             "checks": {"suite": {"command": ["python3", "runner.py"],
                                  "success": {"exit_code": 0}, "timeout_s": 60,
                                  "evidence": {"format": "pytest"}}},
-            "envelope": {"permitted_paths": ["app.py", "tests/*", "skip.txt"],
-                         "protected_paths": ["runner.py"]},
             "verification": {"trusted": ["tests/*"]},
         });
         if let Some(inventory) = inventory {
@@ -298,16 +296,6 @@ fn a_baseline_that_lists_no_test_is_reported_as_nothing_to_compare() {
     assert_eq!(
         d["gates"]["verification"]["inventory"]["state"], "nothing_to_compare",
         "{d}"
-    );
-    let receipt = emi_controller::receipt(&task.store, &Candidate::Ref("HEAD".into()))
-        .unwrap_or_else(|e| panic!("{e}"));
-    assert!(
-        receipt["not_verified"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|n| { n["what"] == "test inventory" && n["state"] == "nothing_to_compare" }),
-        "{receipt}"
     );
 }
 

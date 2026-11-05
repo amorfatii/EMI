@@ -26,7 +26,7 @@ pub const NAMES: &[&str] = &[
 /// Whether `path` is test-runner configuration, wherever it lives.
 pub fn matches(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
-    NAMES.iter().any(|n| emi_scan::walk::fnmatch(name, n))
+    NAMES.iter().any(|n| emi_kernel::glob::fnmatch(name, n))
 }
 
 /// Path globs matching the files at the root and in any directory.

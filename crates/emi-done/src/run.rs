@@ -24,10 +24,11 @@ pub fn proving_request(
     config: &Config,
     baseline: &Baseline,
     cand: &Candidate,
-) -> emi_proving::Request {
-    let mut req = emi_proving::Request::new(repo, &baseline.sha, config.tests.command.clone());
-    req.candidate = emi_proving::Candidate::Ref(cand.rev.clone());
-    req.language = emi_proving::Language::from_name(&config.language);
+) -> emi_python::proving::Request {
+    let mut req =
+        emi_python::proving::Request::new(repo, &baseline.sha, config.tests.command.clone());
+    req.candidate = emi_python::proving::Candidate::Ref(cand.rev.clone());
+    req.language = emi_python::proving::Language::from_name(&config.language);
     req.test_globs.clone_from(&config.tests.globs);
     req.source.clone_from(&config.source);
     req.link.clone_from(&config.link);
@@ -73,7 +74,7 @@ fn confirm(r: Regression, s: &Second) -> Regression {
         return r;
     }
     let req = proving_request(s.repo, s.config, s.baseline, s.cand);
-    let alone = match emi_proving::passing(&req, s.view, &r.failed) {
+    let alone = match emi_python::proving::passing(&req, s.view, &r.failed) {
         Ok(alone) if !alone.is_empty() => alone,
         _ => return r,
     };
