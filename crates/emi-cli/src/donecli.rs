@@ -126,10 +126,18 @@ pub fn init(a: &InitArgs) -> anyhow::Result<u8> {
         }
     }
     detect::write(&repo, &found.config, a.force)?;
-    println!(
-        "Wrote {}. Commit it: enforced verification reads it from the baseline.",
-        path.display()
-    );
+    if detect::ignored(&repo)? {
+        println!(
+            "Wrote {}. git ignores it, so `git add` leaves it out: commit it with `git add -f {}`; enforced verification reads it from the baseline.",
+            path.display(),
+            emi_done::config::PATH
+        );
+    } else {
+        println!(
+            "Wrote {}. Commit it: enforced verification reads it from the baseline.",
+            path.display()
+        );
+    }
     Ok(0)
 }
 

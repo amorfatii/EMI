@@ -264,6 +264,25 @@ fn an_added_test_that_fails_sends_the_proposer_back() {
             .contains("test_none"),
         "{receipt}"
     );
+
+    // lines added inside an old test only add too, and its baseline form
+    // still passes: the failing assertion the candidate added is the
+    // candidate's to repair, not dropped between the two halves
+    let inside = Project::new();
+    let old = std::fs::read_to_string(inside.path().join("tests/test_app.py")).expect("old test");
+    inside.write(
+        "tests/test_app.py",
+        &old.replace(
+            "    assert add(1, 2) == 3\n",
+            "    assert add(1, 2) == 3\n    assert add(None, 2) == 2\n",
+        ),
+    );
+    let (code, receipt) = inside.done(&[]);
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(
+        receipt["change"]["failing_tests"][0]["id"], "tests/test_app.py::test_add",
+        "{receipt}"
+    );
 }
 
 /// `lib/python3.x/site-packages` of a virtualenv.
