@@ -45,10 +45,16 @@ pub struct Facts {
     pub failing: Vec<Failing>,
     pub redundant: Vec<Redundant>,
     /// Changed functions no proving test executes, as `file:name (line n)`.
-    pub unproven: Vec<String>,
+    pub unexercised: Vec<String>,
 }
 
-const STATUSES: &[&str] = &["proven", "partly_proven", "unproven", "none", "unknown"];
+const STATUSES: &[&str] = &[
+    "exercised",
+    "partly_exercised",
+    "unexercised",
+    "none",
+    "unknown",
+];
 const LISTS: &[&str] = &[
     "functions",
     "proving_tests",
@@ -122,9 +128,9 @@ impl ChangeEvidence {
                     reason: text(t, "reason"),
                 })
                 .collect(),
-            unproven: list("functions")
+            unexercised: list("functions")
                 .iter()
-                .filter(|f| f["status"] == "unproven")
+                .filter(|f| f["status"] == "unexercised")
                 .map(function_name)
                 .collect(),
         }
@@ -171,9 +177,9 @@ mod tests {
     use super::*;
 
     fn measured() -> Value {
-        json!({"status": "partly_proven",
-               "functions": [{"file": "src/a.py", "function": "f", "line": 10, "status": "proven"},
-                             {"file": "src/a.py", "function": "g", "line": 20, "status": "unproven"}],
+        json!({"status": "partly_exercised",
+               "functions": [{"file": "src/a.py", "function": "f", "line": 10, "status": "exercised"},
+                             {"file": "src/a.py", "function": "g", "line": 20, "status": "unexercised"}],
                "proving_tests": [], "redundant_tests": [{"id": "tests/t.py::test_extra"}],
                "unknown_tests": [], "not_measured": []})
     }
@@ -201,7 +207,7 @@ mod tests {
                     id: "tests/t.py::test_extra".into(),
                     reason: String::new(),
                 }],
-                unproven: vec!["src/a.py:g (line 20)".into()],
+                unexercised: vec!["src/a.py:g (line 20)".into()],
             }
         );
     }

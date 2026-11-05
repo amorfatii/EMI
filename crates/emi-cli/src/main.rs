@@ -26,6 +26,10 @@ enum Command {
     /// evidence, laws, changed old tests, the action to take). Exit 0 stop,
     /// 3 repair, 4 ask a person, 5 incomplete, 2 usage or configuration error.
     Done(donecli::DoneArgs),
+    /// Compute a receipt again from nothing cached and say whether it is
+    /// the same decision on the same evidence. Exit 0 same, 1 different,
+    /// 2 usage error.
+    Replay(donecli::ReplayArgs),
     /// Run the done check when a coding agent tries to stop (Claude Code,
     /// opencode), and install or remove that hook.
     #[command(subcommand)]
@@ -40,6 +44,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
     match cli.command {
         Command::Init(args) => donecli::init(&args),
         Command::Done(args) => donecli::done(&args),
+        Command::Replay(args) => donecli::replay(&args),
         Command::Hook(cmd) => emi_hook::cli::run(&cmd),
         Command::Journal(cmd) => emi_hook::journal::run(&cmd),
     }

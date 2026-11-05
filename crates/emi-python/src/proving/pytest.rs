@@ -8,6 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use emi_kernel::pins::Pins;
+
 /// Options that take their value as the next argument.
 const VALUE_OPTIONS: &[&str] = &[
     "-k",
@@ -149,7 +151,8 @@ impl Command {
         let mut argv = self.reporter();
         argv.extend(self.without(&[VERBOSITY]));
         argv.extend(self.selectors.clone());
-        argv.extend(["--collect-only", "-q", "-p", "no:cacheprovider"].map(str::to_owned));
+        argv.extend(["--collect-only", "-q"].map(str::to_owned));
+        argv.extend(Pins::pytest_args());
         argv
     }
 
@@ -175,6 +178,7 @@ impl Command {
         // a file that cannot be imported must not keep the others from
         // running: its error is one outcome among the rest
         argv.extend(["-q", "--tb=no", "--continue-on-collection-errors"].map(str::to_owned));
+        argv.extend(Pins::pytest_args());
         argv
     }
 
@@ -183,9 +187,8 @@ impl Command {
         let mut argv: Vec<String> = Vec::new();
         argv.extend(self.without(&[STOP_EARLY, &["--maxfail"]]));
         // a file that cannot be imported must not stop the other files
-        argv.extend(
-            ["--continue-on-collection-errors", "-p", "no:cacheprovider"].map(str::to_owned),
-        );
+        argv.push("--continue-on-collection-errors".to_owned());
+        argv.extend(Pins::pytest_args());
         argv.push(format!("--junitxml={junit}"));
         argv
     }

@@ -61,7 +61,7 @@ try {
   await writeFile(`${directory}/tests/test_new.py`, "from app import add\n\ndef test_none():\n    assert add(None, 2) == 2\n\ndef test_again():\n    assert add(1, 2) == 3\n")
   assert.match(await idle(), /repair round 2 of 3/)
   await writeFile(`${directory}/tests/test_new.py`, "from app import add\n\ndef test_none():\n    assert add(None, 2) == 2\n")
-  assert.match(await idle(), /proven/)
+  assert.match(await idle(), /exercised/)
   assert.equal(prompts.length, 2)
   assert.equal(notes.length, 1)
   console.log("Installed V2 adapter: real checks, two repairs, one receipt; budget was not reset by repair prompts")

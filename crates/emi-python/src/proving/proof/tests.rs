@@ -30,7 +30,7 @@ fn a_changed_line_that_ran_proves_the_function() {
     // f is lines 3-7; the change wrote line 6; coverage ran 6
     let f = changed((3, 7), &[6]);
     let cov = lines(&[1, 3, 4, 5, 6, 7, 9], &[1, 3, 4, 5, 6, 9]);
-    assert_eq!(judge(&f, SOURCE, Some(&cov)), (FnStatus::Proven, None));
+    assert_eq!(judge(&f, SOURCE, Some(&cov)), (FnStatus::Exercised, None));
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn a_changed_line_that_did_not_run_leaves_the_function_unproven() {
     // the function was called, but not the line the change wrote
     let f = changed((3, 7), &[6]);
     let cov = lines(&[1, 3, 4, 5, 6, 7, 9], &[1, 3, 4, 5, 9]);
-    assert_eq!(judge(&f, SOURCE, Some(&cov)), (FnStatus::Unproven, None));
+    assert_eq!(judge(&f, SOURCE, Some(&cov)), (FnStatus::Unexercised, None));
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn defining_the_function_does_not_prove_it() {
     // a new function: every line is added; only the import-time lines ran
     let f = changed((3, 7), &[3, 4, 5, 6, 7]);
     let cov = lines(&[1, 3, 4, 5, 6, 7, 9], &[1, 3, 9]);
-    assert_eq!(judge(&f, SOURCE, Some(&cov)), (FnStatus::Unproven, None));
+    assert_eq!(judge(&f, SOURCE, Some(&cov)), (FnStatus::Unexercised, None));
 }
 
 #[test]
@@ -54,12 +54,15 @@ fn a_change_with_no_executable_added_line_is_judged_by_the_body_running() {
     // only the signature changed: it counts when the body ran
     let f = changed((3, 7), &[3]);
     let ran = lines(&[3, 4, 5, 6, 7], &[3, 4]);
-    assert_eq!(judge(&f, SOURCE, Some(&ran)).0, FnStatus::Proven);
+    assert_eq!(judge(&f, SOURCE, Some(&ran)).0, FnStatus::Exercised);
     let not_run = lines(&[3, 4, 5, 6, 7], &[3]);
-    assert_eq!(judge(&f, SOURCE, Some(&not_run)).0, FnStatus::Unproven);
+    assert_eq!(judge(&f, SOURCE, Some(&not_run)).0, FnStatus::Unexercised);
     // lines only taken out: the same
     let removed_only = changed((3, 7), &[]);
-    assert_eq!(judge(&removed_only, SOURCE, Some(&ran)).0, FnStatus::Proven);
+    assert_eq!(
+        judge(&removed_only, SOURCE, Some(&ran)).0,
+        FnStatus::Exercised
+    );
 }
 
 #[test]
@@ -68,11 +71,11 @@ fn a_one_line_function_keeps_its_only_line() {
     let f = changed((2, 2), &[2]);
     assert_eq!(
         judge(&f, src, Some(&lines(&[1, 2], &[1, 2]))).0,
-        FnStatus::Proven
+        FnStatus::Exercised
     );
     assert_eq!(
         judge(&f, src, Some(&lines(&[1, 2], &[1]))).0,
-        FnStatus::Unproven
+        FnStatus::Unexercised
     );
 }
 
@@ -110,9 +113,9 @@ fn a_function_the_change_removed_lines_from_is_reached_by_running_it() {
     };
     // only an added line (4), never run: not reached
     let added = changed((1, 5), &[4]);
-    assert_eq!(judge(&added, source, Some(&lines)).0, FnStatus::Unproven);
+    assert_eq!(judge(&added, source, Some(&lines)).0, FnStatus::Unexercised);
     // the same, with a line removed from the function as well: reached
     let mut removed = changed((1, 5), &[4]);
     removed.removed_lines = vec![2];
-    assert_eq!(judge(&removed, source, Some(&lines)).0, FnStatus::Proven);
+    assert_eq!(judge(&removed, source, Some(&lines)).0, FnStatus::Exercised);
 }

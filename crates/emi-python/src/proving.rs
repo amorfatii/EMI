@@ -10,8 +10,8 @@
 //! proving test: it is then that test's **companion**. An added test that
 //! is skipped at both revisions is listed as skipped. A test file only the
 //! candidate cannot collect is listed with the failing tests. A function the candidate
-//! changed is **proven** when a proving test executes a line the change
-//! wrote in it, **unproven** when none does. Whatever could not be decided
+//! changed is **exercised** when a proving test executes a line the change
+//! wrote in it, **unexercised** when none does. Whatever could not be decided
 //! is `unknown` with its reason, never a guess and never an empty list.
 //!
 //! [`measure`] runs the measurement and returns the receipt's `change`
@@ -133,7 +133,9 @@ impl Request {
             test_globs: vec!["tests/*".to_owned()],
             source: String::new(),
             link: Vec::new(),
-            env: Vec::new(),
+            // the default pins; a caller that configures others sets them
+            // after these, and the last setting of a variable wins
+            env: emi_kernel::pins::Pins::default().env(),
             network: false,
             timeout: Duration::from_secs(600),
             strict: false,

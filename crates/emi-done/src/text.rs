@@ -56,9 +56,9 @@ fn regression_line(r: &Value) -> String {
 
 fn change_line(c: &Value) -> String {
     let functions = c["functions"].as_array().map_or(0, Vec::len);
-    let proven = c["functions"]
-        .as_array()
-        .map_or(0, |f| f.iter().filter(|x| x["status"] == "proven").count());
+    let exercised = c["functions"].as_array().map_or(0, |f| {
+        f.iter().filter(|x| x["status"] == "exercised").count()
+    });
     let edited = c["proving_tests"]
         .as_array()
         .map_or(0, |t| t.iter().filter(|x| x["edited"] == true).count());
@@ -69,12 +69,12 @@ fn change_line(c: &Value) -> String {
         n => format!("; {n} of the proving tests are old tests the change edited"),
     };
     match c["status"].as_str() {
-        Some("proven") => format!("proven ({functions} changed functions{by})."),
-        Some("partly_proven") => {
-            format!("partly proven ({proven} of {functions} changed functions{by}).")
+        Some("exercised") => format!("exercised ({functions} changed functions{by})."),
+        Some("partly_exercised") => {
+            format!("partly exercised ({exercised} of {functions} changed functions{by}).")
         }
-        Some("unproven") => {
-            format!("unproven ({functions} changed functions, none run by a proving test).")
+        Some("unexercised") => {
+            format!("unexercised ({functions} changed functions, none run by a proving test).")
         }
         Some("none") => match c["proving_tests"].as_array().map_or(0, Vec::len) {
             0 => "nothing to prove (no function changed).".to_owned(),
@@ -273,13 +273,13 @@ mod tests {
     #[test]
     fn proof_that_rests_on_edited_old_tests_says_so() {
         let mut r = receipt();
-        r["change"] = json!({"status": "proven",
-            "functions": [{"file": "a.py", "function": "f", "line": 1, "status": "proven"}],
+        r["change"] = json!({"status": "exercised",
+            "functions": [{"file": "a.py", "function": "f", "line": 1, "status": "exercised"}],
             "proving_tests": [{"id": "t.py::test_a", "baseline_result": "failed", "edited": true},
                               {"id": "t.py::test_b", "baseline_result": "failed", "edited": false}]});
         let text = render(&r);
         assert!(
-            text.contains("New behaviour: proven (1 changed functions; 1 of the proving tests are old tests the change edited)."),
+            text.contains("New behaviour: exercised (1 changed functions; 1 of the proving tests are old tests the change edited)."),
             "{text}"
         );
     }

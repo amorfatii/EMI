@@ -32,10 +32,11 @@ pub fn proving_request(
     req.test_globs.clone_from(&config.tests.globs);
     req.source.clone_from(&config.source);
     req.link.clone_from(&config.link);
-    if !config.python_path.is_empty() {
-        req.env
-            .push(("PYTHONPATH".to_owned(), config.python_path.join(":")));
-    }
+    req.env.extend(config.pins.env());
+    req.env.push((
+        "PYTHONPATH".to_owned(),
+        emi_kernel::pins::Pins::python_path(&config.python_path),
+    ));
     req
 }
 
@@ -64,9 +65,11 @@ fn first_of(ids: &BTreeSet<String>) -> &str {
 /// - with old test files restored, they fail only beside the baseline
 ///   versions of files the change edited (a fixture, a helper, expected
 ///   output): the person's question, like a restored test that fails;
-/// - with nothing restored, the whole suite runs once more, and a test
-///   that passes in it was flaky. One that fails again depends on what
-///   ran before it, which the change altered: still a break.
+/// - with nothing restored, the whole suite runs once more under the same
+///   pins. A test that fails again depends on what ran before it, which the
+///   change altered: still a break. One that passes did not reproduce: its
+///   outcome is not decided by the code, so it is neither held nor broken
+///   and the check is incomplete. A failure is never cleared by a lucky run.
 ///
 /// Anything that cannot be run a second time leaves the first verdict.
 fn confirm(r: Regression, s: &Second) -> Regression {
@@ -91,20 +94,14 @@ fn confirm(r: Regression, s: &Second) -> Regression {
         .ok()
         .and_then(|v| Outcomes::of(v.check.as_ref()));
     let Some(again) = again else { return r };
-    let flaky: BTreeSet<String> = alone
+    let unreproduced: BTreeSet<String> = alone
         .into_iter()
         .filter(|id| !again.not_passing(id))
         .collect();
-    if flaky.is_empty() {
+    if unreproduced.is_empty() {
         return r;
     }
-    let note = format!(
-        "{} test(s) failed once and passed when run again, alone and in the whole suite \
-         (first: {}): flaky, not a break",
-        flaky.len(),
-        first_of(&flaky)
-    );
-    regression::cleared(r, &flaky, note, s.decision, s.scope)
+    regression::not_reproduced(r, &unreproduced, s.decision, s.scope)
 }
 
 /// What the verification found, or why it found nothing.
@@ -128,9 +125,10 @@ fn measured_unknown(why: String) -> Measured {
 /// the result is in the task's store, and a failure here is found again,
 /// and reported, by the check itself.
 pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: &Baseline) {
-    if !derived::is_pytest(&config.tests.command) {
+    let Some(interpreter) = derived::interpreter(config) else {
         return;
-    }
+    };
+    let environment = crate::environment::id(repo, &interpreter).ok();
     let Ok(trusted) = derived::trusted(view, &baseline.sha, &config.tests.globs, &BTreeSet::new())
     else {
         return;
@@ -138,16 +136,24 @@ pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: 
     let Ok(own) = derived::own_names(view, &baseline.sha, config) else {
         return;
     };
-    let spec = derived::spec(repo, config, &baseline.sha, &trusted, &own);
+    let spec = derived::spec(
+        repo,
+        config,
+        &baseline.sha,
+        (&trusted, &own),
+        environment.as_deref(),
+    );
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
     if let Ok(store) = derived::open(&authority, repo, &baseline.sha, &spec) {
-        let _ = derived::baseline_check_once(&store, &baseline.sha, &authority);
+        let _ = derived::baseline_checks_once(&store, &baseline.sha, &authority);
     }
 }
 
 /// The regression evidence from the candidate's run. When that run named
-/// its tests one by one, it is compared with the baseline's own run
-/// instead of demanding a suite with no skips.
+/// its tests one by one, it is compared with the baseline's own runs
+/// instead of demanding a suite with no skips: a test the two baseline
+/// runs disagree on is quarantined, and the rest are compared with what
+/// either baseline run showed.
 fn compared(
     (store, authority): (&crate::engine::Store, &Path),
     baseline: &Baseline,
@@ -156,20 +162,27 @@ fn compared(
     scope: &regression::Scope,
 ) -> Result<Regression, String> {
     let check = verified.check.as_ref();
-    let base = if pytest {
-        let base = derived::baseline_check_once(store, &baseline.sha, authority)?;
-        Outcomes::of(base.as_ref())
+    let (base, unstable) = if pytest {
+        let runs = derived::baseline_checks_once(store, &baseline.sha, authority)?;
+        let outcomes: Option<Vec<Outcomes>> = runs.iter().map(|r| Outcomes::of(Some(r))).collect();
+        match outcomes.as_deref() {
+            Some([one, two]) => (Some(one.merged(two)), one.unstable(two)),
+            Some([one]) => (Some(one.clone()), BTreeSet::new()),
+            _ => (None, BTreeSet::new()),
+        }
     } else {
-        None
+        (None, BTreeSet::new())
     };
-    Ok(match (&base, Outcomes::of(check)) {
+    let mut r = match (&base, Outcomes::of(check)) {
         (Some(base), Some(cand)) => {
             regression::from_outcomes(&verified.decision, check, (base, &cand), scope)
         }
         (Some(base), None) => regression::not_started(check, base)
             .unwrap_or_else(|| regression::from_decision(&verified.decision, check, pytest, scope)),
         (None, _) => regression::from_decision(&verified.decision, check, pytest, scope),
-    })
+    };
+    r.quarantined = unstable.into_iter().collect();
+    Ok(r)
 }
 
 fn try_measure(
@@ -177,7 +190,7 @@ fn try_measure(
     view: &Path,
     req: &Request,
     (config, baseline, cand): (&Config, &Baseline, &Candidate),
-    entries: &[Entry],
+    (entries, environment): (&[Entry], Option<&str>),
 ) -> Result<Measured, String> {
     let trusted = derived::trusted(
         view,
@@ -187,7 +200,7 @@ fn try_measure(
     )
     .map_err(|e| e.to_string())?;
     let own = derived::own_names(view, &baseline.sha, config).map_err(|e| e.to_string())?;
-    let spec = derived::spec(repo, config, &baseline.sha, &trusted, &own);
+    let spec = derived::spec(repo, config, &baseline.sha, (&trusted, &own), environment);
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
     let store = derived::open(&authority, repo, &baseline.sha, &spec).map_err(|e| e.to_string())?;
     let subject = match req.candidate {
@@ -331,7 +344,18 @@ pub fn check(
     approve(req, &repo_dir, &changed, baseline)?;
     let (approvals, approval_fault) = approvals(req, &repo_dir, &changed);
     let mut old_tests = oldtests::mark(changed, &approvals, &baseline.sha);
-    let measured = match try_measure(repo, view, req, (config, baseline, cand), &old_tests) {
+    let environment = derived::interpreter(config).map(|py| crate::environment::id(repo, &py));
+    let env_id = environment
+        .as_ref()
+        .and_then(|e| e.as_ref().ok())
+        .map(String::as_str);
+    let measured = match try_measure(
+        repo,
+        view,
+        req,
+        (config, baseline, cand),
+        (&old_tests, env_id),
+    ) {
         Ok(m) => m,
         Err(e) => measured_unknown(e),
     };
@@ -356,8 +380,21 @@ pub fn check(
     not_verified.extend(approval_fault.clone());
     let mut this_run = receipt::this_run(&limits);
     this_run.extend(approval_fault.clone());
+    if let Some(Err(why)) = &environment {
+        not_verified.push(why.clone());
+        this_run.push(why.clone());
+    }
     let parts = receipt::Parts {
         repo,
+        inputs: receipt::inputs(&receipt::Inputs {
+            baseline,
+            candidate: cand,
+            setting: req.setting,
+            config: Some(config),
+            environment: environment.as_ref(),
+            laws: None,
+            intent: serde_json::Value::Null,
+        }),
         baseline,
         candidate: cand,
         setting: req.setting,

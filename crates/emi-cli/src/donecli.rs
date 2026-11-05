@@ -195,3 +195,27 @@ pub fn done(a: &DoneArgs) -> anyhow::Result<u8> {
     }
     Ok(outcome.action.exit_code())
 }
+
+#[derive(Args)]
+pub struct ReplayArgs {
+    /// A receipt `emi done --format json` printed.
+    receipt: PathBuf,
+    /// Repository root (default: current directory).
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+}
+
+/// `emi replay`: the receipt computed again from nothing cached. Prints
+/// whether the decision is the same and, if not, which parts differ.
+pub fn replay(a: &ReplayArgs) -> anyhow::Result<u8> {
+    let text = std::fs::read_to_string(&a.receipt)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", a.receipt.display()))?;
+    let original = emi_kernel::strict::loads(&text)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", a.receipt.display()))?;
+    let state_root = emi_done::state::root_from_env()?;
+    let replayed = emi_done::replay::replay(&a.repo, &state_root, &original, change_evidence)?;
+    let mut json = String::new();
+    emi_kernel::json::canonical(&replayed.to_value(), &mut json);
+    writeln!(std::io::stdout().lock(), "{json}")?;
+    Ok(if replayed.same { 0 } else { 1 })
+}

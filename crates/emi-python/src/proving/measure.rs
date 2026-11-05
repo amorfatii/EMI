@@ -353,7 +353,7 @@ impl Context<'_> {
         let mut evidence = ChangeEvidence::unknown(Vec::new(), Vec::new());
         let ids: Vec<String> = classified.proving.iter().map(|t| t.id.clone()).collect();
         // a failing added test may yet prove the change once it passes,
-        // so it keeps a function from being called unproven, like one
+        // so it keeps a function from being called unexercised, like one
         // that could not be classified
         let unclassified = classified.unknown.len() + classified.failing.len();
         evidence.proving_tests = classified.proving;
@@ -517,7 +517,7 @@ impl Context<'_> {
             let text =
                 std::fs::read_to_string(tree.dir.join(&f.file)).map_err(|e| e.to_string())?;
             match judge(f, &text, one.files.get(&f.file)) {
-                (FnStatus::Proven, _) => return Ok(true),
+                (FnStatus::Exercised, _) => return Ok(true),
                 (FnStatus::Unknown, why) => unknown.extend(why),
                 _ => {}
             }
@@ -546,7 +546,7 @@ impl Context<'_> {
             scope
                 .functions
                 .iter()
-                .map(|_| (FnStatus::Unproven, None))
+                .map(|_| (FnStatus::Unexercised, None))
                 .collect()
         } else {
             self.covered(scope, proving, coverage)
@@ -560,7 +560,7 @@ impl Context<'_> {
             .iter()
             .zip(judged)
             .map(|(f, verdict)| match verdict {
-                (FnStatus::Unproven, _) => (
+                (FnStatus::Unexercised, _) => (
                     FnStatus::Unknown,
                     Some(format!(
                         "{}: {}: no known proving test executes it, but {unclassified} added test(s) could not be classified",
@@ -619,7 +619,7 @@ impl Context<'_> {
 
     /// Directories coverage must report on even when no test imports
     /// them: the product directory and where the changed files are. A file
-    /// no test loads is then unproven (listed, nothing executed), not
+    /// no test loads is then unexercised (listed, nothing executed), not
     /// missing from the report.
     fn coverage_sources(&self, scope: &Scope) -> Vec<String> {
         let mut dirs: BTreeSet<String> = scope

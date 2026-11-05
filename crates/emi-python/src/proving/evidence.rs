@@ -9,9 +9,9 @@ use crate::proving::proof::FnStatus;
 /// How far the change is shown to do what the task asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    Proven,
-    PartlyProven,
-    Unproven,
+    Exercised,
+    PartlyExercised,
+    Unexercised,
     /// The candidate changed no function outside the tests.
     None,
     /// Nothing could be measured.
@@ -21,9 +21,9 @@ pub enum Status {
 impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
-            Status::Proven => "proven",
-            Status::PartlyProven => "partly_proven",
-            Status::Unproven => "unproven",
+            Status::Exercised => "exercised",
+            Status::PartlyExercised => "partly_exercised",
+            Status::Unexercised => "unexercised",
             Status::None => "none",
             Status::Unknown => "unknown",
         }
@@ -33,20 +33,23 @@ impl Status {
 /// The status of a change from its functions. `unparsed` counts the changed
 /// files in a supported language that could not be read on a side: they
 /// hold changed functions nobody can list, so they are unknowns, and a
-/// change with any is never `proven` or `none`.
+/// change with any is never `exercised` or `none`.
 pub fn status_of(functions: &[FnStatus], unparsed: usize) -> Status {
     let total = functions.len() + unparsed;
-    let proven = functions.iter().filter(|s| **s == FnStatus::Proven).count();
-    let unproven = functions
+    let exercised = functions
         .iter()
-        .filter(|s| **s == FnStatus::Unproven)
+        .filter(|s| **s == FnStatus::Exercised)
         .count();
-    match (total, proven, unproven) {
+    let unexercised = functions
+        .iter()
+        .filter(|s| **s == FnStatus::Unexercised)
+        .count();
+    match (total, exercised, unexercised) {
         (0, ..) => Status::None,
-        (t, p, _) if p == t => Status::Proven,
+        (t, p, _) if p == t => Status::Exercised,
         (_, 0, 0) => Status::Unknown,
-        (_, 0, _) => Status::Unproven,
-        _ => Status::PartlyProven,
+        (_, 0, _) => Status::Unexercised,
+        _ => Status::PartlyExercised,
     }
 }
 
@@ -191,7 +194,7 @@ impl ChangeEvidence {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use FnStatus::{Proven, Unknown, Unproven};
+    use FnStatus::{Exercised, Unexercised, Unknown};
 
     #[test]
     fn status_truth_table() {
@@ -199,15 +202,15 @@ mod tests {
             (&[], 0, Status::None),
             // an unreadable changed file may hold functions: not `none`
             (&[], 1, Status::Unknown),
-            (&[Proven], 0, Status::Proven),
-            (&[Proven, Proven], 0, Status::Proven),
-            (&[Proven], 1, Status::PartlyProven),
-            (&[Proven, Unproven], 0, Status::PartlyProven),
-            (&[Proven, Unknown], 0, Status::PartlyProven),
-            (&[Unproven], 0, Status::Unproven),
-            (&[Unproven, Unproven], 0, Status::Unproven),
-            (&[Unproven, Unknown], 0, Status::Unproven),
-            (&[Unproven], 2, Status::Unproven),
+            (&[Exercised], 0, Status::Exercised),
+            (&[Exercised, Exercised], 0, Status::Exercised),
+            (&[Exercised], 1, Status::PartlyExercised),
+            (&[Exercised, Unexercised], 0, Status::PartlyExercised),
+            (&[Exercised, Unknown], 0, Status::PartlyExercised),
+            (&[Unexercised], 0, Status::Unexercised),
+            (&[Unexercised, Unexercised], 0, Status::Unexercised),
+            (&[Unexercised, Unknown], 0, Status::Unexercised),
+            (&[Unexercised], 2, Status::Unexercised),
             (&[Unknown], 0, Status::Unknown),
             (&[Unknown, Unknown], 1, Status::Unknown),
         ];
@@ -223,19 +226,19 @@ mod tests {
     #[test]
     fn json_has_the_receipt_shape_and_is_sorted() {
         let change = ChangeEvidence {
-            status: Status::PartlyProven,
+            status: Status::PartlyExercised,
             functions: vec![
                 FunctionEvidence {
                     file: "src/b.py".into(),
                     function: "g".into(),
                     line: 3,
-                    status: Unproven,
+                    status: Unexercised,
                 },
                 FunctionEvidence {
                     file: "src/a.py".into(),
                     function: "f".into(),
                     line: 10,
-                    status: Proven,
+                    status: Exercised,
                 },
             ],
             proving_tests: vec![ProvingTest {
@@ -271,10 +274,10 @@ mod tests {
         assert_eq!(
             v,
             json!({
-                "status": "partly_proven",
+                "status": "partly_exercised",
                 "functions": [
-                    {"file": "src/a.py", "function": "f", "line": 10, "status": "proven"},
-                    {"file": "src/b.py", "function": "g", "line": 3, "status": "unproven"},
+                    {"file": "src/a.py", "function": "f", "line": 10, "status": "exercised"},
+                    {"file": "src/b.py", "function": "g", "line": 3, "status": "unexercised"},
                 ],
                 "proving_tests": [
                     {"id": "tests/test_a.py::test_new", "baseline_result": "errored", "edited": false},

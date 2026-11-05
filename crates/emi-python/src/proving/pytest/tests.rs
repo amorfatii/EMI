@@ -47,7 +47,9 @@ fn listing_keeps_the_selectors_and_one_quiet_flag() {
     assert!(listing[2].contains("EMI-ITEM"));
     assert_eq!(
         listing[3..],
-        argv("-k slow -x tests/unit --collect-only -q -p no:cacheprovider")
+        argv(
+            "-k slow -x tests/unit --collect-only -q -p emi_pins -p no:randomly -p no:cacheprovider"
+        )
     );
 }
 
@@ -72,8 +74,8 @@ fn running_chosen_tests_drops_the_selectors_and_what_hides_failures() {
     assert_eq!(
         c.run_argv(&ids, ".emi-proving/j.xml"),
         argv(
-            "python -m pytest -q -k fast --continue-on-collection-errors -p no:cacheprovider \
-             --junitxml=.emi-proving/j.xml tests/test_a.py::test_new tests/test_a.py::test_p[1]"
+            "python -m pytest -q -k fast --continue-on-collection-errors -p emi_pins \
+             -p no:randomly -p no:cacheprovider --junitxml=.emi-proving/j.xml tests/test_a.py::test_new tests/test_a.py::test_p[1]"
         )
     );
     // the value of an option stays with it, and `--maxfail=3` goes whole
@@ -82,7 +84,7 @@ fn running_chosen_tests_drops_the_selectors_and_what_hides_failures() {
         c.run_argv(&[], "j.xml"),
         argv(
             "pytest --ignore tests/slow -p xdist --continue-on-collection-errors \
-             -p no:cacheprovider --junitxml=j.xml"
+             -p emi_pins -p no:randomly -p no:cacheprovider --junitxml=j.xml"
         )
     );
 }

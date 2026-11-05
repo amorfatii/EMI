@@ -1,4 +1,4 @@
-//! The receipt (`emi-done-receipt-0.4`): the two evidence parts, the
+//! The receipt (`emi-done-receipt-1.0`): the two evidence parts, the
 //! changed old tests, the action, and what none of it establishes. The
 //! change part arrives as a value ([`ChangeEvidence`]); everything else is
 //! assembled from what this crate measured.
@@ -16,11 +16,63 @@ use crate::oldtests::Entry;
 use crate::regression::{Regression, Status};
 use emi_kernel::decide::{self, Action};
 
-pub const SCHEMA: &str = "emi-done-receipt-0.4";
+pub const SCHEMA: &str = "emi-done-receipt-1.0";
+
+/// What a decision is a function of: the two revisions, the configuration
+/// and the pins it ran under, the Python environment, the setting, and the
+/// version of EMI and of its decision rules. Two checks with the same
+/// inputs must reach the same decision; `emi replay` checks that they do.
+pub struct Inputs<'a> {
+    pub baseline: &'a Baseline,
+    pub candidate: &'a Candidate,
+    pub setting: Setting,
+    /// `None` when there is no configuration to read.
+    pub config: Option<&'a crate::Config>,
+    /// The environment digest, or why there is none.
+    pub environment: Option<&'a Result<String, String>>,
+    /// The digest of the laws the check held the candidate to.
+    pub laws: Option<String>,
+    /// What the person declared the change must keep (`preserve`).
+    pub intent: Value,
+}
+
+/// The receipt's `inputs`.
+pub fn inputs(i: &Inputs) -> Value {
+    json!({
+        "emi": env!("CARGO_PKG_VERSION"),
+        "policy": emi_kernel::decide::POLICY,
+        "baseline": i.baseline.sha,
+        "candidate": i.candidate.content_id,
+        "setting": i.setting.as_str(),
+        "config": i.config.map(|c| emi_kernel::json::digest("emi-config", &c.to_value())),
+        "pins": i.config.map(|c| c.pins.to_value()),
+        "environment": i.environment.and_then(|e| e.as_ref().ok()),
+        "laws": i.laws,
+        "intent": i.intent,
+    })
+}
+
+/// Everything of `receipt` that a replay must reproduce: all of it but
+/// where it was computed and the ids derived from the rest.
+fn identity(receipt: &Value) -> Value {
+    let mut v = receipt.clone();
+    if let Some(m) = v.as_object_mut() {
+        m.remove("meta");
+        m.remove("decision_id");
+    }
+    v
+}
+
+/// The id of a receipt's decision and the evidence it rests on.
+pub fn decision_id(receipt: &Value) -> String {
+    emi_kernel::json::digest("emi-decision", &identity(receipt))
+}
 
 /// Everything a receipt is made of.
 pub struct Parts<'a> {
     pub repo: &'a Path,
+    /// Everything the decision is a function of ([`inputs`]).
+    pub inputs: Value,
     pub baseline: &'a Baseline,
     pub candidate: &'a Candidate,
     pub setting: Setting,
@@ -41,7 +93,8 @@ pub struct Parts<'a> {
 /// Parts that could not be measured for an environment reason.
 fn faults(p: &Parts) -> Vec<String> {
     let mut out = p.faults.clone();
-    if p.regression.status == Status::Unknown {
+    // nondeterministic outcomes are their own row of the table
+    if p.regression.status == Status::Unknown && p.regression.nondeterministic.is_empty() {
         out.push(format!(
             "regression evidence could not be measured: {}",
             p.regression
@@ -98,7 +151,8 @@ fn facts(p: &Parts) -> decide::Facts {
         regression_broken: p.regression.status == Status::Broken,
         failing_tests: failing(p).len(),
         redundant_tests: change.redundant.len(),
-        unexercised_functions: change.unproven.len(),
+        unexercised_functions: change.unexercised.len(),
+        nondeterministic: p.regression.nondeterministic.len(),
         unapproved: p.old_tests.iter().filter(|e| !e.approved).count(),
         ..decide::Facts::default()
     }
@@ -181,7 +235,7 @@ fn repair_lines(p: &Parts) -> Vec<String> {
         return itemize(&change.redundant, redundant_line);
     }
     if p.on_unproven == OnUnproven::Repair {
-        return itemize(&change.unproven, |f| {
+        return itemize(&change.unexercised, |f| {
             format!("No proving test runs {f}; add a test that fails without your change.")
         });
     }
@@ -196,9 +250,11 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
     } else {
         Vec::new()
     };
-    let receipt = json!({
+    let mut receipt = json!({
         "schema": SCHEMA,
-        "repo": p.repo,
+        "policy": emi_kernel::decide::POLICY,
+        "input_id": emi_kernel::json::digest("emi-inputs", &p.inputs),
+        "inputs": p.inputs,
         "baseline": {"sha": p.baseline.sha, "source": p.baseline.source},
         "candidate": {"id": p.candidate.id, "content_id": p.candidate.content_id},
         "assurance": {"setting": p.setting.as_str(), "isolation": p.isolation},
@@ -210,6 +266,9 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
         "not_verified": p.not_verified,
         "this_run": p.this_run,
     });
+    receipt["decision_id"] = json!(decision_id(&receipt));
+    // where it was computed: not part of what a replay reproduces
+    receipt["meta"] = json!({"repo": p.repo});
     (receipt, action)
 }
 
@@ -237,7 +296,7 @@ fn standing(l: &Limits) -> Vec<String> {
     let mut out = vec![
         "Behaviour that no test exercises: tests passing does not show the task's behaviour exists."
             .to_owned(),
-        "The baseline's tests are taken as correct, and they ran once: a flaky test could change the result."
+        "The baseline's tests are taken as correct. They ran twice under the same pins; a test whose outcome differed is quarantined, and an outcome that depends on something the pins do not hold (the clock, the network, another process) can still differ."
             .to_owned(),
         "Tests the baseline already skipped, expected to fail, could not collect or failed are not regression evidence: nothing is known about the behaviour they cover."
             .to_owned(),
@@ -289,6 +348,8 @@ mod tests {
             attributed: Vec::new(),
             complete: true,
             added_failing: Vec::new(),
+            quarantined: Vec::new(),
+            nondeterministic: Vec::new(),
         }
     }
 
@@ -338,6 +399,7 @@ mod tests {
             rev: "c".repeat(40),
         };
         f(&Parts {
+            inputs: json!({"test": true}),
             repo: Path::new("/r"),
             baseline: &baseline,
             candidate: &candidate,
@@ -364,7 +426,11 @@ mod tests {
         assert_eq!(action, Action::Stop);
         for key in [
             "schema",
-            "repo",
+            "policy",
+            "input_id",
+            "inputs",
+            "decision_id",
+            "meta",
             "baseline",
             "candidate",
             "assurance",
@@ -379,6 +445,19 @@ mod tests {
         }
         assert_eq!(v["change"]["status"], "unknown");
         assert_eq!(v["repair"], json!([]));
+        assert_eq!(v["meta"]["repo"], "/r");
+    }
+
+    #[test]
+    fn the_decision_id_covers_the_evidence_and_not_where_it_ran() {
+        let (v, _) = with(&held(), &[], &unmeasured(), OnUnproven::Report, assemble);
+        assert_eq!(v["decision_id"], json!(decision_id(&v)));
+        let mut elsewhere = v.clone();
+        elsewhere["meta"]["repo"] = json!("/somewhere/else");
+        assert_eq!(decision_id(&elsewhere), decision_id(&v));
+        let mut other = v.clone();
+        other["regression"]["tests_run"] = json!(99);
+        assert_ne!(decision_id(&other), decision_id(&v));
     }
 
     #[test]
@@ -483,9 +562,9 @@ mod tests {
     }
 
     #[test]
-    fn redundant_tests_and_unproven_functions_repair_as_configured() {
-        let change = ChangeEvidence::Measured(json!({"status": "partly_proven",
-            "functions": [{"file": "src/a.py", "function": "g", "line": 20, "status": "unproven"}],
+    fn redundant_tests_and_unexercised_functions_repair_as_configured() {
+        let change = ChangeEvidence::Measured(json!({"status": "partly_exercised",
+            "functions": [{"file": "src/a.py", "function": "g", "line": 20, "status": "unexercised"}],
             "proving_tests": [], "redundant_tests": [], "unknown_tests": [], "not_measured": []}));
         let (v, action) = with(&held(), &[], &change, OnUnproven::Report, assemble);
         assert_eq!((action, v["repair"].clone()), (Action::Stop, json!([])));
@@ -497,7 +576,7 @@ mod tests {
                 .unwrap_or_default()
                 .contains("src/a.py:g (line 20)")
         );
-        let redundant = ChangeEvidence::Measured(json!({"status": "proven", "functions": [],
+        let redundant = ChangeEvidence::Measured(json!({"status": "exercised", "functions": [],
             "proving_tests": [], "redundant_tests": [{"id": "tests/t.py::test_extra"}],
             "unknown_tests": [], "not_measured": []}));
         // a test that passes before and after may guard what must stay:
@@ -517,7 +596,7 @@ mod tests {
 
     #[test]
     fn a_repair_names_every_item_of_one_kind_and_says_why() {
-        let change = ChangeEvidence::Measured(json!({"status": "proven", "functions": [],
+        let change = ChangeEvidence::Measured(json!({"status": "exercised", "functions": [],
             "proving_tests": [],
             "redundant_tests": [
                 {"id": "tests/t.py::test_a", "reason": "passes at the baseline"},

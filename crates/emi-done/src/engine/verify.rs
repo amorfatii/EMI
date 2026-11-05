@@ -126,7 +126,9 @@ fn materialize(
     contract: &Value,
 ) -> Result<Vec<PathBuf>> {
     snapshot::materialize(objects, candidate, dest)?;
-    snapshot::link_dependencies(repo, dest, &globs(&contract["execution"]["link"]))
+    let linked = snapshot::link_dependencies(repo, dest, &globs(&contract["execution"]["link"]))?;
+    emi_python::pins::install(dest)?;
+    Ok(linked)
 }
 
 /// Write `bytes` to `workspace/rel` without following links the candidate

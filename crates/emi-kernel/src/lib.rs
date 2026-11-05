@@ -10,4 +10,5 @@ pub mod glob;
 pub mod hash;
 pub mod json;
 pub mod paths;
+pub mod pins;
 pub mod strict;

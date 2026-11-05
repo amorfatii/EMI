@@ -56,7 +56,7 @@ fn situations() -> Vec<(&'static str, Setup, &'static str)> {
         (
             "broken product code",
             |p| p.write("app.py", project::BROKEN),
-            "exit=3 repair regression=broken change=unproven",
+            "exit=3 repair regression=broken change=unexercised",
         ),
         (
             "fix with a proving test",
@@ -64,7 +64,7 @@ fn situations() -> Vec<(&'static str, Setup, &'static str)> {
                 p.write("app.py", FIX);
                 p.write("tests/test_new.py", NONE_TEST);
             },
-            "exit=0 stop regression=held change=proven proving_tests=1",
+            "exit=0 stop regression=held change=exercised proving_tests=1",
         ),
         (
             "fix with a redundant test",
@@ -72,12 +72,12 @@ fn situations() -> Vec<(&'static str, Setup, &'static str)> {
                 p.write("app.py", FIX);
                 p.write("tests/test_new.py", AGAIN_TEST);
             },
-            "exit=0 stop regression=held change=unproven redundant_tests=1",
+            "exit=0 stop regression=held change=unexercised redundant_tests=1",
         ),
         (
             "fix without a test",
             |p| p.write("app.py", FIX),
-            "exit=0 stop regression=held change=unproven",
+            "exit=0 stop regression=held change=unexercised",
         ),
         (
             "failing added test",

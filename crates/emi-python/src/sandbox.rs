@@ -71,6 +71,7 @@ impl Runner<'_> {
         copy.files = inventory.files;
         copy.symlinks = inventory.symlinks;
         copy.linked = snapshot::link_dependencies(self.repo, &copy.dir, self.link)?;
+        crate::pins::install(&copy.dir)?;
         Ok(copy)
     }
 
@@ -88,7 +89,20 @@ impl Runner<'_> {
         spec.hidden = vec![self.repo.to_path_buf()];
         spec.read_only = copy.linked.clone();
         spec.env.extend(self.env.iter().cloned());
+        with_plugin_path(&mut spec.env);
         emi_exec::run(&spec)
+    }
+}
+
+/// Make the pins plugin importable in every run of a copy: its directory
+/// goes last on `PYTHONPATH`, after whatever the caller put there.
+fn with_plugin_path(env: &mut Vec<(String, String)>) {
+    let dir = emi_kernel::pins::PLUGIN_DIR;
+    let last = env.iter().rposition(|(k, _)| k == "PYTHONPATH");
+    match last {
+        Some(i) if env[i].1.split(':').any(|p| p == dir) => {}
+        Some(i) => env[i].1 = format!("{}:{dir}", env[i].1),
+        None => env.push(("PYTHONPATH".to_owned(), dir.to_owned())),
     }
 }
 

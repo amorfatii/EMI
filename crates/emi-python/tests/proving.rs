@@ -162,14 +162,14 @@ fn a_test_that_fails_at_the_baseline_and_passes_on_the_candidate_proves_the_chan
     let req = fx.request();
     let evidence = change(&req);
     let v = evidence.to_json();
-    assert_eq!(v["status"], "proven", "{v}");
+    assert_eq!(v["status"], "exercised", "{v}");
     assert_eq!(
         v["proving_tests"],
         json!([{"id": "tests/test_calc.py::test_add_none", "baseline_result": "failed", "edited": false}])
     );
     assert_eq!(v["redundant_tests"], json!([]));
     assert_eq!(v["unknown_tests"], json!([]));
-    assert_eq!(function(&v, "add")["status"], "proven");
+    assert_eq!(function(&v, "add")["status"], "exercised");
     assert_eq!(v["functions"].as_array().map(Vec::len), Some(1), "{v}");
     assert_eq!(evidence.isolation.as_deref(), Some("bwrap"));
     // the same inputs give the same object
@@ -193,7 +193,7 @@ fn the_repository_may_be_named_through_a_symbolic_link() {
     let mut req = fx.request();
     req.repo = named;
     let v = change(&req).to_json();
-    assert_eq!(v["status"], "proven", "{v}");
+    assert_eq!(v["status"], "exercised", "{v}");
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn a_test_that_already_passes_at_the_baseline_is_redundant() {
         ids(&v["proving_tests"]),
         vec!["tests/test_calc.py::test_add_none"]
     );
-    assert_eq!(v["status"], "proven", "{v}");
+    assert_eq!(v["status"], "exercised", "{v}");
 }
 
 #[test]
@@ -242,8 +242,8 @@ fn a_test_for_a_function_that_does_not_exist_yet_errors_at_the_baseline() {
         ]),
         "{v}"
     );
-    assert_eq!(function(&v, "mul")["status"], "proven");
-    assert_eq!(v["status"], "proven");
+    assert_eq!(function(&v, "mul")["status"], "exercised");
+    assert_eq!(v["status"], "exercised");
 }
 
 #[test]
@@ -260,11 +260,11 @@ fn an_import_error_does_not_make_unrelated_tests_proving() {
         ids(&v["redundant_tests"]),
         ["tests/test_new.py::test_unrelated"]
     );
-    assert_eq!(function(&v, "mul")["status"], "proven", "{v}");
+    assert_eq!(function(&v, "mul")["status"], "exercised", "{v}");
 }
 
 #[test]
-fn a_changed_function_no_proving_test_reaches_is_unproven() {
+fn a_changed_function_no_proving_test_reaches_is_unexercised() {
     let fx = Fixture::new();
     fx.write(&[
         (
@@ -281,10 +281,10 @@ fn a_changed_function_no_proving_test_reaches_is_unproven() {
     ]);
     fx.commit("handle None in add and sub");
     let v = change(&fx.request()).to_json();
-    assert_eq!(v["status"], "partly_proven", "{v}");
-    assert_eq!(function(&v, "add")["status"], "proven");
-    assert_eq!(function(&v, "sub")["status"], "unproven");
-    assert_eq!(function(&v, "helper")["status"], "unproven");
+    assert_eq!(v["status"], "partly_exercised", "{v}");
+    assert_eq!(function(&v, "add")["status"], "exercised");
+    assert_eq!(function(&v, "sub")["status"], "unexercised");
+    assert_eq!(function(&v, "helper")["status"], "unexercised");
 }
 
 #[test]
@@ -293,9 +293,9 @@ fn a_change_with_no_added_test_leaves_every_changed_function_unproven() {
     fx.write(&[("src/calc.py", ADD_FIXED)]);
     fx.commit("handle None, with no test");
     let v = change(&fx.request()).to_json();
-    assert_eq!(v["status"], "unproven", "{v}");
+    assert_eq!(v["status"], "unexercised", "{v}");
     assert_eq!(v["proving_tests"], json!([]));
-    assert_eq!(function(&v, "add")["status"], "unproven");
+    assert_eq!(function(&v, "add")["status"], "unexercised");
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn a_test_that_fails_on_the_candidate_too_is_failing_not_proving() {
         json!([{"id": "tests/test_calc.py::test_wrong", "candidate_result": "failed"}]),
         "{v}"
     );
-    // the change cannot be called unproven while a test may yet prove it
+    // the change cannot be called unexercised while a test may yet prove it
     assert_eq!(function(&v, "add")["status"], "unknown");
     assert_eq!(v["status"], "unknown");
 }
@@ -395,8 +395,8 @@ fn a_test_skipped_at_both_revisions_is_listed_as_skipped() {
     assert_eq!(v["unknown_tests"], json!([]), "{v}");
     assert_eq!(v["proving_tests"], json!([]));
     assert_eq!(v["redundant_tests"], json!([]));
-    // nothing may yet prove the change: it is unproven, not unknown
-    assert_eq!(function(&v, "add")["status"], "unproven", "{v}");
+    // nothing may yet prove the change: it is unexercised, not unknown
+    assert_eq!(function(&v, "add")["status"], "unexercised", "{v}");
 }
 
 const PARAMETRIZED: &str = "import pytest\nfrom calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\n@pytest.mark.parametrize('a, want', [(None, 2), (1, 3)])\ndef test_add_cases(a, want):\n    assert add(a, 2) == want\n\n\ndef test_add_again():\n    assert add(2, 2) == 4\n";
@@ -457,7 +457,7 @@ fn an_old_test_edited_to_fail_at_the_baseline_is_a_proving_test() {
     // the old test beside it passes at both revisions: an old test, not a
     // redundant one
     assert_eq!(v["redundant_tests"], json!([]), "{v}");
-    assert_eq!(v["status"], "proven", "{v}");
+    assert_eq!(v["status"], "exercised", "{v}");
 }
 
 /// A candidate that rewrites the report so a failing test looks as if it
@@ -488,7 +488,7 @@ fn a_report_forged_by_the_candidate_is_not_believed() {
 }
 
 #[test]
-fn a_changed_file_that_does_not_parse_keeps_the_change_from_being_proven() {
+fn a_changed_file_that_does_not_parse_keeps_the_change_from_being_exercised() {
     let fx = Fixture::new();
     fx.write(&[
         ("src/calc.py", ADD_FIXED),
@@ -500,8 +500,8 @@ fn a_changed_file_that_does_not_parse_keeps_the_change_from_being_proven() {
     ]);
     fx.commit("a file that is not Python");
     let v = change(&fx.request()).to_json();
-    assert_eq!(function(&v, "add")["status"], "proven");
-    assert_eq!(v["status"], "partly_proven", "{v}");
+    assert_eq!(function(&v, "add")["status"], "exercised");
+    assert_eq!(v["status"], "partly_exercised", "{v}");
     let notes = v["not_measured"].as_array().expect("not_measured");
     assert!(
         notes
@@ -526,7 +526,7 @@ fn the_working_tree_is_a_candidate_too() {
     req.baseline = "HEAD".into();
     req.candidate = Candidate::Worktree;
     let v = change(&req).to_json();
-    assert_eq!(v["status"], "proven", "{v}");
+    assert_eq!(v["status"], "exercised", "{v}");
     assert_eq!(
         ids(&v["proving_tests"]),
         vec!["tests/test_calc.py::test_add_none"]
@@ -618,7 +618,7 @@ fn a_test_that_fails_without_a_module_level_change_proves_it() {
         "{v}"
     );
     assert_eq!(v["redundant_tests"], json!([]), "{v}");
-    // no function changed, so there is none to call proven
+    // no function changed, so there is none to call exercised
     assert_eq!(v["status"], "none", "{v}");
 }
 

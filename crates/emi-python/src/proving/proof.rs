@@ -14,16 +14,16 @@ use crate::functions::ChangedFn;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FnStatus {
-    Proven,
-    Unproven,
+    Exercised,
+    Unexercised,
     Unknown,
 }
 
 impl FnStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            FnStatus::Proven => "proven",
-            FnStatus::Unproven => "unproven",
+            FnStatus::Exercised => "exercised",
+            FnStatus::Unexercised => "unexercised",
             FnStatus::Unknown => "unknown",
         }
     }
@@ -73,9 +73,9 @@ pub fn judge(f: &ChangedFn, source: &str, lines: Option<&Lines>) -> (FnStatus, O
         return unknown("no executable line in the function body");
     }
     if targets.iter().any(|l| lines.executed.contains(l)) {
-        (FnStatus::Proven, None)
+        (FnStatus::Exercised, None)
     } else {
-        (FnStatus::Unproven, None)
+        (FnStatus::Unexercised, None)
     }
 }
 

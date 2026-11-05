@@ -369,6 +369,8 @@ mod tests {
             complete: true,
             attributed: vec!["tests/a.py::t".into()],
             added_failing: Vec::new(),
+            quarantined: Vec::new(),
+            nondeterministic: Vec::new(),
         };
         settle(&mut entries, &regression);
         let got: Vec<Restored> = entries.iter().map(|e| e.restored).collect();

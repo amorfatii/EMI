@@ -78,7 +78,7 @@ fn a_scripted_proposer_repairs_a_false_completion_then_removes_redundancy() {
     let (code, receipt) = p.done(&[]);
     assert_eq!(code, 0, "{receipt}");
     assert_eq!(receipt["regression"]["status"], "held");
-    assert_eq!(receipt["change"]["status"], "proven");
+    assert_eq!(receipt["change"]["status"], "exercised");
     assert_eq!(receipt["candidate"]["id"], "worktree");
     assert_eq!(
         receipt["change"]["proving_tests"][0]["id"],
@@ -89,7 +89,7 @@ fn a_scripted_proposer_repairs_a_false_completion_then_removes_redundancy() {
         stopped["systemMessage"]
             .as_str()
             .expect("receipt")
-            .contains("proven"),
+            .contains("exercised"),
         "{stopped}"
     );
     assert!(
@@ -210,7 +210,7 @@ fn old_skips_and_old_failures_do_not_block_but_a_test_that_stops_running_does() 
             .contains("already failed at the baseline"),
         "{receipt}"
     );
-    assert_eq!(receipt["change"]["status"], "proven", "{receipt}");
+    assert_eq!(receipt["change"]["status"], "exercised", "{receipt}");
 
     p.write("flags.py", "SLOW = True\n");
     let (code, receipt) = p.done(&["--baseline", "HEAD"]);
@@ -476,14 +476,14 @@ fn decisions(p: &Project) -> usize {
     found
 }
 
-/// The hook warms the baseline while the agent works: the check that
-/// follows runs the candidate only.
+/// The hook warms the baseline while the agent works (its two pinned runs):
+/// the check that follows runs the candidate only.
 #[test]
 fn a_warmed_baseline_is_not_run_again_by_the_check() {
     let p = Project::new();
     let out = p.emi(&["done", "--warm"], None);
     assert!(out.status.success() && out.stdout.is_empty(), "{out:?}");
-    assert_eq!(decisions(&p), 1, "the baseline ran");
+    assert_eq!(decisions(&p), 2, "the baseline ran twice");
     p.write(
         "app.py",
         "def add(a, b):\n    if a is None:\n        return b\n    return a + b\n",
@@ -491,14 +491,14 @@ fn a_warmed_baseline_is_not_run_again_by_the_check() {
     let (code, receipt) = p.done(&[]);
     assert_eq!(code, 0, "{receipt}");
     assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
-    assert_eq!(decisions(&p), 2, "only the candidate ran");
+    assert_eq!(decisions(&p), 3, "only the candidate ran");
 
     // without warming, the first check runs both
     let cold = Project::new();
     cold.write("app.py", "def add(a, b):\n    return b + a\n");
     let (code, _) = cold.done(&[]);
     assert_eq!(code, 0);
-    assert_eq!(decisions(&cold), 2);
+    assert_eq!(decisions(&cold), 3);
 }
 
 /// A test that passes before and after does not show the change works, but
@@ -521,7 +521,7 @@ fn a_test_that_does_not_fail_without_the_change_is_stated_not_sent_back() {
     );
     let (code, receipt) = p.done(&[]);
     assert_eq!(code, 0, "{receipt}");
-    assert_eq!(receipt["change"]["status"], "proven", "{receipt}");
+    assert_eq!(receipt["change"]["status"], "exercised", "{receipt}");
     assert_eq!(
         receipt["change"]["redundant_tests"][0]["id"], "tests/test_preserved.py::test_negative",
         "{receipt}"

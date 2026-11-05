@@ -1,5 +1,5 @@
 //! The done check: when a coding agent says it is finished, what was
-//! actually proven? [`done`] reads `.emi/config.json`, resolves the
+//! actually exercised? [`done`] reads `.emi/config.json`, resolves the
 //! baseline, derives a task contract, verifies the candidate through
 //! the engine, finds the old tests the candidate changed, and
 //! assembles the receipt and its action (plan.md, interfaces 1 to 3).
@@ -19,11 +19,13 @@ pub mod config;
 pub mod derived;
 pub mod detect;
 pub mod engine;
+pub mod environment;
 pub mod oldtests;
 pub mod outcomes;
 pub mod pytest;
 pub mod receipt;
 pub mod regression;
+pub mod replay;
 mod run;
 pub mod state;
 pub mod text;
@@ -250,6 +252,15 @@ fn unconfigured(
     };
     let parts = receipt::Parts {
         repo,
+        inputs: receipt::inputs(&receipt::Inputs {
+            baseline,
+            candidate: cand,
+            setting: req.setting,
+            config: None,
+            environment: None,
+            laws: None,
+            intent: serde_json::Value::Null,
+        }),
         baseline,
         candidate: cand,
         setting: req.setting,

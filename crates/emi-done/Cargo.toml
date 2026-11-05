@@ -1,6 +1,6 @@
 [package]
 name = "emi-done"
-description = "The done check: what was proven when a coding agent says it is finished"
+description = "The done check: what was established when a coding agent says it is finished"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

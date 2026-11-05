@@ -61,6 +61,8 @@ const SCRATCH_PREFIXES: &[&str] = &[
     "emi-places-",
     "emi-report-",
     "emi-done-index-",
+    "emi-replay-",
+    "emi-laws-",
     "emi-seccomp-",
 ];
 

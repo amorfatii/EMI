@@ -444,6 +444,10 @@ pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Dete
         repair_rounds: DEFAULT_REPAIR_ROUNDS,
         on_unproven: OnUnproven::Report,
         on_redundant: OnUnproven::Report,
+        pins: Default::default(),
+        laws: Default::default(),
+        preserve: Default::default(),
+        adequacy: Default::default(),
     };
     Ok(Detected {
         notes: notes(&config, &linked),

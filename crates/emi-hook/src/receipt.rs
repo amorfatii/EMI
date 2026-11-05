@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::decision::{Action, DoneResult};
 
 /// Current schema; the previous additive form remains readable.
-pub const SCHEMA: &str = "emi-done-receipt-0.4";
+pub const SCHEMA: &str = "emi-done-receipt-1.0";
 
 /// Items listed before the rest are only counted.
 const LIST_LIMIT: usize = 5;
@@ -110,7 +110,7 @@ fn parse(exit_action: Action, stdout: &str) -> Result<DoneResult, String> {
         (
             matches!(
                 receipt["schema"].as_str(),
-                Some("emi-done-receipt-0.1" | SCHEMA)
+                Some("emi-done-receipt-0.1" | "emi-done-receipt-0.4" | SCHEMA)
             ),
             "the receipt schema is not supported",
         ),
@@ -168,7 +168,7 @@ fn rule(receipt: &Value, action: Action) -> &'static str {
         Action::Repair if receipt["regression"]["status"] == "broken" => "regression",
         Action::Repair if any(&change["failing_tests"]) => "failing_test",
         Action::Repair if any(&change["redundant_tests"]) => "redundant_test",
-        Action::Repair => "unproven",
+        Action::Repair => "unexercised",
     }
 }
 
@@ -186,8 +186,8 @@ fn evidence(receipt: &Value, action: Action) -> Value {
         "regression": receipt["regression"]["status"],
         "tests_run": receipt["regression"]["tests_run"],
         "change": change["status"],
-        "functions_proven": functions("proven"),
-        "functions_unproven": functions("unproven"),
+        "functions_exercised": functions("exercised"),
+        "functions_unexercised": functions("unexercised"),
         "functions_unknown": functions("unknown"),
         "proving_tests": count(&change["proving_tests"]),
         "redundant_tests": count(&change["redundant_tests"]),
@@ -283,13 +283,13 @@ fn changed_old_test_lines(receipt: &Value) -> Vec<String> {
     vec![format!("Changed old tests: {}", listed(&refs))]
 }
 
-fn proven_counts(change: &Value) -> Option<(usize, usize)> {
+fn exercised_counts(change: &Value) -> Option<(usize, usize)> {
     let functions = change["functions"].as_array()?;
-    let proven = functions
+    let exercised = functions
         .iter()
-        .filter(|f| f["status"].as_str() == Some("proven"))
+        .filter(|f| f["status"].as_str() == Some("exercised"))
         .count();
-    Some((proven, functions.len()))
+    Some((exercised, functions.len()))
 }
 
 fn change_lines(receipt: &Value) -> Vec<String> {
@@ -298,8 +298,10 @@ fn change_lines(receipt: &Value) -> Vec<String> {
         "Change evidence: {}",
         change["status"].as_str().unwrap_or("not reported")
     );
-    if let Some((proven, total)) = proven_counts(change).filter(|(_, total)| *total > 0) {
-        line.push_str(&format!(", {proven} of {total} changed functions proven"));
+    if let Some((exercised, total)) = exercised_counts(change).filter(|(_, total)| *total > 0) {
+        line.push_str(&format!(
+            ", {exercised} of {total} changed functions exercised"
+        ));
     }
     let mut lines = vec![line];
     let redundant: Vec<&str> = change["redundant_tests"]
@@ -350,7 +352,7 @@ mod tests {
             "assurance": {"setting": "cooperative", "isolation": "unsandboxed (test)"},
             "regression": {"status": "held", "tests_run": 12, "failed": [], "missing": [], "reasons": []},
             "changed_old_tests": [],
-            "change": {"status": "unproven", "functions": [], "proving_tests": [],
+            "change": {"status": "unexercised", "functions": [], "proving_tests": [],
                        "redundant_tests": [], "unknown_tests": [], "not_measured": []},
             "action": action,
             "repair": [],
@@ -373,7 +375,7 @@ mod tests {
             text.contains("Regression evidence: held, 12 tests run"),
             "{text}"
         );
-        assert!(text.contains("Change evidence: unproven"), "{text}");
+        assert!(text.contains("Change evidence: unexercised"), "{text}");
         // this run's note is shown; the standing limit is counted
         assert!(
             text.contains("Note: the baseline has no configuration"),
