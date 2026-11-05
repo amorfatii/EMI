@@ -180,6 +180,27 @@ fn an_added_test_that_is_skipped_is_stated_and_is_no_fault() {
             .contains("1 test(s) the change added are skipped here and show nothing."),
         "{text:?}"
     );
+
+    // an old test the candidate marks skipped is stated the same way
+    let old = Project::new();
+    let text = std::fs::read_to_string(old.path().join("tests/test_app.py")).expect("old test");
+    old.write(
+        "tests/test_app.py",
+        &format!(
+            "import pytest\n{}",
+            text.replace(
+                "def test_add",
+                "@pytest.mark.skip(reason='later')\ndef test_add"
+            )
+        ),
+    );
+    let (code, receipt) = old.done(&[]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(
+        receipt["change"]["skipped_tests"],
+        json!(["tests/test_app.py::test_add"]),
+        "{receipt}"
+    );
 }
 
 #[test]

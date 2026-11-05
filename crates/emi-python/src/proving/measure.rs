@@ -489,7 +489,8 @@ impl Classified {
     /// doing its work, not a redundant one. One that fails on the candidate
     /// is the candidate's to repair when the candidate changed its code;
     /// otherwise it failed before the edit too, which is the regression
-    /// evidence's to judge.
+    /// evidence's to judge. One the candidate changed that does not run is
+    /// listed as skipped, as an added one is.
     fn edited(&mut self, id: String, verdict: &Verdict, rewritten: bool) {
         match verdict {
             Verdict::Proving(baseline_result) => self.proving.push(ProvingTest {
@@ -501,6 +502,7 @@ impl Classified {
                 id,
                 candidate_result,
             }),
+            Verdict::Skipped if rewritten => self.skipped.push(id),
             _ => {}
         }
     }
