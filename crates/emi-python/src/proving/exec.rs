@@ -212,7 +212,20 @@ impl<'a> Session<'a> {
     /// Run exactly `ids` in `copy` and say what each did. `tag` keeps the
     /// report files of different runs in one copy apart.
     pub fn observe(&self, copy: &Copy, ids: &[String], tag: &str) -> BTreeMap<String, Observed> {
+        self.observe_explained(copy, ids, tag).0
+    }
+
+    /// [`Session::observe`], with what each failing test said (its
+    /// counterexample), the copy's path taken out.
+    pub fn observe_explained(
+        &self,
+        copy: &Copy,
+        ids: &[String],
+        tag: &str,
+    ) -> (BTreeMap<String, Observed>, BTreeMap<String, String>) {
         let mut seen = BTreeMap::new();
+        let mut said = BTreeMap::new();
+        let dir = copy.dir.to_string_lossy().into_owned();
         for (n, batch) in pytest::batches(ids).into_iter().enumerate() {
             let rel = format!("{WORK}/junit-{tag}-{n}.xml");
             // a file committed there would be read as this run's if the
@@ -230,9 +243,16 @@ impl<'a> Session<'a> {
                 exit = exit_of(&whole, self.runner.timeout);
             }
             let report = read_report(&copy.dir, &rel);
+            if let Ok(r) = &report {
+                for id in batch {
+                    if let Some(m) = r.message(id) {
+                        said.insert(id.clone(), m.replace(dir.as_str(), "<tree>"));
+                    }
+                }
+            }
             seen.extend(junit::observe(&exit, report, batch));
         }
-        seen
+        (seen, said)
     }
 
     /// Run exactly `ids` under coverage.py in `copy` and place its report

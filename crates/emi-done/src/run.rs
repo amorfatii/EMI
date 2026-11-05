@@ -129,8 +129,12 @@ pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: 
         return;
     };
     let environment = crate::environment::id(repo, &interpreter).ok();
-    let Ok(trusted) = derived::trusted(view, &baseline.sha, &config.tests.globs, &BTreeSet::new())
-    else {
+    let Ok(trusted) = derived::trusted(
+        view,
+        &baseline.sha,
+        &derived::trusted_globs(config),
+        &BTreeSet::new(),
+    ) else {
         return;
     };
     let Ok(own) = derived::own_names(view, &baseline.sha, config) else {
@@ -195,7 +199,7 @@ fn try_measure(
     let trusted = derived::trusted(
         view,
         &baseline.sha,
-        &config.tests.globs,
+        &derived::trusted_globs(config),
         &oldtests::approved_paths(entries),
     )
     .map_err(|e| e.to_string())?;
@@ -331,6 +335,45 @@ fn config_note(repo: &Path, req: &Request, config: &Config, baseline: &Baseline)
     }
 }
 
+/// What the person declared about the change: the request's, or, in the
+/// cooperative setting, the one recorded on this machine.
+fn intent(req: &Request, repo_dir: &Path) -> Result<crate::preserve::Intent, Error> {
+    match (&req.preserve, req.setting) {
+        (Some(paths), _) => Ok(crate::preserve::Intent {
+            preserve: true,
+            paths: paths.clone(),
+        }),
+        (None, Setting::Cooperative) => crate::preserve::read(repo_dir),
+        (None, Setting::Enforced) => Ok(crate::preserve::Intent::default()),
+    }
+}
+
+/// What the receipt does not establish: in general, and in this run.
+fn limits(
+    (repo, req, config, baseline): (&Path, &Request, &Config, &Baseline),
+    change: &ChangeEvidence,
+    laws: &emi_python::proving::laws::LawEvidence,
+    (approval_fault, environment): (Option<&String>, Option<&Result<String, String>>),
+) -> (Vec<String>, Vec<String>) {
+    let limits = receipt::Limits {
+        setting: req.setting,
+        link: &config.link,
+        pytest: derived::is_pytest(&config.tests.command),
+        change,
+        config_note: config_note(repo, req, config, baseline),
+    };
+    let mut not_verified = receipt::not_verified(&limits);
+    let mut this_run = receipt::this_run(&limits);
+    let mut extra: Vec<String> = approval_fault.cloned().into_iter().collect();
+    if let Some(Err(why)) = environment {
+        extra.push(why.clone());
+    }
+    extra.extend(crate::laws::limits(laws, &config.laws.dir));
+    not_verified.extend(extra.iter().cloned());
+    this_run.extend(extra);
+    (not_verified, this_run)
+}
+
 /// Check `cand` against `baseline` under `config`.
 pub fn check(
     repo: &Path,
@@ -340,7 +383,12 @@ pub fn check(
     change: impl FnOnce(&ChangeContext) -> ChangeEvidence,
 ) -> Result<Outcome, Error> {
     let repo_dir = state::repo_dir(req.state_root, repo);
-    let changed = oldtests::find(view, &baseline.sha, &cand.rev, &config.tests.globs)?;
+    let changed = oldtests::find(
+        view,
+        &baseline.sha,
+        &cand.rev,
+        (&config.tests.globs, &config.laws.dir),
+    )?;
     approve(req, &repo_dir, &changed, baseline)?;
     let (approvals, approval_fault) = approvals(req, &repo_dir, &changed);
     let mut old_tests = oldtests::mark(changed, &approvals, &baseline.sha);
@@ -369,20 +417,21 @@ pub fn check(
         view,
         regression: &measured.regression,
     });
-    let limits = receipt::Limits {
-        setting: req.setting,
-        link: &config.link,
-        pytest: derived::is_pytest(&config.tests.command),
-        change: &change,
-        config_note: config_note(repo, req, config, baseline),
-    };
-    let mut not_verified = receipt::not_verified(&limits);
-    not_verified.extend(approval_fault.clone());
-    let mut this_run = receipt::this_run(&limits);
-    this_run.extend(approval_fault.clone());
-    if let Some(Err(why)) = &environment {
-        not_verified.push(why.clone());
-        this_run.push(why.clone());
+    let laws = crate::laws::measure(repo, view, (config, baseline, cand), &old_tests);
+    let intent = intent(req, &repo_dir)?;
+    let preserved = intent
+        .preserve
+        .then(|| crate::preserve::measure(repo, view, (config, baseline, cand), &intent));
+    let (mut not_verified, mut this_run) = limits(
+        (repo, req, config, baseline),
+        &change,
+        &laws,
+        (approval_fault.as_ref(), environment.as_ref()),
+    );
+    if let Some(p) = &preserved {
+        let kept = crate::preserve::limits(p);
+        not_verified.extend(kept.iter().cloned());
+        this_run.extend(kept);
     }
     let parts = receipt::Parts {
         repo,
@@ -392,8 +441,8 @@ pub fn check(
             setting: req.setting,
             config: Some(config),
             environment: environment.as_ref(),
-            laws: None,
-            intent: serde_json::Value::Null,
+            laws: laws.digest.clone(),
+            intent: intent.to_value(),
         }),
         baseline,
         candidate: cand,
@@ -402,6 +451,8 @@ pub fn check(
         regression: &measured.regression,
         old_tests: &old_tests,
         change: &change,
+        laws: &laws,
+        preserved: preserved.as_ref(),
         on_unproven: config.on_unproven,
         on_redundant: config.on_redundant,
         faults: approval_fault.into_iter().collect(),

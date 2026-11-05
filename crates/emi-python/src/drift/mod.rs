@@ -103,6 +103,45 @@ pub struct Request<'a, S: Side> {
     pub call_timeout_s: f64,
     pub base_side: &'a S,
     pub head_side: &'a S,
+    /// Inputs to generate per function from its annotations, besides the
+    /// recorded ones; 0 generates none.
+    pub generated_examples: u32,
+    /// Directories the project's modules are imported from, repository
+    /// relative, for a function the tests never imported.
+    pub module_roots: &'a [String],
+}
+
+/// A side whose trees are copies of `runner.rev` read from `objects`: a
+/// clean view that also holds a frozen working tree.
+pub struct InView<'a> {
+    pub runner: Runner<'a>,
+    pub objects: &'a Path,
+}
+
+impl Side for InView<'_> {
+    type Tree = Copy;
+
+    fn tree(&self, tag: &str) -> Result<Copy> {
+        self.runner.copy_of(tag, self.objects, self.runner.rev)
+    }
+
+    fn run(
+        &self,
+        tree: &Copy,
+        argv: &[String],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Outcome {
+        Runner { env, ..self.runner }.run(tree, argv, timeout)
+    }
+
+    fn env(&self) -> &[(String, String)] {
+        self.runner.env
+    }
+
+    fn timeout(&self) -> Duration {
+        self.runner.timeout
+    }
 }
 
 #[derive(Default)]
@@ -122,6 +161,7 @@ struct Counts {
     unencodable_result: u64,
     unstable: u64,
     not_replayed: u64,
+    generated: u64,
 }
 
 impl Counts {
@@ -134,7 +174,7 @@ impl Counts {
             "unrecordable": self.unrecordable, "timeouts": self.timeouts,
             "import_failures": self.import_failures,
             "unencodable_result": self.unencodable_result, "unstable": self.unstable,
-            "not_replayed": self.not_replayed,
+            "not_replayed": self.not_replayed, "generated": self.generated,
         })
     }
 }
@@ -278,10 +318,101 @@ pub fn measure<S: Side>(r: &Request<S>) -> Result<Value> {
         }
     };
     match python::harvest(r.base_side, &tree, r.commands, &targets) {
-        Ok(h) => replay_all(&mut report, r, &tree, &targets, &h)?,
+        Ok(mut h) => {
+            if r.generated_examples > 0 {
+                augment(&mut report, r, (&tree, &targets), &mut h)?;
+            }
+            replay_all(&mut report, r, &tree, &targets, &h)?;
+        }
         Err(e) => report.reasons.push(e),
     }
     Ok(report.finish())
+}
+
+/// The module a file is imported as from one of `roots` (repository
+/// relative), and that root; `None` when no root holds it.
+fn module_of(file: &str, roots: &[String]) -> Option<(String, Option<String>)> {
+    roots
+        .iter()
+        .chain(std::iter::once(&".".to_owned()))
+        .find_map(|root| {
+            let rest = if root == "." {
+                Some(file)
+            } else {
+                file.strip_prefix(root.as_str())?.strip_prefix('/')
+            }?;
+            let stem = rest.strip_suffix(".py")?;
+            let stem = stem.strip_suffix("/__init__").unwrap_or(stem);
+            let module = stem.replace('/', ".");
+            let root = (root != ".").then(|| root.clone());
+            Some((module, root))
+        })
+}
+
+/// Add inputs generated from each target's annotations to what the tests
+/// recorded: a function the tests never call still meets its declared
+/// types. Generation runs on the base side; a function it cannot generate
+/// for keeps its recorded inputs alone.
+fn augment<S: Side>(
+    report: &mut Report,
+    r: &Request<S>,
+    (harvested, targets): (&S::Tree, &[Target]),
+    h: &mut Harvest,
+) -> Result<()> {
+    let modules: Vec<(usize, String, Option<String>)> = targets
+        .iter()
+        .filter_map(|t| {
+            let known = h.recorded.get(&t.id).and_then(|rec| rec.module.clone());
+            known
+                .or_else(|| module_of(&t.file, r.module_roots))
+                .map(|(m, root)| (t.id, m, root))
+        })
+        .collect();
+    let items: Vec<Replay> = modules
+        .iter()
+        .filter_map(|(id, module, root)| {
+            let target = targets.iter().find(|t| t.id == *id)?;
+            Some(Replay {
+                target,
+                module,
+                root: root.as_deref(),
+                inputs: &[],
+            })
+        })
+        .collect();
+    if items.is_empty() {
+        return Ok(());
+    }
+    let tree = r.base_side.tree("drift-generate")?;
+    let python = python::interpreter(h, harvested.dir(), tree.dir());
+    let generated = match python::generate(
+        r.base_side,
+        &tree,
+        &items,
+        (&python, &h.sys_path, r.generated_examples),
+    ) {
+        Ok(g) => g,
+        Err(e) => {
+            report
+                .reasons
+                .push(format!("inputs could not be generated: {e}"));
+            return Ok(());
+        }
+    };
+    for (id, module, root) in modules {
+        let Some(inputs) = generated.inputs.get(&id) else {
+            continue;
+        };
+        report.counts.generated += inputs.len() as u64;
+        let rec = h.recorded.entry(id).or_default();
+        rec.module.get_or_insert((module, root));
+        for input in inputs {
+            if !rec.inputs.contains(input) {
+                rec.inputs.push(input.clone());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The targets the tests passed inputs to; the others get their entry now.

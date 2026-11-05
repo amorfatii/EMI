@@ -46,6 +46,7 @@ mod contexts;
 pub mod evidence;
 mod exec;
 pub mod junit;
+pub mod laws;
 mod measure;
 mod overlay;
 mod proof;
@@ -60,7 +61,7 @@ pub use evidence::{
     ChangeEvidence, FailingTest, FunctionEvidence, NOT_COLLECTED, ProvingTest, RedundantTest,
     Status, UnknownTest,
 };
-pub use measure::{measure, measure_in};
+pub use measure::{measure, measure_in, measure_resolved};
 pub use proof::FnStatus;
 pub use rerun::passing;
 

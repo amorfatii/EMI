@@ -81,6 +81,9 @@ pub struct Parts<'a> {
     pub regression: &'a Regression,
     pub old_tests: &'a [Entry],
     pub change: &'a ChangeEvidence,
+    pub laws: &'a emi_python::proving::laws::LawEvidence,
+    /// The behaviour comparison, when the person asked for it.
+    pub preserved: Option<&'a crate::preserve::Preserved>,
     pub on_unproven: OnUnproven,
     pub on_redundant: OnRedundant,
     /// Environment faults beyond those the two evidence parts carry.
@@ -102,6 +105,11 @@ fn faults(p: &Parts) -> Vec<String> {
                 .first()
                 .map_or("no reason given", String::as_str)
         ));
+    }
+    out.extend(p.laws.fault.clone());
+    let unknown_laws = p.laws.count("unknown");
+    if unknown_laws > 0 {
+        out.push(format!("{unknown_laws} law(s) could not be measured"));
     }
     // a break is established whatever else could not be measured, and a
     // suite the change stopped from starting cannot show the change either
@@ -152,7 +160,10 @@ fn facts(p: &Parts) -> decide::Facts {
         failing_tests: failing(p).len(),
         redundant_tests: change.redundant.len(),
         unexercised_functions: change.unexercised.len(),
-        nondeterministic: p.regression.nondeterministic.len(),
+        nondeterministic: p.regression.nondeterministic.len() + p.laws.count("nondeterministic"),
+        laws_broken: p.laws.count("broken"),
+        laws_unmet: p.laws.count("unmet"),
+        divergences: p.preserved.map_or(0, crate::preserve::Preserved::count),
         unapproved: p.old_tests.iter().filter(|e| !e.approved).count(),
         ..decide::Facts::default()
     }
@@ -210,6 +221,13 @@ fn redundant_line(t: &crate::change::Redundant) -> String {
 fn repair_lines(p: &Parts) -> Vec<String> {
     let r = p.regression;
     let change = p.change.facts();
+    let laws = crate::laws::repair_lines(p.laws);
+    let (broken_laws, unmet_laws): (Vec<String>, Vec<String>) = laws
+        .into_iter()
+        .partition(|l| l.contains("held at the baseline"));
+    if r.status != Status::Broken && !broken_laws.is_empty() {
+        return itemize(&broken_laws, String::clone);
+    }
     if r.status == Status::Broken {
         let mut out = itemize(&r.failed, |id| {
             format!(
@@ -225,11 +243,19 @@ fn repair_lines(p: &Parts) -> Vec<String> {
                 r.reasons.first().map_or("see the receipt", String::as_str)
             ));
         }
+        out.extend(itemize(&broken_laws, String::clone));
         return out;
     }
     let failing = failing(p);
-    if !failing.is_empty() {
-        return itemize(&failing, failing_line);
+    let diverged = p
+        .preserved
+        .map(crate::preserve::repair_lines)
+        .unwrap_or_default();
+    if !failing.is_empty() || !unmet_laws.is_empty() || !diverged.is_empty() {
+        let mut out = itemize(&failing, failing_line);
+        out.extend(itemize(&unmet_laws, String::clone));
+        out.extend(itemize(&diverged, String::clone));
+        return out;
     }
     if p.on_redundant == OnRedundant::Repair && !change.redundant.is_empty() {
         return itemize(&change.redundant, redundant_line);
@@ -240,6 +266,22 @@ fn repair_lines(p: &Parts) -> Vec<String> {
         });
     }
     Vec::new()
+}
+
+/// The change evidence with, on each changed function, the laws that
+/// execute what the change wrote in it.
+fn with_laws(mut change: Value, laws: &emi_python::proving::laws::LawEvidence) -> Value {
+    if let Some(functions) = change["functions"].as_array_mut() {
+        for f in functions {
+            let key = format!(
+                "{}::{}",
+                f["file"].as_str().unwrap_or(""),
+                f["function"].as_str().unwrap_or("")
+            );
+            f["laws"] = json!(laws.checked.get(&key).cloned().unwrap_or_default());
+        }
+    }
+    change
 }
 
 /// Assemble the receipt and return it with its action.
@@ -260,7 +302,9 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
         "assurance": {"setting": p.setting.as_str(), "isolation": p.isolation},
         "regression": p.regression.to_value(),
         "changed_old_tests": p.old_tests.iter().map(Entry::to_value).collect::<Vec<_>>(),
-        "change": p.change.to_value(),
+        "change": with_laws(p.change.to_value(), p.laws),
+        "laws": p.laws.to_json(),
+        "preserve": p.preserved.map(crate::preserve::Preserved::to_value),
         "action": action.as_str(),
         "repair": repair,
         "not_verified": p.not_verified,
@@ -398,7 +442,10 @@ mod tests {
             content_id: "b".repeat(40),
             rev: "c".repeat(40),
         };
+        let laws = emi_python::proving::laws::LawEvidence::default();
         f(&Parts {
+            laws: &laws,
+            preserved: None,
             inputs: json!({"test": true}),
             repo: Path::new("/r"),
             baseline: &baseline,

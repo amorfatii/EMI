@@ -41,7 +41,9 @@ fn marked(text: &str) -> String {
 
 fn answer(reaction: &Reaction) -> serde_json::Value {
     match reaction {
-        Reaction::Silent => json!({"action": "none"}),
+        // OpenCode's events here are the prompt and the idle session; a
+        // tool refusal is Claude Code's, and the laws are restored anyway
+        Reaction::Silent | Reaction::Deny { .. } => json!({"action": "none"}),
         Reaction::Block { reason } => json!({"action": "repair", "prompt": marked(reason)}),
         Reaction::Notify { message, tone } => {
             let attention = *tone == Tone::Attention;

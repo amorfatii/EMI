@@ -27,6 +27,7 @@ pub fn passing(req: &Request, objects: &Path, ids: &[String]) -> Result<BTreeSet
     env.extend(req.env.iter().cloned());
     let runner = Runner {
         repo: &repo,
+        objects: None,
         rev,
         link: &req.link,
         env: &env,

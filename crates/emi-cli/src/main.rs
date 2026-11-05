@@ -30,6 +30,11 @@ enum Command {
     /// the same decision on the same evidence. Exit 0 same, 1 different,
     /// 2 usage error.
     Replay(donecli::ReplayArgs),
+    /// Declare what the change must keep: `emi intent preserve [PATH]...`
+    /// asks for the modified functions' behaviour to be kept, `clear`
+    /// lifts it, `show` prints it.
+    #[command(subcommand)]
+    Intent(donecli::IntentCommand),
     /// Run the done check when a coding agent tries to stop (Claude Code,
     /// opencode), and install or remove that hook.
     #[command(subcommand)]
@@ -45,6 +50,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Command::Init(args) => donecli::init(&args),
         Command::Done(args) => donecli::done(&args),
         Command::Replay(args) => donecli::replay(&args),
+        Command::Intent(cmd) => donecli::intent(&cmd),
         Command::Hook(cmd) => emi_hook::cli::run(&cmd),
         Command::Journal(cmd) => emi_hook::journal::run(&cmd),
     }

@@ -121,6 +121,16 @@ impl Command {
         })
     }
 
+    /// The same command collecting from `selectors` instead of its own:
+    /// the laws are run with the project's options from their own
+    /// directory.
+    pub fn with_selectors(&self, selectors: Vec<String>) -> Command {
+        Command {
+            selectors,
+            ..self.clone()
+        }
+    }
+
     fn without(&self, drop: &[&[&str]]) -> Vec<String> {
         let mut out = Vec::new();
         let mut skip_value = false;

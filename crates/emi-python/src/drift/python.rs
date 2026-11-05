@@ -398,3 +398,60 @@ pub fn replay<S: Side>(
         })
         .collect()
 }
+
+/// What generation gave each target: its inputs, or why there are none.
+pub struct Generated {
+    pub inputs: BTreeMap<usize, Vec<Value>>,
+    /// Per target id: why nothing was generated for it.
+    pub refused: BTreeMap<usize, String>,
+}
+
+/// Inputs drawn from each target's annotations (see `driver.py`), in a
+/// fresh tree of the base side.
+pub fn generate<S: Side>(
+    side: &S,
+    tree: &S::Tree,
+    items: &[Replay],
+    (python, sys_path, examples): (&str, &[String], u32),
+) -> Result<Generated, String> {
+    let request = json!({
+        "targets": items.iter().map(|r| json!({
+            "id": r.target.id, "module": r.module, "root": r.root,
+            "qualname": r.target.qualname,
+        })).collect::<Vec<_>>(),
+        "sys_path": sys_path,
+        "examples": examples,
+    });
+    let mut env = side.env().to_vec();
+    env.push(("PYTHONHASHSEED".into(), "0".into()));
+    let how = Invocation {
+        python,
+        env: &env,
+        timeout: side.timeout(),
+    };
+    let out = driver(side, tree, &how, "generate", &request)?;
+    let results = out["results"]
+        .as_object()
+        .ok_or("the generate step's result lacks `results`")?;
+    let mut generated = Generated {
+        inputs: BTreeMap::new(),
+        refused: BTreeMap::new(),
+    };
+    for r in items {
+        let v = &results[&r.target.id.to_string()];
+        match (v["inputs"].as_array(), v["error"].as_str()) {
+            (Some(inputs), _) => {
+                generated.inputs.insert(r.target.id, inputs.clone());
+            }
+            (None, Some(why)) => {
+                generated.refused.insert(r.target.id, why.to_owned());
+            }
+            (None, None) => {
+                generated
+                    .refused
+                    .insert(r.target.id, "the generate step skipped it".to_owned());
+            }
+        }
+    }
+    Ok(generated)
+}

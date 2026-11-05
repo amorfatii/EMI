@@ -48,7 +48,12 @@ impl Tally {
             return;
         };
         let either = |k: &str| has(old, k) || has(new, k);
-        if either("timeout") {
+        // an input the baseline answered and the candidate did not finish:
+        // the change made the function run past its bound, a divergence
+        if stable && has(new, "timeout") && !has(old, "timeout") {
+            self.compared += 1;
+            self.push(input, old, new);
+        } else if either("timeout") {
             self.timeouts += 1;
         } else if either("unencodable_result") {
             self.unencodable_result += 1;
@@ -57,13 +62,17 @@ impl Tally {
         } else {
             self.compared += 1;
             if canon(old) != canon(new) {
-                if self.drifts.len() < MAX_DRIFTS {
-                    self.drifts
-                        .push(json!({"input": input, "old": old, "new": new}));
-                } else {
-                    self.more_drifts += 1;
-                }
+                self.push(input, old, new);
             }
+        }
+    }
+
+    fn push(&mut self, input: &Value, old: &Value, new: &Value) {
+        if self.drifts.len() < MAX_DRIFTS {
+            self.drifts
+                .push(json!({"input": input, "old": old, "new": new}));
+        } else {
+            self.more_drifts += 1;
         }
     }
 
@@ -110,5 +119,18 @@ mod tests {
         assert_eq!((t.compared, t.drift_count()), (2, 1));
         assert_eq!(t.drifts[0]["new"], json!({"raised": "ValueError"}));
         assert_eq!((t.timeouts, t.unstable, t.not_replayed), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_call_that_now_runs_past_its_bound_is_a_divergence() {
+        let inputs = [json!(1), json!(2)];
+        let base = [
+            json!([{"returned": 1}, {"returned": 1}]),
+            json!([{"timeout": 2.0}, {"timeout": 2.0}]),
+        ];
+        let head = [json!([{"timeout": 2.0}]), json!([{"timeout": 2.0}])];
+        let t = compare(&inputs, &base, &head);
+        assert_eq!((t.compared, t.drift_count(), t.timeouts), (1, 1, 1));
+        assert_eq!(t.drifts[0]["new"], json!({"timeout": 2.0}));
     }
 }

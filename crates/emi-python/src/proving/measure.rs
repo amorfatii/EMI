@@ -82,6 +82,39 @@ pub fn measure_in(req: &Request, objects: &Path) -> Result<ChangeEvidence, Strin
     Ok(evidence.sorted())
 }
 
+/// Run `f` on `req` with its revisions resolved in `objects` (the working
+/// tree frozen into a commit there): `f` gets the request with the test
+/// environment it runs under, the live repository as an absolute path,
+/// and the two commits.
+pub fn measure_resolved<T>(
+    req: &Request,
+    objects: &Path,
+    f: impl FnOnce(&Request, &Path, &str, &str) -> Result<T, String>,
+) -> Result<T, String> {
+    if req.test_command.is_empty() {
+        return Err("the test command is empty".into());
+    }
+    if req.timeout.is_zero() {
+        return Err("the timeout must be longer than zero".into());
+    }
+    snapshot::normalize_source(&req.source)?;
+    let repo = std::fs::canonicalize(&req.repo)
+        .map_err(|e| format!("repository {}: {e}", req.repo.display()))?;
+    let scratch = snapshot::TempDir::new("emi-proving-")?;
+    let base = snapshot::resolve_ref(objects, &req.baseline)?;
+    let cand = match &req.candidate {
+        Candidate::Ref(reference) => snapshot::resolve_ref(objects, reference)?,
+        Candidate::Worktree => snapshot::commit_worktree(&repo, objects, scratch.path())?,
+    };
+    // bytecode caches off, so a stale one cannot stand in for a file laid
+    // over another tree
+    let mut with_env = req.clone();
+    with_env
+        .env
+        .insert(0, ("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned()));
+    f(&with_env, &repo, &base, &cand)
+}
+
 struct Context<'a> {
     req: &'a Request,
     /// The live repository, as an absolute path.
@@ -164,6 +197,7 @@ impl Context<'_> {
         let env = self.env();
         let runner = Runner {
             repo: self.repo,
+            objects: None,
             rev: &self.cand,
             link: &self.req.link,
             env: &env,

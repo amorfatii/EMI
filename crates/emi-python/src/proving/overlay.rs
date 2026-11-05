@@ -64,7 +64,7 @@ pub fn overlay_tests(
         .collect())
 }
 
-fn place(from: &Path, to: &Path, rel: &str) -> Result<(), String> {
+pub(crate) fn place(from: &Path, to: &Path, rel: &str) -> Result<(), String> {
     let (src, dst) = (from.join(rel), to.join(rel));
     if let Some(parent) = dst.parent() {
         // a link the baseline tree holds must not lead the write outside it

@@ -31,6 +31,8 @@ pub enum Reaction {
     Block { reason: String },
     /// Let the agent stop and show `message` to the person.
     Notify { message: String, tone: Tone },
+    /// Refuse the tool call the agent is about to make, saying why.
+    Deny { reason: String },
 }
 
 /// Where the hook keeps state and how it reaches the done check.
@@ -76,6 +78,45 @@ pub(crate) fn failure(error: &str, stopping: bool) -> Reaction {
 /// The agent tries to stop in `cwd`.
 pub fn stop(env: &Env, session: &str, cwd: &Path) -> Reaction {
     stop_checked(env, session, cwd).unwrap_or_else(|e| failure(&e, true))
+}
+
+/// The agent is about to write `path` from `cwd`. Under a laws lock, a path
+/// inside the laws directory is refused: the laws are the person's. This
+/// is fast feedback only; a file written another way (a shell command) is
+/// still restored for every check, which is the actual guarantee.
+pub fn guard_laws(cwd: &Path, path: &Path) -> Reaction {
+    let Ok(Some(root)) = repo::locate(cwd) else {
+        return Reaction::Silent;
+    };
+    let Ok(config) = repo::read_config(&root) else {
+        return Reaction::Silent;
+    };
+    let Some(dir) = config.locked_laws else {
+        return Reaction::Silent;
+    };
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    // the file may not exist yet: resolve its directory instead
+    let resolved = absolute
+        .parent()
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .map(|p| p.join(absolute.file_name().unwrap_or_default()))
+        .unwrap_or(absolute);
+    let laws = root.join(&dir);
+    if resolved.starts_with(&laws) {
+        Reaction::Deny {
+            reason: format!(
+                "{dir} holds the person's laws and is locked: EMI restores it for every check, \
+                 so an edit there changes nothing. If a law is wrong, stop and say why; a person \
+                 decides."
+            ),
+        }
+    } else {
+        Reaction::Silent
+    }
 }
 
 /// The person sent a message in `cwd`.

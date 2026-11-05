@@ -20,8 +20,10 @@ pub mod derived;
 pub mod detect;
 pub mod engine;
 pub mod environment;
+pub mod laws;
 pub mod oldtests;
 pub mod outcomes;
+pub mod preserve;
 pub mod pytest;
 pub mod receipt;
 pub mod regression;
@@ -95,6 +97,10 @@ pub struct Request<'a> {
     pub setting: Setting,
     /// Items to approve (`old-test:PATH`), recorded before checking.
     pub approve: &'a [String],
+    /// Keep the behaviour of the functions the change modifies (under these
+    /// paths; empty for all). `None` reads the intent recorded on this
+    /// machine (`emi intent`), in the cooperative setting only.
+    pub preserve: Option<Vec<String>>,
 }
 
 /// What a change measurer is told about the run.
@@ -250,7 +256,10 @@ fn unconfigured(
         change: &change,
         config_note: None,
     };
+    let laws = emi_python::proving::laws::LawEvidence::default();
     let parts = receipt::Parts {
+        laws: &laws,
+        preserved: None,
         repo,
         inputs: receipt::inputs(&receipt::Inputs {
             baseline,

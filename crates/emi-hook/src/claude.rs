@@ -6,7 +6,7 @@
 //! event, and `{"systemMessage":…}` shows a warning to the person only.
 //! Staying silent is exit 0 with nothing on stdout.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -20,12 +20,18 @@ pub const STOP_TIMEOUT_SECS: u32 = 900;
 /// Claude Code's default for this event is 30 seconds; recording a commit id
 /// takes milliseconds, so the default is kept and written down explicitly.
 pub const USER_PROMPT_TIMEOUT_SECS: u32 = 30;
+/// Checking a path against the laws directory takes milliseconds.
+pub const PRE_TOOL_TIMEOUT_SECS: u32 = 10;
+/// The tools that write a file at a path the hook can see.
+pub const FILE_TOOLS: &str = "Edit|Write|MultiEdit|NotebookEdit";
 
 /// The hook events this adapter handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Event {
     Stop,
     UserPromptSubmit,
+    /// Before a tool runs: refuses edits to locked laws.
+    PreToolUse,
 }
 
 impl Event {
@@ -34,6 +40,7 @@ impl Event {
         match self {
             Event::Stop => "stop",
             Event::UserPromptSubmit => "user-prompt-submit",
+            Event::PreToolUse => "pre-tool-use",
         }
     }
 
@@ -42,6 +49,7 @@ impl Event {
         match self {
             Event::Stop => "Stop",
             Event::UserPromptSubmit => "UserPromptSubmit",
+            Event::PreToolUse => "PreToolUse",
         }
     }
 }
@@ -51,6 +59,8 @@ impl Event {
 struct Input {
     session_id: String,
     cwd: Option<PathBuf>,
+    #[serde(default)]
+    tool_input: serde_json::Value,
 }
 
 fn answer(reaction: &Reaction) -> Option<serde_json::Value> {
@@ -58,6 +68,11 @@ fn answer(reaction: &Reaction) -> Option<serde_json::Value> {
         Reaction::Silent => None,
         Reaction::Block { reason } => Some(json!({"decision": "block", "reason": reason})),
         Reaction::Notify { message, .. } => Some(json!({"systemMessage": message})),
+        Reaction::Deny { reason } => Some(json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }})),
     }
 }
 
@@ -83,6 +98,12 @@ fn react(event: Event, stdin: &str, env: &Result<Env, String>) -> Reaction {
     match event {
         Event::Stop => crate::stop(env, &input.session_id, &cwd),
         Event::UserPromptSubmit => crate::user_message(env, &input.session_id, &cwd),
+        Event::PreToolUse => {
+            let path = ["file_path", "notebook_path"]
+                .iter()
+                .find_map(|k| input.tool_input[*k].as_str());
+            path.map_or(Reaction::Silent, |p| crate::guard_laws(&cwd, Path::new(p)))
+        }
     }
 }
 

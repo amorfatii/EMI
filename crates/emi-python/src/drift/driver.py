@@ -13,6 +13,11 @@ replay: import each target the way the test run imported it and call it on
 every recorded input, each call on freshly decoded arguments and under its
 own timeout. `repeat` calls each input that many times, so the caller can
 tell an unstable function (time, randomness, hidden state) from drift.
+
+generate: for each target whose every parameter is annotated, draw inputs
+from those types with Hypothesis, derandomized and with no example
+database, so the same signature always gives the same inputs. Inputs
+without an exact JSON encoding are counted and left out.
 """
 
 import ast
@@ -183,11 +188,84 @@ def replay(req):
     return {"results": results}
 
 
+def _strategy(fn):
+    """`(positional names, keyword-only names, strategy of a dict)`, or why
+    the function's parameters cannot be generated."""
+    import inspect
+    import typing
+
+    from hypothesis import strategies as st
+
+    try:
+        hints = typing.get_type_hints(fn)
+    except Exception as e:
+        return f"its annotations cannot be read ({type_name(type(e))})"
+    positional, keyword, fields = [], [], {}
+    for name, p in inspect.signature(fn).parameters.items():
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            continue
+        if name not in hints:
+            return f"parameter {name} has no annotation"
+        fields[name] = st.from_type(hints[name])
+        (keyword if p.kind == p.KEYWORD_ONLY else positional).append(name)
+    return positional, keyword, st.fixed_dictionaries(fields)
+
+
+def generate_one(t, req):
+    try:
+        from hypothesis import HealthCheck, Phase, given, settings
+    except ImportError:
+        return {"error": "Hypothesis is not installed in the test environment"}
+    try:
+        fn = resolve(t)
+        made = _strategy(fn)
+    except BaseException as e:
+        return {"error": f"{type_name(type(e))}: {e}"[:300]}
+    if isinstance(made, str):
+        return {"error": made}
+    positional, keyword, strategy = made
+    seen, unencodable = {}, [0]
+
+    @settings(max_examples=req["examples"], derandomize=True, database=None, deadline=None,
+              phases=[Phase.generate], suppress_health_check=list(HealthCheck))
+    @given(strategy)
+    def collect(values):
+        try:
+            data = {"args": [encode(values[n]) for n in positional],
+                    "kwargs": {n: encode(values[n]) for n in keyword}}
+            text = json.dumps(data, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (Unencodable, RecursionError, ValueError):
+            unencodable[0] += 1
+            return
+        if len(text) <= MAX_TEXT:
+            seen.setdefault(text, data)
+
+    try:
+        collect()
+    except BaseException as e:
+        return {"error": f"generation failed: {type_name(type(e))}"}
+    return {"inputs": [seen[k] for k in sorted(seen)], "unencodable": unencodable[0]}
+
+
+def generate(req):
+    here = os.getcwd()
+    for p in reversed([t["root"] for t in req["targets"] if t.get("root")] + req["sys_path"]):
+        sys.path.insert(0, os.path.join(here, p))
+    loud = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    try:
+        results = {str(t["id"]): generate_one(t, req) for t in req["targets"]}
+    finally:
+        sys.stdout = loud
+    return {"results": results}
+
+
 def main():
     mode, request, result = sys.argv[1:4]
     with open(request, encoding="utf-8") as f:
         req = json.load(f)
-    out = classify(req) if mode == "classify" else replay(req)
+    modes = {"classify": classify, "replay": replay, "generate": generate}
+    out = modes[mode](req)
     with open(result + ".part", "w", encoding="utf-8") as f:
         json.dump(out, f, allow_nan=False)
     os.replace(result + ".part", result)

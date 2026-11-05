@@ -143,6 +143,7 @@ impl Fixture {
             candidate: Spec::Worktree,
             setting: Setting::Cooperative,
             approve,
+            preserve: None,
         }
     }
 

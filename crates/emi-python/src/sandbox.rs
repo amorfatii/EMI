@@ -17,6 +17,9 @@ use crate::Result;
 #[derive(Clone, Copy)]
 pub struct Runner<'a> {
     pub repo: &'a Path,
+    /// Where commits are read from when not `repo`: a clean view that also
+    /// holds a frozen working tree.
+    pub objects: Option<&'a Path>,
     /// The commit every copy is made from.
     pub rev: &'a str,
     /// Ignored dependency directories linked into each copy.
@@ -48,7 +51,7 @@ impl Runner<'_> {
     /// Materialize the commit into a new scratch directory (`tag` keeps
     /// concurrent copies apart).
     pub fn copy(&self, tag: &str) -> Result<Copy> {
-        self.copy_of(tag, self.repo, self.rev)
+        self.copy_of(tag, self.objects.unwrap_or(self.repo), self.rev)
     }
 
     /// [`Runner::copy`] of `rev` read from `objects`: a repository that

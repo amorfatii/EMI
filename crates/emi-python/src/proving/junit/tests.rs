@@ -269,3 +269,20 @@ fn a_collection_error_in_another_file_does_not_make_this_one_errored() {
         "did not report"
     ));
 }
+
+#[test]
+fn a_counterexample_is_the_falsifying_input_when_there_is_one() {
+    let text = "Traceback ...\nAssertionError\nFalsifying example: test_x(\n    x=-1,\n)\n\nmore\n";
+    assert_eq!(
+        counterexample("AssertionError: assert -1 >= 0", text),
+        "Falsifying example: test_x( x=-1, )"
+    );
+    let newer = "Failing test case: test_x(\n    x=-1,\n)\n";
+    assert!(counterexample("m", newer).starts_with("Failing test case"));
+    assert_eq!(
+        counterexample(" assert 1 == 2 ", "no example"),
+        "assert 1 == 2"
+    );
+    let long = "x".repeat(700);
+    assert!(counterexample(&long, "").ends_with(" …"));
+}

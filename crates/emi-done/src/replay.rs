@@ -110,6 +110,15 @@ pub fn replay(
         candidate: spec,
         setting: setting_of(original)?,
         approve: &[],
+        // the intent the original was checked under, never this machine's
+        preserve: original["inputs"]["intent"]["preserve"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            }),
     };
     let replayed = crate::done(&req, measure)?.receipt;
     let keys: std::collections::BTreeSet<&String> = [original, &replayed]

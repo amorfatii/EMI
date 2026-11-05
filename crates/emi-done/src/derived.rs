@@ -129,6 +129,14 @@ pub fn is_pytest(command: &[String]) -> bool {
     emi_python::proving::pytest::Command::parse(command).is_ok()
 }
 
+/// The globs of the files restored from the baseline for every run: the
+/// tests, and the laws (should the test command collect them).
+pub fn trusted_globs(config: &Config) -> Vec<String> {
+    let mut globs = config.tests.globs.clone();
+    globs.push(format!("{}/*", config.laws.dir));
+    globs
+}
+
 /// A glob that matches exactly `path`: the controller's trusted set is a
 /// list of globs, and a file name may contain glob characters.
 fn literal(path: &str) -> String {

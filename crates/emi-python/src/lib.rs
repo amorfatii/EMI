@@ -18,6 +18,7 @@ pub mod mutation;
 pub mod pins;
 pub mod proving;
 pub mod sandbox;
+pub mod standins;
 pub mod syntax;
 
 pub type Result<T> = std::result::Result<T, String>;

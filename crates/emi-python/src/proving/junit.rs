@@ -41,6 +41,63 @@ enum Kind {
 pub struct Report {
     /// (classname, name) as pytest writes them, to every case with that key.
     cases: BTreeMap<(String, String), Vec<Kind>>,
+    /// What a failing or erroring case said, shortened to its point.
+    messages: BTreeMap<(String, String), String>,
+}
+
+/// Longest counterexample kept for one test.
+const MAX_MESSAGE: usize = 600;
+
+/// How Hypothesis introduces the input that broke a property, across its
+/// versions.
+const EXAMPLE_HEADS: [&str; 3] = [
+    "Falsifying example",
+    "Falsifying explicit example",
+    "Failing test case",
+];
+
+/// The point of a failure: Hypothesis's falsifying example when there is
+/// one (the input that breaks the property), else the failure's message.
+/// Nothing in it depends on where the run happened, once the caller has
+/// taken the copy's path out.
+pub fn counterexample(message: &str, text: &str) -> String {
+    let falsifying: Vec<&str> = text
+        .lines()
+        .skip_while(|l| {
+            let l = l.trim_start();
+            !EXAMPLE_HEADS.iter().any(|h| l.starts_with(h))
+        })
+        .take_while(|l| !l.trim().is_empty())
+        .collect();
+    let point = if falsifying.is_empty() {
+        message.trim().to_owned()
+    } else {
+        falsifying
+            .iter()
+            .map(|l| l.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut out: String = point.chars().take(MAX_MESSAGE).collect();
+    if point.chars().count() > MAX_MESSAGE {
+        out.push_str(" …");
+    }
+    out
+}
+
+fn message_of(case: roxmltree::Node) -> Option<String> {
+    let bad = case
+        .children()
+        .find(|c| c.has_tag_name("failure") || c.has_tag_name("error"))?;
+    let text: String = bad
+        .descendants()
+        .filter_map(|n| n.text())
+        .collect::<Vec<_>>()
+        .join("");
+    Some(counterexample(
+        bad.attribute("message").unwrap_or(""),
+        &text,
+    ))
 }
 
 /// The `(classname, name)` pytest writes for a node id: the path without
@@ -144,6 +201,9 @@ pub fn parse(xml: &str) -> Result<Report, String> {
                 .ok_or("a <testcase> in the report has no name")?
                 .to_owned(),
         );
+        if let Some(message) = message_of(case) {
+            report.messages.insert(key.clone(), message);
+        }
         report.cases.entry(key).or_default().push(kind_of(case));
     }
     Ok(report)
@@ -170,6 +230,11 @@ impl Report {
 
     fn lookup(&self, key: &(String, String)) -> Option<&[Kind]> {
         self.cases.get(key).map(Vec::as_slice)
+    }
+
+    /// What the failing or erroring test `id` said, if the report holds it.
+    pub fn message(&self, id: &str) -> Option<&str> {
+        self.messages.get(&address(id)).map(String::as_str)
     }
 }
 

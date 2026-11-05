@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
-use crate::claude::{Event, STOP_TIMEOUT_SECS, USER_PROMPT_TIMEOUT_SECS};
+use crate::claude::{
+    Event, FILE_TOOLS, PRE_TOOL_TIMEOUT_SECS, STOP_TIMEOUT_SECS, USER_PROMPT_TIMEOUT_SECS,
+};
 
 const PLUGIN_TEMPLATE: &str = include_str!("plugin.js");
 /// The first line of the plugin file: how uninstall knows the file is EMI's.
@@ -102,9 +104,10 @@ pub fn uninstall(target: &Target<'_>) -> Result<Vec<String>, String> {
 
 // ---- Claude Code settings ---------------------------------------------
 
-const EVENTS: [(Event, u32, &str); 2] = [
+const EVENTS: [(Event, u32, &str); 3] = [
     (Event::Stop, STOP_TIMEOUT_SECS, "EMI: checking the change"),
     (Event::UserPromptSubmit, USER_PROMPT_TIMEOUT_SECS, ""),
+    (Event::PreToolUse, PRE_TOOL_TIMEOUT_SECS, ""),
 ];
 
 fn command_line(emi: &str, event: Event) -> String {
@@ -185,7 +188,11 @@ fn merge_event(
         }
     }
     if !found {
-        groups.push(json!({"hooks": [handler_for(emi, event, timeout, status)]}));
+        let mut group = json!({"hooks": [handler_for(emi, event, timeout, status)]});
+        if event == Event::PreToolUse {
+            group["matcher"] = json!(FILE_TOOLS);
+        }
+        groups.push(group);
         return Ok(format!("added the {name} hook"));
     }
     Ok(if changed {
@@ -458,9 +465,15 @@ mod tests {
         let merged = read_json(&file);
         assert_eq!(merged["model"], "opus");
         assert_eq!(merged["permissions"], original["permissions"]);
+        // the person's own PreToolUse hook stays first and untouched; EMI's
+        // laws guard is added beside it
         assert_eq!(
-            merged["hooks"]["PreToolUse"],
-            original["hooks"]["PreToolUse"]
+            merged["hooks"]["PreToolUse"][0],
+            original["hooks"]["PreToolUse"][0]
+        );
+        assert_eq!(
+            merged["hooks"]["PreToolUse"][1]["matcher"],
+            "Edit|Write|MultiEdit|NotebookEdit"
         );
         assert_eq!(merged["hooks"]["Stop"][0], original["hooks"]["Stop"][0]);
         assert_eq!(merged["hooks"]["Stop"].as_array().expect("array").len(), 2);
