@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0005
 ---
 
 # Structural burden is frozen and the Python parity obligation ends

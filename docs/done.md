@@ -1,8 +1,8 @@
 # The done check (`emi init`, `emi done`)
 
-When a coding agent says it is finished, `emi done` says what was proven. It
-implements the completion check in `docs/plan.md`; the vocabulary is in
-`CONTEXT.md`.
+When a coding agent says it is finished, `emi done` says what was
+established. The vocabulary is in `CONTEXT.md`; laws, kept behaviour and the
+pins have their own pages (`laws.md`, `preserve.md`, `determinism.md`).
 
 ## Set up once: `emi init`
 
@@ -21,10 +21,33 @@ link (`.venv`, `venv`), prints them, and writes `.emi/config.json`.
 - It never replaces an existing file without `--force`.
 - Commit the file: enforced verification reads it from the baseline.
 
-The file has the schema `emi-config-0.1` (see plan.md, interface 1). Unknown
-keys and values of the wrong type are errors. `repair_rounds` (default 3) and
-`on_unproven` (`report`, the default, or `repair`) are for the hook.
-`on_redundant` is the same choice for redundant tests.
+The file has the schema `emi-config-1.0` (`emi-config-0.1` files are still
+read). Unknown keys and values of the wrong type are errors.
+
+```json
+{
+  "schema": "emi-config-1.0",
+  "language": "python",
+  "source": "src",
+  "default_branch": "main",
+  "tests": {"command": [".venv/bin/python", "-m", "pytest", "-q"], "globs": ["tests/*"]},
+  "link": [".venv"],
+  "python_path": ["src"],
+  "repair_rounds": 3,
+  "on_unexercised": "report",
+  "on_redundant": "report",
+  "pins": {"hash_seed": 0, "tz": "UTC", "locale": "C.UTF-8", "seed_random": true, "hypothesis": "derandomize"},
+  "laws": {"dir": ".emi/laws", "lock": false},
+  "preserve": {"generated_examples": 200, "call_timeout_s": 2},
+  "adequacy": {"max_mutants": 0, "on_survivors": "report"}
+}
+```
+
+Everything after `tests` may be left out and takes these defaults.
+`repair_rounds` is for the hook. `on_unexercised`, `on_redundant` and
+`adequacy.on_survivors` say what each finding does to the action:
+`report` (state it; the agent may stop), `repair` (send the agent back) or
+`ask_person`. A test command that runs tests in parallel is refused.
 
 ## Check: `emi done`
 
@@ -40,7 +63,7 @@ default branch itself, or is detached at the merge base, no commit says where
 the work began, so `--baseline` is required (the hook passes the session
 baseline and says `--baseline-source session`); EMI does not guess one.
 
-The tests run through `emi-controller` from a derived contract: the tests the
+The tests run through the done check's engine from a derived contract: the tests the
 baseline had and the test-runner configuration are restored to their baseline
 versions before the run (so an edited test runs in its original form), the set
 of test ids is compared with the baseline's, and everything runs in a sandbox
@@ -53,7 +76,7 @@ pinned again; enforced verification refuses them (`incomplete`).
 
 ### The receipt
 
-`--format json` prints the receipt in canonical JSON (`emi-done-receipt-0.4`);
+`--format json` prints the receipt in canonical JSON (`emi-done-receipt-1.0`);
 `--format text` is the same in plain words and is the default on a terminal.
 The text shows what this run in particular did not establish and counts the
 limits every receipt has; `--full` lists those too. The JSON always holds all
@@ -92,18 +115,19 @@ of them (`not_verified`), with this run's under `this_run`.
     base class and run under several subclasses is one function.
   - An added test skipped (or expected to fail) at both revisions is listed
     in `skipped_tests`: it does not run here, shows nothing, and is not a
-    measurement that failed. A changed function is proven only when a
+    measurement that failed. A changed function is exercised only when a
   proving test executes its changed body: the lines the change added, or,
   where the change also removed lines from the function (a guard taken out,
   a statement rewritten), any line of it, since a removed line cannot run
-  and its absence changes every call. The levels are `proven`,
-  `partly_proven`, `unproven`, `none`, and `unknown`.
+  and its absence changes every call. The levels are `exercised`,
+  `partly_exercised`, `unexercised`, `none`, and `unknown`. Exercised is not
+  proved: a function a passing law executes also lists that law (`laws`).
   - Requires coverage.py >=7.9 in the same environment as pytest; EMI selects
     the tracing engine that supports per-test contexts, including on Python 3.14.
   - Unknown added-test outcomes or unmeasurable changed functions produce
     `incomplete`, not `stop`. Removed functions and unsupported files are
-    listed as not measured, never described as proven.
-  - `on_unproven: report` states unproven functions without demanding another
+    listed as not measured, never described as exercised.
+  - `on_unexercised: report` states unexercised functions without demanding another
     round. `repair` sends them back within the hook's ordinary round budget.
   - The stricter unique-mutant rule is not implemented; the plain rule does
     not prove the tests express everything the user asked for.
@@ -127,6 +151,23 @@ of them (`not_verified`), with this run's under `this_run`.
     deletion to the deletion) and to the baseline, so a further edit asks
     again.
 - **`not_verified`**: always present; what the receipt does not establish.
+
+- **`laws`**: the person's laws, as the baseline has them (`laws.md`).
+- **`preserve`**: the behaviour comparison, when asked for (`preserve.md`).
+- **`adequacy`**: with `adequacy.max_mutants` set, single-token mutants of
+  the lines the change added are run against the proving tests and the
+  passing laws. A mutant none of them notices is listed as a survivor:
+  that line could go wrong without the evidence telling. A survivor may be
+  equivalent to the original, so `adequacy.on_survivors` defaults to
+  `report`; `repair` sends the agent back to pin the line down, and
+  `ask_person` leaves it to a person. Each mutant is one more run.
+- **`signals`**: lines the change added to Python product code that match
+  a known escape hatch (a checker suppression, `eval`/`exec`, test-runner
+  sniffing, an `__eq__` that returns `True`). They are found by pattern,
+  labelled `assurance: pattern`, and never change the action.
+- **`inputs`, `input_id`, `decision_id`, `policy`**: what the decision is a
+  function of (`determinism.md`). `meta` says where it ran and is the only
+  part a replay does not reproduce.
 
 ### The action and the exit status
 
@@ -204,10 +245,11 @@ that pass were not broken by the product code alone:
   the baseline versions of those files. That is the person's question, as it
   is for an edited test whose baseline form fails; the regression line says
   how many and names the first.
-- when nothing was restored, the whole suite runs a second time. A test
-  that passes in it was flaky, and the regression line says so. One that
-  fails again depends on what ran before it, which the change altered: it
-  stays a break.
+- when nothing was restored, the whole suite runs a second time under the
+  same pins. A test that fails again depends on what ran before it, which
+  the change altered: it stays a break. One that passes did not reproduce:
+  it is listed in `regression.nondeterministic`, and the action is
+  `incomplete`. A failure is never cleared by a later run that passed.
 
 A test the candidate added that fails beside restored files is judged by the
 change evidence alone, which runs it on the candidate as it is.
@@ -245,7 +287,10 @@ had is still there, so nothing was rewritten. The file still runs in its
 baseline form as regression evidence, and the appended tests are judged as
 change evidence. A file with removed or changed lines asks a person.
 
-The first check of a baseline therefore runs the suite twice. An empty
+The baseline's tests run twice under the same pins, and a test whose outcome
+differs between the two is listed in `regression.quarantined` and is not
+regression evidence. The first check of a baseline therefore runs the suite
+three times. An empty
 suite, a report that names fewer tests than were collected, an exit status
 that disagrees with the report, and a cut or unreadable report are
 `incomplete`: collection alone is not proof the tests executed.

@@ -81,9 +81,13 @@ _Avoid_: useless test, extra test, low-quality test
 An added case of a parametrized test that passes at the baseline while another case of the same test function is a proving test.
 _Avoid_: redundant case, extra parameter
 
-**Unproven function**:
+**Exercised function**:
+A function the candidate changed whose changed lines a proving test executes. Exercised is not proved.
+_Avoid_: proven function, verified function
+
+**Unexercised function**:
 A function the candidate changed that no proving test executes.
-_Avoid_: untested code, uncovered function, unverified claim
+_Avoid_: unproven function, untested code, uncovered function
 
 **Approval**:
 A person's recorded decision to allow one named review item for one candidate.
@@ -106,23 +110,63 @@ Verification run where the proposer cannot reach the task contract, the checks o
 _Avoid_: CI mode, strict mode
 
 **Deterministic acceptance**:
-The property that the same candidate under the same task contract always yields the same acceptance decision.
+The property that the same candidate under the same inputs (configuration, laws, environment, pins, intent) always yields the same decision on the same evidence.
 _Avoid_: deterministic agent, reproducible generation
 
-### Measurement
+### Laws
 
-**Structural burden**:
-A description of how large, branchy, repeated and tangled code is. It is not a quality score.
-_Avoid_: code health, quality score, maintainability index
+**Law**:
+A test the person owns, in the laws directory, that says what the code must do. Every check runs it as the baseline has it.
+_Avoid_: spec, contract test, invariant file
 
-**Measurement contract**:
-The adapter, runtime, parser and scope rules that define a measurement.
-_Avoid_: profile string
+**Open law**:
+A law that fails at the baseline: what the task must bring about.
+_Avoid_: failing law, todo test
 
-**Snapshot input**:
-The exact source, configuration and inventory used by a measurement.
-_Avoid_: checkout, tree
+**Law-checked function**:
+A changed function whose changed lines a passing law executes.
+_Avoid_: verified function, proven function
 
-**Gate policy**:
-The versioned rules, allowances and uncertainty treatment for a decision.
-_Avoid_: threshold, allowance
+**Proposal**:
+A law file the proposer added or changed without an approval. It counts for nothing until a person approves it.
+_Avoid_: draft law, suggested spec
+
+**Stand-in**:
+A trivial body for a function (returns its argument, returns None, returns its annotation's default, raises) that a law worth the name must reject.
+_Avoid_: mock, stub
+
+**Vacuous law**:
+A proposed law that still holds when a function it exercises is replaced by a stand-in.
+_Avoid_: weak law, useless law
+
+### Determinism
+
+**Pins**:
+What every test run is held to, the same at the baseline and on the candidate: the hash seed, the time zone, the locale, `random` seeded per test, Hypothesis derandomized.
+_Avoid_: seed, fixture, environment
+
+**Quarantined test**:
+A test whose outcome differed between the baseline's two pinned runs. It is regression evidence for neither side.
+_Avoid_: flaky test, ignored test
+
+**Nondeterministic outcome**:
+A candidate failure, or a broken law, that passed when the same run was repeated under the same pins. It makes the check incomplete; it is never cleared as a pass.
+_Avoid_: flake, intermittent failure
+
+**Inputs** (of a decision):
+The baseline, the candidate's tree, the configuration and pins, the environment, the laws, the intent, the setting, and the versions of EMI and its policy. `input_id` is their digest; `decision_id` is the digest of the receipt without where it ran.
+_Avoid_: context, cache key
+
+**Replay**:
+Computing a receipt again from nothing cached, to see whether the decision id is the same.
+_Avoid_: rerun, retry
+
+### Intent
+
+**Preserve intent**:
+The person's statement that a change must keep the behaviour of the functions it modifies.
+_Avoid_: refactor mode, equivalence mode
+
+**Divergence**:
+An input on which the candidate's version of a function answers differently from the baseline's, or no longer finishes in time.
+_Avoid_: drift, regression, behaviour change

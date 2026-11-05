@@ -1,311 +1,139 @@
 # EMI
 
-**When your agent says done, EMI tells you what was actually proven.**
+**When your agent says done, EMI tells you what was actually established —
+and the same change always gets the same answer.**
 
-EMI runs at the completion claim, checks the baseline's tests, and measures
-which new tests fail before the change and pass after it while executing the
-changed code. It sends fixable failures back to the agent, with three repair
-rounds by default. Its receipt separates regression evidence from evidence
-of new behaviour. **EMI reports a status; it never merges.**
+A coding agent is a nondeterministic source of changes. EMI is the
+deterministic part: at the completion claim it runs the project's tests and
+the person's laws against the change, under pinned conditions, and returns a
+decision that is a pure function of the code, the specification and the
+environment. When the answer is no, the agent is sent back with what failed
+and, where there is one, the input that breaks it. **EMI reports a status; it
+never merges.**
 
-The completion loop supports **Linux, Python and pytest** first. It needs
-bubblewrap, pytest and coverage.py (7.9 or newer) installed in the project's
-Python environment. Claude Code and OpenCode V2 adapters are included.
-The controlled with/without experiment is still pending: there is no claim
-yet that the hook improves solve rate, false completion rate, or token use.
+Python with pytest, on Linux. It needs bubblewrap, and pytest and coverage.py
+(7.9 or newer) in the project's environment; Hypothesis for property laws
+and for generated inputs. Claude Code and OpenCode V2 adapters are included.
 
 ```sh
-emi init                                      # confirm the detected configuration
-git add .emi/config.json                      # commit before starting the task
-git commit -m "Configure EMI completion checks"
-emi hook install --harness opencode            # or: --harness claude-code
-emi done --format text                         # check manually at any time
+emi init                                   # confirm the detected configuration
+git add .emi/config.json && git commit -m "Configure EMI"
+emi hook install --harness claude-code     # or: --harness opencode
+emi done --format text                     # check by hand at any time
 ```
 
-See [the done check](docs/done.md) and [harness installation](docs/hook.md).
-On the default branch, manual checks need `--baseline REF`; the harness
-records that baseline at the first user message.
+## What a check establishes
 
-**How verification works:**
-- The trusted tests are restored and run as the contract fixed them. When the
-  contract has held-out tests, which the agent never saw, they run alongside.
-- No test the baseline had may go missing, and no test-runner configuration
-  may be added.
-- An agent that finds the tests contradicting the task can report it instead
-  of bending them.
-- Every decision says whether it rests on these structural checks or only on
-  a recognised pattern of test gaming. Where evidence is missing, EMI says so;
-  it never fills in a guess.
+| Part | What it says | Docs |
+|---|---|---|
+| **Regression** | Every test the baseline had still passes, run in its baseline form: an edited or deleted test is restored, and no test may go missing. | [done.md](docs/done.md) |
+| **New behaviour** | Which tests the agent added fail before the change and pass after (proving tests), and which changed functions they exercise. | [done.md](docs/done.md) |
+| **Laws** | The person's own tests in `.emi/laws`, held as the baseline has them. A law that held must hold; an open law must come to hold, with Hypothesis's counterexample when it does not. | [laws.md](docs/laws.md) |
+| **Kept behaviour** | With `--preserve`, every modified function must answer as before, on the inputs the tests pass it and inputs drawn from its annotations. | [preserve.md](docs/preserve.md) |
+| **Determinism** | Every run is pinned; tests that differ between two baseline runs are quarantined; a failure that does not reproduce is not evidence. `emi replay` recomputes a receipt from nothing cached. | [determinism.md](docs/determinism.md) |
 
-**EMI also measures the structural *burden* of code:** how big and branchy
-it is, how much of it is repeated, and how tangled its files are.
-- **What burden is for:** explaining where code is costly to change and where
-  to look first, not a quality score or a per-file verdict.
-- **Burden is size-weighted.** In EMI's own validation (emi-lab G2), plain
-  lines of code rank buggy functions almost as well.
-- **When a change is blocked:** the change gate (`emi diff --guardrail`)
-  blocks a change only when it can prove that burden grew.
+The action and the exit status:
 
-The existing structural tools support Python, JavaScript/TypeScript, Rust
-and Go. Their measurements are frozen; they are not the completion check.
+| Exit | Action | Meaning |
+|---|---|---|
+| 0 | `stop` | The evidence in the receipt holds. Not a statement that the task is done. |
+| 3 | `repair` | Something the agent can fix, named with what to do. |
+| 4 | `ask_person` | A changed old test, runner configuration or law waits for a person's approval. |
+| 5 | `incomplete` | Something could not be measured, or did not reproduce. Never a pass. |
+| 2 | | Usage or configuration error. |
 
-## What you can do with it
+Every receipt says what it does not establish (`not_verified`), which
+setting it ran in, and the ids of its inputs and its decision.
 
-| You want to… | Run |
+## A law, end to end
+
+```python
+# .emi/laws/test_orders.py  — the person's
+from hypothesis import given, strategies as st
+from shop.orders import Order, cancel
+
+@given(st.builds(Order))
+def test_a_cancelled_order_is_cancelled(order):
+    assert cancel(order).status == "cancelled"
+```
+
+If the agent's `cancel` returns the order unchanged, the check sends it
+back with the counterexample:
+
+```
+Action: repair
+  .emi/laws/test_orders.py::test_a_cancelled_order_is_cancelled is a law that
+  does not hold yet; make the code satisfy it. It says: Failing test case: ...
+```
+
+If the agent edits the law instead, the edit changes nothing: the law runs
+as the baseline has it, and the edit waits for a person (`law:PATH`). If the
+agent proposes a law of its own, the receipt shows whether that law would
+still hold were the function trivial (`returns its first argument
+unchanged`), before anyone approves it.
+
+## Settings
+
+- **Cooperative** (the default, on a person's machine): the agent could
+  alter EMI's inputs, so this catches a careless agent, not a cheating one.
+- **Enforced** (`--setting enforced`, in CI): the configuration and the laws
+  are read from the baseline and local approvals are ignored. See
+  [ci.md](docs/ci.md). It is not yet a claim of adversarial security; run
+  untrusted pull requests on an ephemeral worker with no secrets.
+
+## Commands
+
+| Command | |
 |---|---|
-| Check what an agent actually established | `emi init`, then `emi done` or `emi hook install` |
-| See where your codebase is costly and changes often | `emi report` → one HTML file |
-| See how burden totals change over time, split into more code and denser code | `emi trend` |
-| Block a pull request whose burden growth EMI can prove | `emi diff --guardrail` (or the [GitHub Action](#in-ci)) |
-| Hand a task to an AI agent and verify its result | `emi task create` / `verify` / `complete` |
-| See what a task's decision rests on and what it did not verify | `emi task receipt` |
-| Know whether your tests would catch a wrong change | `emi profile` |
-| See which lines of a change the tests would not notice going wrong | `emi diff-mutate` |
-| See where a change now answers differently for inputs the tests pass | `emi drift` |
-| See what else a change may break: exported names, schema files, usual co-changes, importers | `emi places` |
-| Find out why a function is hard to maintain and how to fix it | `emi explain` |
-| Enforce your own code rules | `emi check` |
+| `emi init` | Detect the test command, source layout and default branch; write `.emi/config.json` |
+| `emi done` | Check the working tree (or `--candidate REF`) against the baseline; print the receipt |
+| `emi done --approve ITEM` | Approve a changed old test, runner configuration file or law (`law:PATH`) |
+| `emi done --preserve [PATH]...` | Also require the modified functions to keep their behaviour |
+| `emi intent preserve\|clear\|show` | Record that intent for this repository, for the hook |
+| `emi replay RECEIPT` | Compute a receipt again from nothing cached; exit 0 when the decision is the same |
+| `emi hook install\|uninstall` | Run the check when the agent tries to stop ([hook.md](docs/hook.md)) |
+| `emi journal report` | What the hook did, and a person's labels of its interventions |
 
 ## Install
 
-You need Rust (1.90 or newer; the repository pins its toolchain, so
-`rustup` fetches the right one automatically).
+You need Rust 1.90 or newer (the repository pins its toolchain).
 
 ```sh
 git clone https://github.com/amorfatii/EMI.git
 cd EMI
-cargo install --locked --path crates/emi-cli   # puts `emi` on your PATH
+cargo install --locked --path crates/emi-cli
 ```
 
-Or build without installing: `cargo build --release` and run
-`target/release/emi`.
+## Not established yet
 
-## Structural tools (existing workflows)
-
-Run these inside any git repository. Replace `src` with your source folder
-and `python` with your language (`python`, `js`, `rust` or `go`).
-
-**1. Get the big picture.** Writes a self-contained HTML page you can open in
-any browser or attach to a ticket:
-
-```sh
-emi report --source src --probe python -o report.html
-```
-
-It shows a map of the code by size and how often each file changes, the
-*hotspots* (costly files that keep changing, the best places to start),
-what the burden is made of, files that always change together, and rule
-findings.
-
-**2. Check a change.** Compare your branch with `main`:
-
-```sh
-emi diff --source src --probe python --before main --after HEAD --merge-base --guardrail
-```
-
-The verdict is `pass`, `warn` or `block`, with reasons, for example
-`absolute burden grew beyond allowance: V +16 (allowance 10)`. The exit code
-is what CI reads:
-
-| Exit | Meaning |
-|---|---|
-| `0` | pass or warn (add `--fail-on-warn` to make warn fail too) |
-| `2` | block, or the scan could not cover the whole scope |
-
-Useful variants:
-
-```sh
-emi diff ... --worktree            # check uncommitted work instead of a commit
-emi diff ... --compact             # a short verdict, cheap for agents to read
-emi diff ... --format markdown     # a ready-to-post PR comment
-```
-
-**3. See what to improve.**
-
-```sh
-emi hotspots --source src --probe python    # ranked files, change coupling, authorship
-emi explain src/app/billing.py              # per function: what drives its cost, and the steps that lower it
-```
-
-## Common workflows
-
-### In CI
-
-The GitHub Action defaults to `emi done --setting enforced`. Commit
-`.emi/config.json` in the trusted baseline and prepare the Python test
-environment before invoking it:
-
-```yaml
-- uses: actions/checkout@v4
-  with: {fetch-depth: 0}
-- uses: dtolnay/rust-toolchain@stable
-- run: python3 -m venv .venv
-- run: .venv/bin/pip install -e '.[test]' 'coverage>=7.9,<8' # adapt to the repository
-- uses: amorfatii/EMI@main
-  with: {mode: done, comment: "false"}
-```
-
-Only `stop` passes the job. Configure that job as a required check;
-`ask_person`, `repair` and `incomplete` do not pass. Pin EMI to a reviewed
-commit for actual use. Use `mode: burden` for the legacy structural gate.
-The full workflow, permissions and optional SARIF upload are in
-[docs/ci.md](docs/ci.md).
-
-### Supervising AI agents
-
-- **Supervised tasks.** `emi task create` freezes a task contract (what may
-  change, which tests must keep passing, tests the agent never sees).
-  `emi task verify` then runs those checks in a sandbox, on a fresh copy of
-  exactly the submitted code, with the trusted tests restored read-only.
-  Only an accepted commit can complete the task. See
-  [docs/tasks.md](docs/tasks.md).
-- **Guardrails.** `emi guard` flags deleted or weakened tests, edits to
-  prohibited paths, new lint suppressions and duplicated code
-  ([docs/guardrails.md](docs/guardrails.md)). Its `gaming.*` rules
-  recognise known shapes of test gaming: they are review hints, not
-  guarantees, since code written differently passes them. Verification
-  relies on the structural checks (restored and held-out tests, the test
-  inventory, the envelope), and each decision's `assurance` says which
-  kind of evidence it rests on.
-- **Agent tools.** `emi mcp` gives agents the gate, explanations and
-  hotspots over the Model Context Protocol ([docs/agents.md](docs/agents.md)).
-
-### Test readiness
-
-```sh
-emi profile --coverage coverage.json -- python -m pytest -q
-```
-
-For each function, `emi profile` combines structure, change history, the
-lines your coverage report says the tests run (lcov, Cobertura, coverage.py
-or Go), and a sample of deliberately broken versions ("mutants") to see
-whether the tests notice. Each function gets a label such as `strong`,
-`weak` or `unexecuted`. It is advice only and never blocks anything. Pass
-the saved profile to `emi report --profile-json` or `emi task draft` to use
-it there ([docs/profile.md](docs/profile.md)). `emi diff-mutate` does the
-same for only the lines a change added ([docs/diff-mutate.md](docs/diff-mutate.md)).
-
-### Rules
-
-`emi check src` runs declarative rules: a built-in catalog plus your own
-YAML. Suppressions must give a reason and can carry an expiry date, and
-baselines let you adopt rules without fixing everything first
-([docs/rules.md](docs/rules.md)).
-
-### In your editor
-
-`emi lsp` is a language server. It shows rule diagnostics, erosion hints
-and, above each function, how much your edits changed its burden
-([docs/editor.md](docs/editor.md)).
-
-## How EMI measures
-
-**Three dimensions of burden**, in line-equivalents:
-
-| Dimension | What it counts |
-|---|---|
-| **E**: erosion | size and branching |
-| **V**: redundancy | repeated code (clones) |
-| **C**: coupling | dependencies between files, and dependency cycles |
-
-**Unknowns stay unknown.** When EMI cannot resolve something (say, an
-import it cannot trace), it records a range (`12–15`) instead of a single
-number, and the gate only blocks on growth it can prove.
-
-**Measurement profiles** (`--profile`):
-
-| Profile | Use it for |
-|---|---|
-| `parity` | Reproducing the original Python tool (v0.5.1) byte for byte ([docs/parity.md](docs/parity.md)) |
-| `precise` | Tracing where values come from to resolve coupling. It removes 97% of unknown coupling on the test corpus |
-| `graded` | Erosion weighted by cognitive complexity and Halstead volume. It ranks buggy functions better than `parity` (AUC 0.821 vs 0.745 on 1,014 fresh bugs), though about as well as plain line count |
-
-Details in [docs/profiles.md](docs/profiles.md).
-
-**An honest note on prediction.** The companion `emi-lab` repository tests
-what these numbers do and do not predict. So far no static score, EMI's
-included, predicts defects better than code size. EMI's value is in
-*verification*: proving what a change did, and checking agent work against
-a contract it cannot edit.
-
-## Tuning the gate
-
-| Option | Effect |
-|---|---|
-| `--allow-growth N` | Proven growth tolerated before `block` (default 10) |
-| `--allow-headroom N` | Possible (unproven) growth tolerated before `warn` (default: same as `--allow-growth`) |
-| `--fail-on-warn` | Exit 2 on `warn` as well |
-| `--max-evidence N` | How many evidence entries a verdict lists (default 5; 0 shows margins only) |
-| `--log-trajectory DIR` | Append one JSON line per gate run to `DIR/emi-trajectory.jsonl` (`--trajectory-strict` exits 2 if it cannot) |
-
-Before enforcing, `emi backtest --repo . --source src --commits 40` replays
-the gate over your recent history, so you can pick allowances that fit.
-
-Scope options for every measuring command: `--exclude GLOB` and
-`--include GLOB` (repeatable, matched against paths inside the scope),
-`--no-default-excludes` (also measure virtualenv, build and cache
-folders), `--no-test-detection` (Python: treat test files as product code),
-`--tolerate-syntax-errors` (record unparseable files instead of stopping).
-
-## Speed
-
-Scanning CPython's standard library plus site-packages (799k lines, 35,525
-functions) takes 0.14 s on a 20-thread machine. The original Python tool
-takes about 58 s on the same tree.
-
-## Documentation
-
-| Topic | |
-|---|---|
-| CI and the GitHub Action | [docs/ci.md](docs/ci.md) |
-| Supervised agent tasks | [docs/tasks.md](docs/tasks.md) |
-| Guardrails | [docs/guardrails.md](docs/guardrails.md) |
-| Agents and MCP | [docs/agents.md](docs/agents.md) |
-| Test readiness profile | [docs/profile.md](docs/profile.md) |
-| Mutation on a change's lines | [docs/diff-mutate.md](docs/diff-mutate.md) |
-| Behavioural drift | [docs/drift.md](docs/drift.md) |
-| Places to look after a change | [docs/places.md](docs/places.md) |
-| History, hotspots, change coupling | [docs/history.md](docs/history.md) |
-| Burden over time | [docs/trend.md](docs/trend.md) |
-| Rules | [docs/rules.md](docs/rules.md) |
-| Refactoring tasks and `emi explain` | [docs/refactoring.md](docs/refactoring.md) |
-| Editor integration | [docs/editor.md](docs/editor.md) |
-| Languages | [docs/languages.md](docs/languages.md) |
-| Measurement profiles | [docs/profiles.md](docs/profiles.md) |
-| Parity with the Python tool | [docs/parity.md](docs/parity.md) |
+The controlled experiment, with and without the hook, has not been run:
+there is no claim yet that EMI lowers the false completion rate, keeps the
+solve rate or bounds the extra tokens. The pre-registered design is in the
+validation lab, outside this repository.
 
 ## Contributing
 
-Run `scripts/check.sh` before every commit. It runs formatting, clippy with
-warnings denied, the tests, a release build, and the parity check against
-the golden measurements in `corpus/`. [CLAUDE.md](CLAUDE.md) lists the rules
-the code follows.
+Run `scripts/check.sh` before every commit: formatting, clippy with warnings
+denied, the kernel purity check, the tests, and a release build.
+[CLAUDE.md](CLAUDE.md) lists the rules the code follows, the vocabulary is
+in [CONTEXT.md](CONTEXT.md), and the decisions are in [docs/adr](docs/adr).
 
 <details>
 <summary>Crate layout</summary>
 
 | Crate | Role |
 |---|---|
-| `emi-cli` | The `emi` binary |
-| `emi-ir` | Records, evidence intervals, burden formulas, region assignment, Python-compatible text rules |
-| `emi-scan` | Scope enumeration and parallel measurement |
-| `emi-lang-python` | Python adapter on ruff's parser (tag 0.16.9) |
-| `emi-lang-js` | JS/TS adapter on tree-sitter 0.26.2 (grammars js 0.25.0, ts 0.23.2) |
-| `emi-lang-rust` | Rust adapter on tree-sitter-rust 0.24.2, with static module coupling |
-| `emi-lang-go` | Go adapter on tree-sitter-go 0.25.0; package coupling validated against `go list` |
-| `emi-lang-common` | Shared engine for native adapters: SLOC, regions, complexity, erosion, clones |
-| `emi-ledger` | Calculator and gate, with CPython-exact arithmetic and JSON |
-| `emi-diff` | Verified git snapshots, the change document, backtest, trajectory rows |
-| `emi-history` | History mining with rename tracking, churn, authorship, AI attribution, change coupling |
-| `emi-rules` | Declarative query rules, built-in catalog, suppressions, baselines |
-| `emi-guard` | Guardrails on a change |
-| `emi-controller` | Supervised tasks: frozen contracts, isolated check runs, gates, completion, receipts |
-| `emi-exec` | Check execution: process groups, PID namespaces, verified cleanup |
+| `emi-kernel` | The decision: typed facts, the action table, the policy id; canonical JSON, hashing, globs, test paths, pins. No I/O. |
 | `emi-git` | The one git runner, with repository config, hooks and replace refs switched off |
-| `emi-profile` | Coverage import, sampled and diff-scoped mutation runs, behavioural drift, per-function readiness |
-| `emi-panel` | Classic function metrics (SLOC, cognitive complexity, Halstead volume) |
-| `emi-lsp` | Language server |
-| `emi-mcp` | Model Context Protocol server |
+| `emi-tree` | Verified snapshots of commits and working trees; line-level hunks |
+| `emi-exec` | Sandboxed execution: bubblewrap, process groups, verified cleanup |
+| `emi-python` | Python and pytest: function spans and mutants (tree-sitter-python), changed functions, the proving measurement, laws and stand-ins, coverage, behaviour comparison |
+| `emi-done` | The done check: configuration, baseline, the verification engine, regression, laws, preserve, receipts, replay |
+| `emi-hook` | Harness adapters (Claude Code, OpenCode V2), repair rounds, the laws lock |
+| `emi-cli` | The `emi` binary |
+
+The burden measurements EMI started with are archived at tag
+`archive/burden-final` ([ADR 0005](docs/adr/0005-the-burden-stack-is-archived.md)).
 
 </details>
 
