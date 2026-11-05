@@ -8,13 +8,13 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::Setting;
-use crate::action::{self, Action};
 use crate::baseline::Baseline;
 use crate::candidate::Candidate;
 use crate::change::ChangeEvidence;
 use crate::config::{OnRedundant, OnUnproven};
 use crate::oldtests::Entry;
 use crate::regression::{Regression, Status};
+use emi_kernel::decide::{self, Action};
 
 pub const SCHEMA: &str = "emi-done-receipt-0.4";
 
@@ -91,23 +91,31 @@ fn failing_line(t: &crate::change::Failing) -> String {
     }
 }
 
-fn facts(p: &Parts) -> action::Facts {
+fn facts(p: &Parts) -> decide::Facts {
     let change = p.change.facts();
-    action::Facts {
+    decide::Facts {
         faults: faults(p),
         regression_broken: p.regression.status == Status::Broken,
         failing_tests: failing(p).len(),
         redundant_tests: change.redundant.len(),
+        unexercised_functions: change.unproven.len(),
+        unapproved: p.old_tests.iter().filter(|e| !e.approved).count(),
+        ..decide::Facts::default()
+    }
+}
+
+/// The configured treatment of each finding.
+fn policy(p: &Parts) -> decide::Policy {
+    decide::Policy {
         on_redundant: p.on_redundant,
-        unproven_functions: change.unproven.len(),
-        on_unproven: p.on_unproven,
-        unapproved_old_tests: p.old_tests.iter().filter(|e| !e.approved).count(),
+        on_unexercised: p.on_unproven,
+        ..decide::Policy::default()
     }
 }
 
 /// The action the parts lead to.
 pub fn action_of(p: &Parts) -> Action {
-    action::decide(&facts(p))
+    decide::decide(&policy(p), &facts(p))
 }
 
 /// Most items one repair names: a proposer told about five failures has

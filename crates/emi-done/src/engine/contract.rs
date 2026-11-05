@@ -459,7 +459,8 @@ pub fn freeze(spec: &Value, repo_path: &str, baseline_sha: &str) -> Result<Froze
     if let Some(v) = verification {
         core["verification"] = v;
     }
-    if let Some(d) = crate::deps::pin(std::path::Path::new(repo_path), &core["execution"])? {
+    if let Some(d) = crate::engine::deps::pin(std::path::Path::new(repo_path), &core["execution"])?
+    {
         core["dependencies"] = d;
     }
     Ok(Frozen {

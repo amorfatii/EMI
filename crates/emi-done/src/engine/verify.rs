@@ -11,8 +11,8 @@ use emi_kernel::json::digest;
 use emi_tree::snapshot;
 use serde_json::{Value, json};
 
-use crate::contract::Result;
-use crate::store::Store;
+use crate::engine::contract::Result;
+use crate::engine::store::Store;
 
 /// What a contract without a test inventory cannot rule out.
 pub const NO_INVENTORY: &str = "no test inventory: each check passes on its exit code alone, so code \
@@ -459,7 +459,7 @@ fn reporter_inventory(
 fn added_runner_config(changed: &[(String, &'static str)]) -> Vec<String> {
     changed
         .iter()
-        .filter(|(p, kind)| *kind == "add" && crate::runner_config::matches(p))
+        .filter(|(p, kind)| *kind == "add" && crate::engine::runner_config::matches(p))
         .map(|(p, _)| p.clone())
         .collect()
 }
@@ -632,7 +632,7 @@ fn run_check_within(
     };
     if evidence.is_object() {
         evidence["outcomes"] = outcomes(&o, limit, workspace);
-        evidence["reader"] = json!(crate::evidence::READER);
+        evidence["reader"] = json!(crate::engine::evidence::READER);
     }
     let record = json!({
         "check_id": id, "check_definition_id": digest("check-definition", def),
@@ -681,14 +681,14 @@ fn apply_evidence(
                    "reason": "the run's output was cut at the kept limit, so its test report is partial"}),
         );
     }
-    match crate::evidence::parse(&o.stdout) {
-        Ok(ev) => match crate::evidence::judge(&ev) {
-            crate::evidence::Verdict::Pass => (
+    match crate::engine::evidence::parse(&o.stdout) {
+        Ok(ev) => match crate::engine::evidence::judge(&ev) {
+            crate::engine::evidence::Verdict::Pass => (
                 status.to_owned(),
                 attribution.to_owned(),
                 evidence_record(&ev, "pass", ""),
             ),
-            crate::evidence::Verdict::Fail(why) => (
+            crate::engine::evidence::Verdict::Fail(why) => (
                 "failed".to_owned(),
                 "candidate".to_owned(),
                 evidence_record(&ev, "fail", &why),
@@ -713,8 +713,8 @@ fn outcomes(o: &emi_exec::Outcome, limit: u64, workspace: &Path) -> Value {
     if o.stdout_bytes > limit || o.stderr_bytes > limit {
         return Value::Null;
     }
-    match crate::evidence::parse(&o.stdout) {
-        Ok(ev) if ev.kind == crate::evidence::Kind::Lines => {
+    match crate::engine::evidence::parse(&o.stdout) {
+        Ok(ev) if ev.kind == crate::engine::evidence::Kind::Lines => {
             let failed: std::collections::BTreeSet<String> = ev
                 .failed
                 .iter()
@@ -735,15 +735,15 @@ fn outcomes(o: &emi_exec::Outcome, limit: u64, workspace: &Path) -> Value {
 
 /// The recorded evidence: what form it took, the counts it showed, why it
 /// did or did not establish passing tests.
-fn evidence_record(ev: &crate::evidence::Evidence, state: &str, reason: &str) -> Value {
+fn evidence_record(ev: &crate::engine::evidence::Evidence, state: &str, reason: &str) -> Value {
     let (kind, passed, failed, skipped) = match ev.kind {
-        crate::evidence::Kind::Lines => (
+        crate::engine::evidence::Kind::Lines => (
             "lines",
             ev.passed.len(),
             ev.failed.len() + ev.errored.len(),
             ev.skipped.len(),
         ),
-        crate::evidence::Kind::Summary => (
+        crate::engine::evidence::Kind::Summary => (
             "summary",
             ev.summary_passed as usize,
             ev.summary_failed as usize,
@@ -1131,9 +1131,9 @@ fn evaluate(store: &Store, contract: &Value, subject: &Subject) -> Result<Evalua
     let changed = changes(&subject.objects, &subject.baseline, &subject.rev)?;
     let scratch = Scratch::new()?;
     // checked before and after the runs: the checks execute these tools
-    let drifted = crate::deps::drift(&subject.repo, contract);
+    let drifted = crate::engine::deps::drift(&subject.repo, contract);
     let verified = run_verified(store, contract, subject, &changed, &scratch)?;
-    let dependencies = crate::deps::gate(&subject.repo, contract, drifted);
+    let dependencies = crate::engine::deps::gate(&subject.repo, contract, drifted);
     Ok(Evaluation {
         ledger: ledger(contract, &verified.statuses),
         gates: json!({"verification": verified.gate, "dependencies": dependencies}),

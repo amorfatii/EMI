@@ -188,28 +188,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "emi-controller"
-version = "0.1.0"
-dependencies = [
- "emi-exec",
- "emi-git",
- "emi-kernel",
- "emi-tree",
- "rustix",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "emi-done"
 version = "0.1.0"
 dependencies = [
- "emi-controller",
  "emi-exec",
  "emi-git",
  "emi-kernel",
  "emi-python",
  "emi-tree",
+ "rustix",
  "serde_json",
  "tempfile",
 ]

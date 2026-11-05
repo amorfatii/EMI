@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::contract::{self, Result};
+use crate::engine::contract::{self, Result};
 
 pub struct Store {
     pub dir: PathBuf,
@@ -157,7 +157,7 @@ impl Store {
             // revising the execution policy re-pins the linked directories
             // as they are now: the controller's way to accept a new runner
             let repo = Path::new(old["repo"]["path"].as_str().unwrap_or("."));
-            match crate::deps::pin(repo, &core["execution"])? {
+            match crate::engine::deps::pin(repo, &core["execution"])? {
                 Some(d) => core["dependencies"] = d,
                 None => {
                     if let Some(m) = core.as_object_mut() {

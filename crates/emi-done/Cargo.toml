@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 emi-kernel.workspace = true
-emi-controller.workspace = true
+rustix.workspace = true
 emi-tree.workspace = true
 emi-exec.workspace = true
 emi-git.workspace = true

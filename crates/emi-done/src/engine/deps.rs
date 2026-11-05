@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use crate::contract::Result;
+use crate::engine::contract::Result;
 
 /// What a linked path held when it was pinned, if it did not exist.
 const ABSENT: &str = "absent";

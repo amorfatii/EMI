@@ -84,7 +84,7 @@ impl Changed {
 /// that is both a test and runner configuration (`tests/conftest.py`) is
 /// runner configuration.
 fn classify(path: &str, globs: &[String]) -> Option<What> {
-    if emi_controller::runner_config::matches(path) {
+    if crate::engine::runner_config::matches(path) {
         Some(What::RunnerConfig)
     } else if globs.iter().any(|g| emi_kernel::glob::fnmatch(path, g)) {
         Some(What::OldTest)
@@ -129,7 +129,7 @@ pub fn find(
     rev: &str,
     globs: &[String],
 ) -> Result<Vec<Changed>, Error> {
-    let changes = emi_controller::verify::changes(view, baseline, rev).map_err(|e| {
+    let changes = crate::engine::verify::changes(view, baseline, rev).map_err(|e| {
         Error::Usage(format!(
             "cannot compare the candidate with the baseline: {e}"
         ))

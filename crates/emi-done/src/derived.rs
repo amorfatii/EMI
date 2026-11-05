@@ -4,12 +4,12 @@
 //! test-runner configuration restored to their baseline versions (except
 //! files a person approved changing), run sandboxed without network.
 //! Everything else (restoring, comparing the inventory of tests, the
-//! sandbox) is `emi-controller`'s.
+//! sandbox) is the engine's ([`crate::engine`]).
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use emi_controller::{Candidate, Store, contract, runner_config, verify};
+use crate::engine::{Candidate, Store, contract, runner_config, verify};
 use emi_kernel::json::digest;
 use serde_json::{Value, json};
 
@@ -295,7 +295,7 @@ pub fn baseline_check(store: &Store, baseline: &str) -> Result<Option<Value>, St
     if let Some(known) = store.latest_decision(baseline, id)? {
         // a run recorded by an older reader names its tests differently
         let kept = recorded_check(store, &known, CHECK)?
-            .filter(|c| c["evidence"]["reader"] == emi_controller::evidence::READER);
+            .filter(|c| c["evidence"]["reader"] == crate::engine::evidence::READER);
         if kept.is_some() {
             return Ok(kept);
         }

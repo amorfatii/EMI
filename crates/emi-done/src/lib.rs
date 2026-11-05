@@ -1,7 +1,7 @@
 //! The done check: when a coding agent says it is finished, what was
 //! actually proven? [`done`] reads `.emi/config.json`, resolves the
 //! baseline, derives a task contract, verifies the candidate through
-//! `emi-controller`, finds the old tests the candidate changed, and
+//! the engine, finds the old tests the candidate changed, and
 //! assembles the receipt and its action (plan.md, interfaces 1 to 3).
 //!
 //! The change evidence (did the requested behaviour come into being) is
@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-pub mod action;
 pub mod baseline;
 pub mod candidate;
 pub mod change;
 pub mod config;
 pub mod derived;
 pub mod detect;
+pub mod engine;
 pub mod oldtests;
 pub mod outcomes;
 pub mod pytest;
@@ -31,10 +31,10 @@ pub mod text;
 #[cfg(test)]
 mod testutil;
 
-pub use action::Action;
 pub use baseline::{Baseline, Given};
 pub use change::ChangeEvidence;
 pub use config::Config;
+pub use emi_kernel::decide::Action;
 pub use run::proving_request;
 
 /// The candidate id of the working tree.

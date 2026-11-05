@@ -15,7 +15,6 @@ emi-python = { path = "crates/emi-python" }
 emi-exec = { path = "crates/emi-exec" }
 emi-git = { path = "crates/emi-git" }
 emi-tree = { path = "crates/emi-tree" }
-emi-controller = { path = "crates/emi-controller" }
 emi-done = { path = "crates/emi-done" }
 
 anyhow = "1"

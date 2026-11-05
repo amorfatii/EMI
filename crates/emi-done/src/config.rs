@@ -31,23 +31,9 @@ const KEYS: &[&str] = &[
 ];
 const REQUIRED: &[&str] = &["schema", "language", "source", "default_branch", "tests"];
 
-/// What unproven functions do to the action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OnUnproven {
-    /// They are stated; the proposer may stop.
-    Report,
-    /// They send the proposer back once.
-    Repair,
-}
-
-impl OnUnproven {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OnUnproven::Report => "report",
-            OnUnproven::Repair => "repair",
-        }
-    }
-}
+/// What unexercised functions do to the action: stated (`report`, the
+/// default), sent back (`repair`), or left to a person (`ask_person`).
+pub use emi_kernel::decide::OnFinding as OnUnproven;
 
 /// What redundant tests do to the action: stated (the default; a test
 /// that passes before and after may still guard behaviour the change must
@@ -149,14 +135,13 @@ fn rounds(v: Option<&Value>) -> Result<u64, Error> {
     }
 }
 
-/// `report` (also when absent) or `repair`, for `on_unproven` and
-/// `on_redundant`.
+/// `report` (also when absent), `repair` or `ask_person`, for a finding
+/// the proposer could address.
 fn report_or_repair(v: Option<&Value>, key: &str) -> Result<OnUnproven, Error> {
-    match v.map(|x| x.as_str()) {
+    match v.map(|x| x.as_str().and_then(OnUnproven::from_name)) {
         None => Ok(OnUnproven::Report),
-        Some(Some("report")) => Ok(OnUnproven::Report),
-        Some(Some("repair")) => Ok(OnUnproven::Repair),
-        Some(_) => Err(bad(key, "must be report or repair")),
+        Some(Some(treatment)) => Ok(treatment),
+        Some(None) => Err(bad(key, "must be report, repair or ask_person")),
     }
 }
 
@@ -429,7 +414,7 @@ mod tests {
             "unproven",
             "/on_unproven",
             "\"ignore\"",
-            "must be report or repair",
+            "must be report, repair or ask_person",
         ),
         ("missing key", "/source", "-", "missing key source"),
     ];

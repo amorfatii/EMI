@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use emi_controller::{Candidate, Store, create, verify};
+use emi_done::engine::{Candidate, Store, create, verify};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 

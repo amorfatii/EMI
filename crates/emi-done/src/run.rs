@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use emi_controller::Candidate as Subject;
+use crate::engine::Candidate as Subject;
 
 use crate::baseline::Baseline;
 use crate::candidate::{self, Candidate};
@@ -46,7 +46,7 @@ struct Second<'a> {
     config: &'a Config,
     baseline: &'a Baseline,
     cand: &'a Candidate,
-    store: &'a emi_controller::Store,
+    store: &'a crate::engine::Store,
     subject: &'a Subject,
     decision: &'a serde_json::Value,
     scope: &'a regression::Scope,
@@ -149,7 +149,7 @@ pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: 
 /// its tests one by one, it is compared with the baseline's own run
 /// instead of demanding a suite with no skips.
 fn compared(
-    (store, authority): (&emi_controller::Store, &Path),
+    (store, authority): (&crate::engine::Store, &Path),
     baseline: &Baseline,
     verified: &derived::Verified,
     pytest: bool,

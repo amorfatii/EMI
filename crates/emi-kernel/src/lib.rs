@@ -5,6 +5,7 @@
 //! network access is what makes a decision a pure function of its inputs:
 //! the same evidence always yields the same decision and the same bytes.
 
+pub mod decide;
 pub mod glob;
 pub mod hash;
 pub mod json;
