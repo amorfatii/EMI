@@ -10,6 +10,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+emi-kernel = { path = "crates/emi-kernel" }
 emi-ir = { path = "crates/emi-ir" }
 emi-lang-python = { path = "crates/emi-lang-python" }
 emi-lang-js = { path = "crates/emi-lang-js" }

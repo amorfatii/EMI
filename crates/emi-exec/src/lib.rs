@@ -249,7 +249,11 @@ fn bwrap_command() -> Command {
     }
 }
 
-fn command(spec: &Spec, bwrap: Option<bool>, token: Option<&str>) -> Command {
+/// The environment variable that names the run an unsandboxed process
+/// belongs to.
+const RUN_MARKER: &str = "EMI_EXEC_RUN";
+
+fn command(spec: &Spec, bwrap: Option<bool>, token: Option<&str>, marker: Option<&str>) -> Command {
     let mut cmd = match bwrap {
         None => {
             let mut c = Command::new(&spec.argv[0]);
@@ -312,6 +316,11 @@ fn command(spec: &Spec, bwrap: Option<bool>, token: Option<&str>) -> Command {
     cmd.current_dir(&spec.cwd)
         .env_clear()
         .envs(spec.env.iter().map(|(k, v)| (k, v)));
+    if let (None, Some(marker)) = (bwrap, marker) {
+        // inherited by every descendant, so an orphan that left the run's
+        // process group can still be told apart from another run's
+        cmd.env(RUN_MARKER, marker);
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -387,7 +396,10 @@ fn launch_token() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    format!("emi-sandbox-ready-{}-{nanos}", std::process::id())
+    // concurrent runs in one process may read the same clock value
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("emi-sandbox-ready-{}-{nanos}-{n}", std::process::id())
 }
 
 /// Start the command and leave it running after this process ends: its own
@@ -444,12 +456,14 @@ pub fn run(spec: &Spec) -> Outcome {
     receipt.hidden_enforced = bwrap.is_some() && !spec.hidden.is_empty();
     // readiness: the launcher writes this token once the sandbox is up
     let token = bwrap.map(|_| launch_token());
-    let mut child = match command(spec, bwrap, token.as_deref()).spawn() {
+    // in a PID namespace every descendant dies with the sandbox; outside
+    // one, orphans are attributed by the marker they inherit
+    let marker = bwrap.is_none().then(launch_token);
+    let mut child = match command(spec, bwrap, token.as_deref(), marker.as_deref()).spawn() {
         Ok(c) => c,
         Err(e) => return not_launched(format!("{}: {e}", spec.argv[0]), receipt),
     };
     let pgid = i32::try_from(child.id()).ok();
-    let started = pgid.and_then(platform::start_time);
     receipt.process_group = pgid;
     let out = child.stdout.take().map(|s| drain(s, spec.output_limit));
     let err = child.stderr.take().map(|s| drain(s, spec.output_limit));
@@ -460,7 +474,7 @@ pub fn run(spec: &Spec) -> Outcome {
         receipt.group_empty = platform::group_empty(g);
     }
     receipt.orphans_killed = if subreaper {
-        platform::reap_orphans(pgid, started)
+        platform::reap_orphans(pgid, marker.as_deref())
     } else {
         Vec::new()
     };
@@ -614,24 +628,26 @@ mod platform {
         ))
     }
 
-    /// Start time (clock ticks since boot) of a process.
-    pub fn start_time(pid: i32) -> Option<u64> {
-        ids(&pid.to_string()).map(|i| i.3)
+    /// Whether `pid`'s environment carries `marker` as the run marker.
+    fn marked(pid: i32, marker: &str) -> bool {
+        let want = format!("{}={marker}", super::RUN_MARKER);
+        std::fs::read(format!("/proc/{pid}/environ"))
+            .is_ok_and(|env| env.split(|b| *b == 0).any(|kv| kv == want.as_bytes()))
     }
 
     /// Kill and reap descendants of this run that were reparented to us:
-    /// members of its process group, or processes that left our session
-    /// (`setsid` daemons) after the run started. Direct children of other
-    /// threads stay in our session, so concurrent runs are untouched.
-    pub fn reap_orphans(pgid: Option<i32>, started: Option<u64>) -> Vec<i32> {
+    /// members of its process group, or processes that left it (`setsid`
+    /// daemons) and still carry this run's marker. Processes other runs
+    /// started, even ones reparented to us while this run was going, carry
+    /// no marker or another one, so concurrent runs are untouched.
+    pub fn reap_orphans(pgid: Option<i32>, marker: Option<&str>) -> Vec<i32> {
         let Some(pgid) = pgid else { return Vec::new() };
-        let session = rustix::process::getsid(None).map_or(0, |s| s.as_raw_nonzero().get());
         let mut killed = Vec::new();
         for _ in 0..5 {
             let orphans: Vec<i32> = ours(pgid)
                 .into_iter()
-                .filter(|(_, pgrp, sid, start)| {
-                    *pgrp == pgid || (*sid != session && started.is_some_and(|s| *start >= s))
+                .filter(|(pid, pgrp, _, _)| {
+                    *pgrp == pgid || marker.is_some_and(|m| marked(*pid, m))
                 })
                 .map(|o| o.0)
                 .collect();
@@ -671,11 +687,8 @@ mod platform {
     pub fn group_empty(_pgid: i32) -> bool {
         false
     }
-    pub fn reap_orphans(_pgid: Option<i32>, _started: Option<u64>) -> Vec<i32> {
+    pub fn reap_orphans(_pgid: Option<i32>, _marker: Option<&str>) -> Vec<i32> {
         Vec::new()
-    }
-    pub fn start_time(_pid: i32) -> Option<u64> {
-        None
     }
     pub fn exit_parts(s: std::process::ExitStatus) -> (Option<i32>, Option<i32>) {
         (s.code(), None)

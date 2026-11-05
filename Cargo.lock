@@ -453,6 +453,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "emi-kernel"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "emi-lang-common"
 version = "0.1.0"
 dependencies = [
