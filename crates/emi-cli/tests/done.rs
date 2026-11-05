@@ -92,7 +92,8 @@ fn done_exits_with_the_action_and_prints_canonical_json() {
     let held = fx.emi(&["done", "--format", "json"], None);
     assert!(held.status.success(), "{held:?}");
     assert!(
-        held.stdout.starts_with(br#"{"action":"stop","assurance":"#),
+        held.stdout
+            .starts_with(br#"{"action":"stop","adequacy":null,"assurance":"#),
         "{:?}",
         held.stdout
     );

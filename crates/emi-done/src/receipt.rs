@@ -84,8 +84,13 @@ pub struct Parts<'a> {
     pub laws: &'a emi_python::proving::laws::LawEvidence,
     /// The behaviour comparison, when the person asked for it.
     pub preserved: Option<&'a crate::preserve::Preserved>,
+    /// The mutants of the changed lines, when configured.
+    pub adequacy: Option<&'a crate::adequacy::Adequacy>,
+    /// Escape-hatch signals (report only).
+    pub signals: &'a [Value],
     pub on_unproven: OnUnproven,
     pub on_redundant: OnRedundant,
+    pub on_survivors: OnUnproven,
     /// Environment faults beyond those the two evidence parts carry.
     pub faults: Vec<String>,
     pub not_verified: Vec<String>,
@@ -164,8 +169,8 @@ fn facts(p: &Parts) -> decide::Facts {
         laws_broken: p.laws.count("broken"),
         laws_unmet: p.laws.count("unmet"),
         divergences: p.preserved.map_or(0, crate::preserve::Preserved::count),
+        survivors: p.adequacy.map_or(0, |a| a.survivors.len()),
         unapproved: p.old_tests.iter().filter(|e| !e.approved).count(),
-        ..decide::Facts::default()
     }
 }
 
@@ -174,7 +179,7 @@ fn policy(p: &Parts) -> decide::Policy {
     decide::Policy {
         on_redundant: p.on_redundant,
         on_unexercised: p.on_unproven,
-        ..decide::Policy::default()
+        on_survivors: p.on_survivors,
     }
 }
 
@@ -260,10 +265,17 @@ fn repair_lines(p: &Parts) -> Vec<String> {
     if p.on_redundant == OnRedundant::Repair && !change.redundant.is_empty() {
         return itemize(&change.redundant, redundant_line);
     }
-    if p.on_unproven == OnUnproven::Repair {
+    if p.on_unproven == OnUnproven::Repair && !change.unexercised.is_empty() {
         return itemize(&change.unexercised, |f| {
             format!("No proving test runs {f}; add a test that fails without your change.")
         });
+    }
+    if p.on_survivors == OnUnproven::Repair {
+        let lines = p
+            .adequacy
+            .map(crate::adequacy::repair_lines)
+            .unwrap_or_default();
+        return itemize(&lines, String::clone);
     }
     Vec::new()
 }
@@ -305,6 +317,8 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
         "change": with_laws(p.change.to_value(), p.laws),
         "laws": p.laws.to_json(),
         "preserve": p.preserved.map(crate::preserve::Preserved::to_value),
+        "adequacy": p.adequacy.map(crate::adequacy::Adequacy::to_value),
+        "signals": p.signals,
         "action": action.as_str(),
         "repair": repair,
         "not_verified": p.not_verified,
@@ -344,7 +358,7 @@ fn standing(l: &Limits) -> Vec<String> {
             .to_owned(),
         "Tests the baseline already skipped, expected to fail, could not collect or failed are not regression evidence: nothing is known about the behaviour they cover."
             .to_owned(),
-        "Guardrail heuristics (secret files, CI edits, test suppressions) were not run.".to_owned(),
+        "Escape hatches in the change (suppressions, test-runner sniffing, always-equal comparisons) are found by pattern only, and only in product lines it added.".to_owned(),
     ];
     out.push(match l.setting {
         Setting::Cooperative => "Cooperative verification: the proposer could alter the controller's inputs (the configuration, the recorded approvals, the dependencies the tests run). It catches a careless proposer, not a cheating one.".to_owned(),
@@ -446,6 +460,9 @@ mod tests {
         f(&Parts {
             laws: &laws,
             preserved: None,
+            adequacy: None,
+            signals: &[],
+            on_survivors: OnUnproven::Report,
             inputs: json!({"test": true}),
             repo: Path::new("/r"),
             baseline: &baseline,

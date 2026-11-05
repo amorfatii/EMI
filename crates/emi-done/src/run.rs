@@ -335,6 +335,51 @@ fn config_note(repo: &Path, req: &Request, config: &Config, baseline: &Baseline)
     }
 }
 
+/// The evidence beyond the regression and the proposer's tests: the laws,
+/// the kept behaviour when asked for, the mutants when configured, and the
+/// escape-hatch signals.
+struct Beyond {
+    laws: emi_python::proving::laws::LawEvidence,
+    preserved: Option<crate::preserve::Preserved>,
+    adequacy: Option<crate::adequacy::Adequacy>,
+    signals: Vec<serde_json::Value>,
+}
+
+fn beyond(
+    repo: &Path,
+    view: &Path,
+    (config, baseline, cand): (&Config, &Baseline, &Candidate),
+    (old_tests, change): (&[Entry], &ChangeEvidence),
+    intent: &crate::preserve::Intent,
+) -> Beyond {
+    let laws = crate::laws::measure(repo, view, (config, baseline, cand), old_tests);
+    let preserved = intent
+        .preserve
+        .then(|| crate::preserve::measure(repo, view, (config, baseline, cand), intent));
+    let adequacy = crate::adequacy::measure(
+        repo,
+        view,
+        (config, baseline, cand),
+        (&change.to_value(), &laws),
+    );
+    let not_product = |p: &str| {
+        crate::oldtests::in_dir(p, &config.laws.dir)
+            || config
+                .tests
+                .globs
+                .iter()
+                .any(|g| emi_kernel::glob::fnmatch(p, g))
+            || emi_kernel::paths::is_test(p)
+    };
+    let signals = crate::signals::find(view, (&baseline.sha, &cand.rev), not_product);
+    Beyond {
+        laws,
+        preserved,
+        adequacy,
+        signals,
+    }
+}
+
 /// What the person declared about the change: the request's, or, in the
 /// cooperative setting, the one recorded on this machine.
 fn intent(req: &Request, repo_dir: &Path) -> Result<crate::preserve::Intent, Error> {
@@ -352,7 +397,7 @@ fn intent(req: &Request, repo_dir: &Path) -> Result<crate::preserve::Intent, Err
 fn limits(
     (repo, req, config, baseline): (&Path, &Request, &Config, &Baseline),
     change: &ChangeEvidence,
-    laws: &emi_python::proving::laws::LawEvidence,
+    more: &Beyond,
     (approval_fault, environment): (Option<&String>, Option<&Result<String, String>>),
 ) -> (Vec<String>, Vec<String>) {
     let limits = receipt::Limits {
@@ -368,7 +413,20 @@ fn limits(
     if let Some(Err(why)) = environment {
         extra.push(why.clone());
     }
-    extra.extend(crate::laws::limits(laws, &config.laws.dir));
+    extra.extend(crate::laws::limits(&more.laws, &config.laws.dir));
+    extra.extend(
+        more.preserved
+            .as_ref()
+            .map(crate::preserve::limits)
+            .unwrap_or_default(),
+    );
+    extra.extend(
+        more.adequacy
+            .as_ref()
+            .map(crate::adequacy::limits)
+            .unwrap_or_default(),
+    );
+    extra.extend(crate::signals::limits(&more.signals));
     not_verified.extend(extra.iter().cloned());
     this_run.extend(extra);
     (not_verified, this_run)
@@ -393,10 +451,7 @@ pub fn check(
     let (approvals, approval_fault) = approvals(req, &repo_dir, &changed);
     let mut old_tests = oldtests::mark(changed, &approvals, &baseline.sha);
     let environment = derived::interpreter(config).map(|py| crate::environment::id(repo, &py));
-    let env_id = environment
-        .as_ref()
-        .and_then(|e| e.as_ref().ok())
-        .map(String::as_str);
+    let env_id = environment.as_ref().and_then(|e| e.as_deref().ok());
     let measured = match try_measure(
         repo,
         view,
@@ -417,22 +472,20 @@ pub fn check(
         view,
         regression: &measured.regression,
     });
-    let laws = crate::laws::measure(repo, view, (config, baseline, cand), &old_tests);
     let intent = intent(req, &repo_dir)?;
-    let preserved = intent
-        .preserve
-        .then(|| crate::preserve::measure(repo, view, (config, baseline, cand), &intent));
-    let (mut not_verified, mut this_run) = limits(
+    let more = beyond(
+        repo,
+        view,
+        (config, baseline, cand),
+        (&old_tests, &change),
+        &intent,
+    );
+    let (not_verified, this_run) = limits(
         (repo, req, config, baseline),
         &change,
-        &laws,
+        &more,
         (approval_fault.as_ref(), environment.as_ref()),
     );
-    if let Some(p) = &preserved {
-        let kept = crate::preserve::limits(p);
-        not_verified.extend(kept.iter().cloned());
-        this_run.extend(kept);
-    }
     let parts = receipt::Parts {
         repo,
         inputs: receipt::inputs(&receipt::Inputs {
@@ -441,7 +494,7 @@ pub fn check(
             setting: req.setting,
             config: Some(config),
             environment: environment.as_ref(),
-            laws: laws.digest.clone(),
+            laws: more.laws.digest.clone(),
             intent: intent.to_value(),
         }),
         baseline,
@@ -451,10 +504,13 @@ pub fn check(
         regression: &measured.regression,
         old_tests: &old_tests,
         change: &change,
-        laws: &laws,
-        preserved: preserved.as_ref(),
+        laws: &more.laws,
+        preserved: more.preserved.as_ref(),
+        adequacy: more.adequacy.as_ref(),
+        signals: &more.signals,
         on_unproven: config.on_unproven,
         on_redundant: config.on_redundant,
+        on_survivors: config.adequacy.on_survivors,
         faults: approval_fault.into_iter().collect(),
         not_verified,
         this_run,

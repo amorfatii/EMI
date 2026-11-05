@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+pub mod adequacy;
 pub mod baseline;
 pub mod candidate;
 pub mod change;
@@ -29,6 +30,7 @@ pub mod receipt;
 pub mod regression;
 pub mod replay;
 mod run;
+pub mod signals;
 pub mod state;
 pub mod text;
 
@@ -260,6 +262,8 @@ fn unconfigured(
     let parts = receipt::Parts {
         laws: &laws,
         preserved: None,
+        adequacy: None,
+        signals: &[],
         repo,
         inputs: receipt::inputs(&receipt::Inputs {
             baseline,
@@ -279,6 +283,7 @@ fn unconfigured(
         change: &change,
         on_unproven: config::OnUnproven::Report,
         on_redundant: config::OnRedundant::Report,
+        on_survivors: config::OnUnproven::Report,
         faults: Vec::new(),
         not_verified: receipt::not_verified(&limits),
         this_run: receipt::this_run(&limits),
