@@ -1,5 +1,5 @@
 //! Sampled mutation runs. Each mutant is applied to a fresh copy of the
-//! profiled commit and the test command runs against it in the sandbox:
+//! commit being checked and the test command runs against it in the sandbox:
 //! a failing run means the tests noticed the wrong code ("killed"), a
 //! passing run means they did not ("survived"). The unmutated commit runs
 //! first; if its tests do not pass, no mutant result would mean anything,

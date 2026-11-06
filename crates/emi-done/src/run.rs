@@ -40,6 +40,19 @@ pub fn proving_request(
     req
 }
 
+/// The baseline listing kept per repository, keyed (inside) by the
+/// environment it was taken in. An environment that could not be
+/// identified keeps nothing: a listing from another one could be stale.
+pub fn listing_cache(
+    repo_dir: &Path,
+    environment: Option<&str>,
+) -> Option<emi_python::proving::ListingCache> {
+    environment.map(|e| emi_python::proving::ListingCache {
+        dir: repo_dir.join("listings"),
+        environment: e.to_owned(),
+    })
+}
+
 /// What a second look needs beside the regression it looks at again.
 struct Second<'a> {
     repo: &'a Path,
@@ -471,6 +484,7 @@ pub fn check(
         spec: &req.candidate,
         view,
         regression: &measured.regression,
+        listing_cache: listing_cache(&repo_dir, env_id),
     });
     let intent = intent(req, &repo_dir)?;
     let more = beyond(

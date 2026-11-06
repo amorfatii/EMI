@@ -119,6 +119,20 @@ pub struct Request {
     /// Also require that a proving test kills a mutant on the changed
     /// lines that no other test kills (opt-in; see `measure`).
     pub strict: bool,
+    /// Where the baseline's test listing may be kept between checks, and
+    /// the identity of the environment it was taken in. Without one the
+    /// baseline is listed every time.
+    pub listing_cache: Option<ListingCache>,
+}
+
+/// A directory for the baseline's test listing, kept between checks: the
+/// baseline is fixed, so its listing is the same until the command, the
+/// pins or the environment change, which are all in the key.
+#[derive(Clone, Debug)]
+pub struct ListingCache {
+    pub dir: PathBuf,
+    /// The installed environment's identity (interpreter and packages).
+    pub environment: String,
 }
 
 impl Request {
@@ -140,6 +154,7 @@ impl Request {
             network: false,
             timeout: Duration::from_secs(600),
             strict: false,
+            listing_cache: None,
         }
     }
 }

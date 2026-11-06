@@ -144,12 +144,13 @@ pub fn init(a: &InitArgs) -> anyhow::Result<u8> {
 /// Measure the same frozen candidate as the regression check, not a second
 /// snapshot of a working tree that the proposer may have edited meanwhile.
 fn change_evidence(context: &ChangeContext) -> ChangeEvidence {
-    let req = emi_done::proving_request(
+    let mut req = emi_done::proving_request(
         context.repo,
         context.config,
         context.baseline,
         context.candidate,
     );
+    req.listing_cache.clone_from(&context.listing_cache);
     match emi_python::proving::measure_in(&req, context.view) {
         Ok(evidence) => ChangeEvidence::Measured(evidence.to_json()),
         Err(why) => ChangeEvidence::Failed(format!("change evidence could not be measured: {why}")),

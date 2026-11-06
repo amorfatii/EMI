@@ -109,3 +109,22 @@ fn a_report_that_is_missing_a_link_or_too_large_is_not_read() {
         assert!(linked.is_err_and(|e| e.contains("not a regular file")));
     }
 }
+
+#[test]
+fn a_kept_listing_reads_back_whole_and_a_damaged_one_not_at_all() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("listings").join("listing-x.json");
+    let listing = Listing {
+        ids: ["tests/test_a.py::t".to_owned()].into(),
+        broken: ["tests/test_b.py".to_owned()].into(),
+        problem: Some("listing the tests at the baseline exited 2".to_owned()),
+    };
+    listing.write(&path);
+    let back = Listing::read(&path).expect("kept");
+    assert_eq!(
+        (back.ids, back.broken, back.problem),
+        (listing.ids, listing.broken, listing.problem)
+    );
+    std::fs::write(&path, "{\"ids\": [1]}").expect("write");
+    assert!(Listing::read(&path).is_none(), "not a listing: taken again");
+}

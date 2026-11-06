@@ -17,7 +17,7 @@ use crate::proving::evidence::{
 use crate::proving::evidence::{
     FailingTest, NOT_COLLECTED, PASSES_AT_BASELINE, RUNS_NO_CHANGED_LINE,
 };
-use crate::proving::exec::Session;
+use crate::proving::exec::{Listing, Session};
 use crate::proving::junit::Observed;
 use crate::proving::overlay::{TestFiles, Tree, overlay_tests};
 use crate::proving::proof::{FnStatus, judge};
@@ -317,6 +317,34 @@ impl Context<'_> {
         scope
     }
 
+    /// The tests the baseline lists, from the cache when an earlier check
+    /// listed this baseline under the same command, pins and environment.
+    /// A cache that cannot be read or written costs a listing, never a
+    /// result: the listing is then taken as if there were no cache.
+    fn baseline_listing(&self, s: &Session) -> Result<Listing, String> {
+        let path = self.req.listing_cache.as_ref().map(|c| {
+            let key = serde_json::json!({
+                "baseline": self.base, "command": self.req.test_command,
+                "globs": self.req.test_globs, "env": self.req.env,
+                "link": self.req.link, "network": self.req.network,
+                "environment": c.environment,
+            });
+            c.dir.join(format!(
+                "listing-{}.json",
+                emi_kernel::json::digest("emi-listing", &key)
+            ))
+        });
+        if let Some(kept) = path.as_deref().and_then(Listing::read) {
+            return Ok(kept);
+        }
+        let pristine = s.tree("baseline-list", &self.base)?;
+        let listing = s.list(&pristine, "baseline")?;
+        if let Some(path) = path {
+            listing.write(&path);
+        }
+        Ok(listing)
+    }
+
     /// What each added test is (the ids the candidate lists and the
     /// baseline does not), and which edited old tests show the change.
     fn found_tests(
@@ -326,10 +354,7 @@ impl Context<'_> {
     ) -> Result<Classified, String> {
         let tree = s.tree("candidate", &self.cand)?;
         let at_candidate = s.list(&tree, "candidate")?;
-        let at_baseline = {
-            let pristine = s.tree("baseline-list", &self.base)?;
-            s.list(&pristine, "baseline")?
-        };
+        let at_baseline = self.baseline_listing(s)?;
         let mut out = Classified::default();
         // a file the baseline already could not collect is no news; one
         // only the candidate cannot collect is the candidate's to repair:

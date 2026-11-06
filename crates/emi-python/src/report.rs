@@ -1,6 +1,6 @@
-//! Reading what pytest prints. The controller keeps the tail of a check's
-//! output; the short summary at its end names the tests that failed and
-//! counts them, which is all the receipt needs from it.
+//! Reading what pytest prints at the end of a run: the summary line's
+//! counts and the ids its short summary names as failed. The one reader of
+//! that text: the check's evidence and the regression's both use it.
 
 /// Counts from pytest's last line (`2 failed, 210 passed in 3.1s`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,7 +84,7 @@ pub fn failures(output: &str) -> Vec<String> {
 
 /// The id at the start of a summary line: it ends at the first ` - ` that
 /// is not inside the brackets of a parametrized test's name.
-fn id_of(rest: &str) -> &str {
+pub fn id_of(rest: &str) -> &str {
     let mut depth = 0u32;
     for (i, c) in rest.char_indices() {
         match c {
@@ -97,10 +97,7 @@ fn id_of(rest: &str) -> &str {
     rest.trim()
 }
 
-/// The file an id belongs to (`tests/test_a.py::test_x[1]` gives `tests/test_a.py`).
-pub fn file_of(id: &str) -> &str {
-    id.split("::").next().unwrap_or(id)
-}
+pub use crate::proving::pytest::file_of;
 
 #[cfg(test)]
 mod tests {

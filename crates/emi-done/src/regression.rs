@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 
 use crate::outcomes::Outcomes;
-use crate::pytest;
+use emi_python::report as pytest;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {

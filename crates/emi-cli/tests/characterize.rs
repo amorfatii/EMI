@@ -122,6 +122,15 @@ fn the_receipt_for_each_situation() {
         let (code, receipt) = p.done(&[]);
         got.push(format!("{name}: {}", summary(code, &receipt)));
         want.push(format!("{name}: {expected}"));
+        // the hook reads receipts on its own and distrusts what does not
+        // add up: every receipt `emi done` writes must read back as itself
+        let read = emi_hook::receipt::interpret(Some(code), &receipt.to_string(), "");
+        assert_eq!(
+            read.action.as_str(),
+            receipt["action"].as_str().unwrap_or("?"),
+            "{name}: the hook read {:?}",
+            read.summary
+        );
     }
     assert_eq!(got.join("\n"), want.join("\n"));
 }
