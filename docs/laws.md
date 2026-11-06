@@ -93,8 +93,10 @@ they execute, EMI tries trivial stand-in bodies:
 - returns the default of its return annotation (`0`, `""`, `[]` and so on);
 - raises `NotImplementedError`.
 
-A proposal whose laws all still pass under a stand-in is reported, for
-example `app.py::normalize returns its first argument (`text`) unchanged`.
+A proposal whose laws all still pass under a stand-in sends the agent back
+(`repair`) to strengthen it before a person is asked to approve it, for
+example because `app.py::normalize returns its first argument (`text`)
+unchanged` still passes.
 This is the identity trap: idempotence alone is satisfied by a function
 that does nothing. One check spends at most twelve stand-in runs.
 

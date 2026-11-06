@@ -79,7 +79,19 @@ fn escape_hatches_in_product_code_are_reported_not_acted_on() {
         "import os  # noqa\n\n\ndef test_x():\n    assert True\n",
     );
     let (code, receipt) = p.done(&[]);
-    assert_eq!(code, 0, "{receipt}");
+    // sent back for the test that shows nothing, never for the signals
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(
+        receipt["repair"].as_array().map(Vec::len),
+        Some(1),
+        "{receipt}"
+    );
+    assert!(
+        receipt["repair"][0]
+            .as_str()
+            .is_some_and(|r| r.starts_with("tests/test_more.py::test_x")),
+        "{receipt}"
+    );
     let kinds: Vec<&str> = receipt["signals"]
         .as_array()
         .expect("signals")

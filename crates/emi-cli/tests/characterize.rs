@@ -72,7 +72,7 @@ fn situations() -> Vec<(&'static str, Setup, &'static str)> {
                 p.write("app.py", FIX);
                 p.write("tests/test_new.py", AGAIN_TEST);
             },
-            "exit=0 stop regression=held change=unexercised redundant_tests=1",
+            "exit=3 repair regression=held change=unexercised redundant_tests=1",
         ),
         (
             "fix without a test",

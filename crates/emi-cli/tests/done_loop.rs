@@ -165,11 +165,17 @@ fn enforced_verification_reads_baseline_configuration_and_refuses_approval() {
 }
 
 #[test]
-fn an_added_test_that_is_skipped_is_stated_and_is_no_fault() {
+fn a_change_whose_only_new_tests_are_skipped_shows_nothing_and_goes_back() {
     let p = Project::new();
     p.write("tests/test_new.py", "import pytest\n\n@pytest.mark.skip(reason='not implemented')\ndef test_future():\n    pass\n");
     let (code, receipt) = p.done(&[]);
-    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(code, 3, "{receipt}");
+    assert!(
+        receipt["repair"][0]
+            .as_str()
+            .is_some_and(|r| r.starts_with("tests/test_new.py::test_future is skipped")),
+        "{receipt}"
+    );
     assert_eq!(
         receipt["change"]["skipped_tests"],
         json!(["tests/test_new.py::test_future"])
@@ -195,7 +201,7 @@ fn an_added_test_that_is_skipped_is_stated_and_is_no_fault() {
         ),
     );
     let (code, receipt) = old.done(&[]);
-    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(code, 3, "{receipt}");
     assert_eq!(
         receipt["change"]["skipped_tests"],
         json!(["tests/test_app.py::test_add"]),

@@ -75,6 +75,23 @@ pub fn repair_lines(laws: &LawEvidence) -> Vec<String> {
     broken.chain(unmet).collect()
 }
 
+/// One instruction per law file the proposer added that a stand-in
+/// survives: a person approving it would approve a law that pins nothing
+/// down, so the proposer strengthens it before anyone is asked.
+pub fn vacuous_proposals(laws: &LawEvidence) -> Vec<String> {
+    laws.proposals
+        .iter()
+        .filter(|p| !p.vacuous_for.is_empty())
+        .map(|p| {
+            format!(
+                "The law file you propose, {}, still holds when {}; make it fail on that, so it pins the behaviour down.",
+                p.file,
+                p.vacuous_for.join("; ")
+            )
+        })
+        .collect()
+}
+
 /// What the receipt does not establish about the laws.
 pub fn limits(laws: &LawEvidence, dir: &str) -> Vec<String> {
     if laws.laws.is_empty() && laws.proposals.is_empty() && laws.fault.is_none() {
