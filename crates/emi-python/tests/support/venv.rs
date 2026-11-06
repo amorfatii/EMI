@@ -10,6 +10,17 @@ pub fn venv() -> &'static Path {
     VENV.get_or_init(|| {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("emi-python-venv-2");
         let marker = dir.join(".ready");
+        // test binaries may run side by side in separate processes (a
+        // parallel runner, sharded CI): one makes the virtualenv while the
+        // others wait for it, instead of all building it over each other
+        let lock_path = dir.with_extension("lock");
+        let lock = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .expect("open the virtualenv lock");
+        lock.lock().expect("take the virtualenv lock");
         if !marker.exists() {
             // a directory without the marker is a half-made or restored
             // virtualenv (a CI cache keeps target/tmp, whose interpreter
@@ -39,6 +50,7 @@ pub fn venv() -> &'static Path {
             assert!(installed.status.success(), "{installed:?}");
             std::fs::write(marker, "ok\n").expect("mark virtualenv ready");
         }
+        drop(lock);
         dir
     })
 }

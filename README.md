@@ -113,8 +113,13 @@ validation lab, outside this repository.
 
 ## Contributing
 
-Run `scripts/check.sh` before every commit: formatting, clippy with warnings
-denied, the kernel purity check, the tests, and a release build.
+Run `scripts/check.sh --fast` while working: formatting, clippy with
+warnings denied, the kernel purity check and the tests that run no real
+pytest, in about a minute. `scripts/check.sh` adds the integration tests
+(real projects, real pytest) and a release build, which is what CI runs,
+split over three machines. With
+[cargo-nextest](https://nexte.st) installed, the full run executes the
+test binaries side by side.
 [CLAUDE.md](CLAUDE.md) lists the rules the code follows, the vocabulary is
 in [CONTEXT.md](CONTEXT.md), and the decisions are in [docs/adr](docs/adr).
 
