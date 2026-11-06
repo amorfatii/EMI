@@ -260,7 +260,7 @@ fn place(candidate: &str, root: &str, known: &BTreeSet<String>) -> Placement {
     }
 }
 
-/// Map `report` onto `known` (repository-relative files at the profiled
+/// Map `report` onto `known` (repository-relative files at the checked
 /// revision); `repo_root` is where absolute paths may point.
 pub fn resolve(report: Report, repo_root: &Path, known: &BTreeSet<String>) -> Resolved {
     let root = normalize(&repo_root.to_string_lossy());

@@ -8,7 +8,7 @@
 //! | 1 | a part could not be measured (an environment fault) | incomplete |
 //! | 2 | an old test or a law that held at the baseline fails, reproducibly | repair |
 //! | 3 | a stable test's or law's outcome did not reproduce under the same pins | incomplete |
-//! | 4 | a failing added test, an open law still failing, a divergence or a new timeout under preserve intent | repair |
+//! | 4 | a failing added test, an open law still failing, a divergence or a new timeout under preserve intent, tests that show nothing, or a proposed law a stand-in survives | repair |
 //! | 5 | redundant tests, unexercised functions or surviving mutants, each when its policy says repair | repair |
 //! | 6 | an unapproved changed old test, runner configuration or law file | ask_person |
 //! | 7 | surviving mutants when their policy says ask_person | ask_person |
@@ -16,10 +16,16 @@
 //!
 //! Row 2 comes before row 3: a break that shows twice is established
 //! whatever else could not be reproduced.
+//!
+//! "Tests that show nothing" (row 4) are tests the proposer offers as
+//! evidence that cannot be any: a test that is skipped, or that passes on
+//! the old code too, offered for a change no test proves. Counted as
+//! [`Facts::tests_show_nothing`]; when to count them is the measuring
+//! side's, since only it knows which tests the change added.
 
 /// Any change to [`decide`] or to what [`Facts`] holds bumps this, so a
 /// receipt names the rules it was decided under.
-pub const POLICY: &str = "emi-policy-1";
+pub const POLICY: &str = "emi-policy-2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
@@ -126,6 +132,13 @@ pub struct Facts {
     /// Changed or deleted old tests, runner configuration or law files
     /// without an approval.
     pub unapproved: usize,
+    /// Tests the proposer offers as evidence that show nothing: skipped,
+    /// or passing on the old code too, where no test proves the change.
+    pub tests_show_nothing: usize,
+    /// Law files the proposer added that still hold when a stand-in
+    /// replaces the code they check: the person would be asked to approve
+    /// a law that pins nothing down.
+    pub vacuous_proposals: usize,
 }
 
 fn when(policy: OnFinding, count: usize, wanted: OnFinding) -> bool {
@@ -140,7 +153,11 @@ pub fn decide(policy: &Policy, f: &Facts) -> Action {
         (f.regression_broken || f.laws_broken > 0, Action::Repair),
         (f.nondeterministic > 0, Action::Incomplete),
         (
-            f.failing_tests > 0 || f.laws_unmet > 0 || f.divergences > 0,
+            f.failing_tests > 0
+                || f.laws_unmet > 0
+                || f.divergences > 0
+                || f.tests_show_nothing > 0
+                || f.vacuous_proposals > 0,
             Action::Repair,
         ),
         (
@@ -184,6 +201,8 @@ mod tests {
         ("unexercised", |f| f.unexercised_functions = 1),
         ("survivors", |f| f.survivors = 1),
         ("unapproved", |f| f.unapproved = 1),
+        ("show nothing", |f| f.tests_show_nothing = 1),
+        ("vacuous proposal", |f| f.vacuous_proposals = 1),
     ];
 
     const TREATMENTS: [OnFinding; 3] = [OnFinding::Report, OnFinding::Repair, OnFinding::AskPerson];
@@ -234,6 +253,8 @@ mod tests {
             Action::Stop,
             Action::Stop,
             Action::AskPerson,
+            Action::Repair,
+            Action::Repair,
         ];
         for ((name, edit), want) in FINDINGS.iter().zip(want) {
             let mut f = Facts::default();
@@ -300,7 +321,7 @@ mod tests {
 
     #[test]
     fn a_hard_finding_is_never_stop_whatever_the_policy() {
-        let hard = [0usize, 1, 2, 3, 4, 5, 6, 10];
+        let hard = [0usize, 1, 2, 3, 4, 5, 6, 10, 11, 12];
         for p in policies() {
             for (bits, f) in all_facts() {
                 if hard.iter().any(|i| bits & (1 << i) != 0) {

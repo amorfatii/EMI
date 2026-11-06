@@ -214,27 +214,22 @@ impl Command {
     /// Run exactly `ids` under coverage.py, measuring `sources`, then write
     /// the JSON report to `output`. Two commands, run in order.
     pub fn coverage_argv(&self, ids: &[String], rcfile: &str, output: &str) -> Vec<Vec<String>> {
-        let py = self.interpreter.clone();
-        let mut run = vec![py.clone(), "-m".into(), "coverage".into(), "run".into()];
-        run.push(format!("--rcfile={rcfile}"));
-        run.extend(["-m".into(), "pytest".into()]);
+        let mut run = vec![
+            self.interpreter.clone(),
+            "-c".into(),
+            COVERAGE_RUN.into(),
+            rcfile.into(),
+            output.into(),
+        ];
         run.extend(["-p".into(), "emi_proving_contexts".into()]);
         run.extend(self.run_prefix(".emi-proving/coverage-run.xml"));
         run.extend(ids.iter().cloned());
-        // a changed file that does not parse is left out of the report
-        // (and so unknown) instead of failing the report for every file
-        let json = [
-            py,
-            "-m".into(),
-            "coverage".into(),
-            "json".into(),
-            format!("--rcfile={rcfile}"),
-            "--ignore-errors".into(),
-            "-o".into(),
-        ];
-        vec![run, json.into_iter().chain([output.to_owned()]).collect()]
+        vec![run]
     }
 }
+
+/// Pytest under coverage and the JSON report, in one interpreter.
+const COVERAGE_RUN: &str = include_str!("emi_coverage_run.py");
 
 fn not_pytest(first: &str) -> String {
     format!(

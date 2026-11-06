@@ -17,7 +17,7 @@ use crate::proving::evidence::{
 use crate::proving::evidence::{
     FailingTest, NOT_COLLECTED, PASSES_AT_BASELINE, RUNS_NO_CHANGED_LINE,
 };
-use crate::proving::exec::Session;
+use crate::proving::exec::{Listing, Session};
 use crate::proving::junit::Observed;
 use crate::proving::overlay::{TestFiles, Tree, overlay_tests};
 use crate::proving::proof::{FnStatus, judge};
@@ -146,6 +146,12 @@ struct Targets {
     added: Vec<String>,
     /// Ids both list, in test files the candidate edited.
     edited: BTreeSet<String>,
+    /// Test functions, as file and name, whose code the candidate changed.
+    /// An old test file that only gained lines still runs in its baseline
+    /// form as regression evidence, so lines added inside an old test are
+    /// judged nowhere else: they are the candidate's test as much as an
+    /// added one is.
+    rewritten: BTreeSet<(String, String)>,
 }
 
 impl Targets {
@@ -205,7 +211,7 @@ impl Context<'_> {
             network: self.req.network,
         };
         let session = Session::new(runner, self.objects, &command);
-        let mut evidence = match self.found_tests(&session) {
+        let mut evidence = match self.found_tests(&session, &changed) {
             Ok(classified) => {
                 let classified = companions(self.refine(&session, &changed, classified));
                 self.judge(&changed, classified)
@@ -222,6 +228,22 @@ impl Context<'_> {
         let mut env = vec![("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned())];
         env.extend(self.req.env.iter().cloned());
         env
+    }
+
+    /// The test functions the candidate added to or changed. Unreadable
+    /// changed functions leave the set empty: the evidence then says the
+    /// changed functions could not be read.
+    fn rewritten(&self, changed: &Result<ChangedFunctions, String>) -> BTreeSet<(String, String)> {
+        changed.as_ref().map_or_else(
+            |_| BTreeSet::new(),
+            |c| {
+                c.functions
+                    .iter()
+                    .filter(|f| f.kind != ChangeKind::Removed && self.tests.matches(&f.file))
+                    .map(|f| (f.file.clone(), f.name.clone()))
+                    .collect()
+            },
+        )
     }
 
     /// Nothing about the tests could be measured: `unknown`, with the
@@ -284,18 +306,55 @@ impl Context<'_> {
                 "{file}: not Python; its changed functions are not measured"
             ));
         }
+        match hunks::changes(self.objects, &self.base, Some(&self.cand)) {
+            Ok(files) => scope
+                .notes
+                .extend(outside_functions(&files, changed, &self.tests)),
+            Err(e) => scope.notes.push(format!(
+                "the changed lines could not be read, so lines outside functions are not known: {e}"
+            )),
+        }
         scope
+    }
+
+    /// The tests the baseline lists, from the cache when an earlier check
+    /// listed this baseline under the same command, pins and environment.
+    /// A cache that cannot be read or written costs a listing, never a
+    /// result: the listing is then taken as if there were no cache.
+    fn baseline_listing(&self, s: &Session) -> Result<Listing, String> {
+        let path = self.req.listing_cache.as_ref().map(|c| {
+            let key = serde_json::json!({
+                "baseline": self.base, "command": self.req.test_command,
+                "globs": self.req.test_globs, "env": self.req.env,
+                "link": self.req.link, "network": self.req.network,
+                "environment": c.environment,
+            });
+            c.dir.join(format!(
+                "listing-{}.json",
+                emi_kernel::json::digest("emi-listing", &key)
+            ))
+        });
+        if let Some(kept) = path.as_deref().and_then(Listing::read) {
+            return Ok(kept);
+        }
+        let pristine = s.tree("baseline-list", &self.base)?;
+        let listing = s.list(&pristine, "baseline")?;
+        if let Some(path) = path {
+            listing.write(&path);
+        }
+        Ok(listing)
     }
 
     /// What each added test is (the ids the candidate lists and the
     /// baseline does not), and which edited old tests show the change.
-    fn found_tests(&self, s: &Session) -> Result<Classified, String> {
+    fn found_tests(
+        &self,
+        s: &Session,
+        changed: &Result<ChangedFunctions, String>,
+    ) -> Result<Classified, String> {
         let tree = s.tree("candidate", &self.cand)?;
         let at_candidate = s.list(&tree, "candidate")?;
-        let at_baseline = {
-            let pristine = s.tree("baseline-list", &self.base)?;
-            s.list(&pristine, "baseline")?
-        };
+        let at_baseline = self.baseline_listing(s)?;
         let mut out = Classified::default();
         // a file the baseline already could not collect is no news; one
         // only the candidate cannot collect is the candidate's to repair:
@@ -324,7 +383,11 @@ impl Context<'_> {
             .filter(|id| edited_files.contains(pytest::file_of(id)))
             .cloned()
             .collect();
-        let targets = Targets { added, edited };
+        let targets = Targets {
+            added,
+            edited,
+            rewritten: self.rewritten(changed),
+        };
         if targets.added.is_empty() && targets.edited.is_empty() {
             return Ok(out);
         }
@@ -370,7 +433,11 @@ impl Context<'_> {
                 on_candidate.get(&id),
             );
             if targets.edited.contains(&id) {
-                out.edited(id, &verdict);
+                let (file, name) = pytest::function_of(&id);
+                let rewritten = targets
+                    .rewritten
+                    .contains(&(file.to_owned(), name.to_owned()));
+                out.edited(id, &verdict, rewritten);
             } else {
                 out.added(id, verdict);
             }
@@ -444,17 +511,72 @@ impl Classified {
 
     /// An old test in a file the candidate edited counts only when it
     /// shows the change. One that passes at the baseline is an old test
-    /// doing its work, not a redundant one, and one that fails at both
-    /// revisions is the regression evidence's to judge.
-    fn edited(&mut self, id: String, verdict: &Verdict) {
-        if let Verdict::Proving(baseline_result) = verdict {
-            self.proving.push(ProvingTest {
+    /// doing its work, not a redundant one. One that fails on the candidate
+    /// is the candidate's to repair when the candidate changed its code;
+    /// otherwise it failed before the edit too, which is the regression
+    /// evidence's to judge. One the candidate changed that does not run is
+    /// listed as skipped, as an added one is.
+    fn edited(&mut self, id: String, verdict: &Verdict, rewritten: bool) {
+        match verdict {
+            Verdict::Proving(baseline_result) => self.proving.push(ProvingTest {
                 id,
                 baseline_result: *baseline_result,
                 edited: true,
-            });
+            }),
+            Verdict::Failing(candidate_result) if rewritten => self.failing.push(FailingTest {
+                id,
+                candidate_result,
+            }),
+            Verdict::Skipped if rewritten => self.skipped.push(id),
+            _ => {}
         }
     }
+}
+
+/// Changed code lines of product Python files that lie in no function (a
+/// class attribute, a module-level value): measurement is per function, so
+/// whether a test runs them is not measured, and the receipt says so
+/// rather than letting the change look smaller than it is. Blank and
+/// comment lines are not code.
+fn outside_functions(
+    files: &[hunks::FileChange],
+    changed: &ChangedFunctions,
+    tests: &TestFiles,
+) -> Vec<String> {
+    let code = |text: &str| {
+        let t = text.trim();
+        !t.is_empty() && !t.starts_with('#')
+    };
+    let inside =
+        |spans: &[(u32, u32)], line: u32| spans.iter().any(|&(a, b)| a <= line && line <= b);
+    let mut notes = Vec::new();
+    for f in files.iter().filter(|f| {
+        f.path.ends_with(".py") && !tests.matches(&f.path) && !changed.unparsed.contains(&f.path)
+    }) {
+        let old_path = f.old_path.as_deref().unwrap_or(&f.path);
+        let ours = changed
+            .functions
+            .iter()
+            .filter(|c| c.file == f.path || c.file == old_path);
+        let new: Vec<(u32, u32)> = ours.clone().filter_map(|c| c.new).collect();
+        let old: Vec<(u32, u32)> = ours.filter_map(|c| c.old).collect();
+        let outside = f
+            .added
+            .iter()
+            .filter(|(l, t)| code(t) && !inside(&new, *l))
+            .count()
+            + f.removed
+                .iter()
+                .filter(|(l, t)| code(t) && !inside(&old, *l))
+                .count();
+        if outside > 0 {
+            notes.push(format!(
+                "{}: {outside} changed line(s) outside any function (module or class level); whether a test runs them is not measured",
+                f.path
+            ));
+        }
+    }
+    notes
 }
 
 /// Files git sees as moved by the change: new path to old path.

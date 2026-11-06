@@ -72,7 +72,7 @@ fn situations() -> Vec<(&'static str, Setup, &'static str)> {
                 p.write("app.py", FIX);
                 p.write("tests/test_new.py", AGAIN_TEST);
             },
-            "exit=0 stop regression=held change=unexercised redundant_tests=1",
+            "exit=3 repair regression=held change=unexercised redundant_tests=1",
         ),
         (
             "fix without a test",
@@ -112,16 +112,46 @@ fn situations() -> Vec<(&'static str, Setup, &'static str)> {
     ]
 }
 
+/// One situation's line of the table, and the hook's reading of its receipt.
+fn row(name: &str, setup: fn(&Project)) -> (String, String) {
+    let p = Project::new();
+    setup(&p);
+    let (code, receipt) = p.done(&[]);
+    // the hook reads receipts on its own and distrusts what does not add
+    // up: every receipt `emi done` writes must read back as itself
+    let read = emi_hook::receipt::interpret(Some(code), &receipt.to_string(), "");
+    let hook = format!("{name}: the hook read {}", read.action.as_str());
+    let said = format!(
+        "{name}: the hook read {}",
+        receipt["action"].as_str().unwrap_or("?")
+    );
+    assert_eq!(hook, said, "{:?}", read.summary);
+    (name.to_owned(), summary(code, &receipt))
+}
+
 #[test]
 fn the_receipt_for_each_situation() {
+    // each situation is its own project: they run side by side, as many at
+    // once as the machine has processors, and the table keeps their order
+    let all = situations();
+    let at_once = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let mut got = Vec::new();
-    let mut want = Vec::new();
-    for (name, setup, expected) in situations() {
-        let p = Project::new();
-        setup(&p);
-        let (code, receipt) = p.done(&[]);
-        got.push(format!("{name}: {}", summary(code, &receipt)));
-        want.push(format!("{name}: {expected}"));
+    for batch in all.chunks(at_once) {
+        let rows: Vec<(String, String)> = std::thread::scope(|scope| {
+            let running: Vec<_> = batch
+                .iter()
+                .map(|(name, setup, _)| scope.spawn(move || row(name, *setup)))
+                .collect();
+            running
+                .into_iter()
+                .map(|h| h.join().expect("a situation panicked"))
+                .collect()
+        });
+        got.extend(rows.into_iter().map(|(name, s)| format!("{name}: {s}")));
     }
+    let want: Vec<String> = all
+        .iter()
+        .map(|(name, _, expected)| format!("{name}: {expected}"))
+        .collect();
     assert_eq!(got.join("\n"), want.join("\n"));
 }

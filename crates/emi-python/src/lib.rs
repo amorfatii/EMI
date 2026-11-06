@@ -17,6 +17,7 @@ pub mod mutate;
 pub mod mutation;
 pub mod pins;
 pub mod proving;
+pub mod report;
 pub mod sandbox;
 pub mod standins;
 pub mod syntax;

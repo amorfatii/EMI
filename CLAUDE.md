@@ -6,9 +6,12 @@ CONTEXT.md and the decisions in `docs/adr/`). The burden measurements EMI
 started with are archived at tag `archive/burden-final` (ADR 0005).
 
 ## Before you commit
-- Run `scripts/check.sh` (fmt, clippy -D warnings, kernel purity, tests,
-  release build). Never pipe it through `tail`/`grep` when deciding whether
-  it passed; the exit status is the verdict.
+- Run `scripts/check.sh --fast` (fmt, clippy -D warnings, kernel purity,
+  the tests that run no real pytest) and the test binaries of what you
+  changed (`cargo test --test laws`). The full `scripts/check.sh` (every
+  test and the release build) is what CI runs, sharded; run it before
+  pushing when CI is not there to. Never pipe either through `tail`/`grep`
+  when deciding whether it passed; the exit status is the verdict.
 - A change to what a receipt says in one of the situations of
   `crates/emi-cli/tests/characterize.rs` changes that table in the same
   commit, on purpose, with the reason in the message.

@@ -165,11 +165,17 @@ fn enforced_verification_reads_baseline_configuration_and_refuses_approval() {
 }
 
 #[test]
-fn an_added_test_that_is_skipped_is_stated_and_is_no_fault() {
+fn a_change_whose_only_new_tests_are_skipped_shows_nothing_and_goes_back() {
     let p = Project::new();
     p.write("tests/test_new.py", "import pytest\n\n@pytest.mark.skip(reason='not implemented')\ndef test_future():\n    pass\n");
     let (code, receipt) = p.done(&[]);
-    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(code, 3, "{receipt}");
+    assert!(
+        receipt["repair"][0]
+            .as_str()
+            .is_some_and(|r| r.starts_with("tests/test_new.py::test_future is skipped")),
+        "{receipt}"
+    );
     assert_eq!(
         receipt["change"]["skipped_tests"],
         json!(["tests/test_new.py::test_future"])
@@ -179,6 +185,27 @@ fn an_added_test_that_is_skipped_is_stated_and_is_no_fault() {
         String::from_utf8_lossy(&text.stdout)
             .contains("1 test(s) the change added are skipped here and show nothing."),
         "{text:?}"
+    );
+
+    // an old test the candidate marks skipped is stated the same way
+    let old = Project::new();
+    let text = std::fs::read_to_string(old.path().join("tests/test_app.py")).expect("old test");
+    old.write(
+        "tests/test_app.py",
+        &format!(
+            "import pytest\n{}",
+            text.replace(
+                "def test_add",
+                "@pytest.mark.skip(reason='later')\ndef test_add"
+            )
+        ),
+    );
+    let (code, receipt) = old.done(&[]);
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(
+        receipt["change"]["skipped_tests"],
+        json!(["tests/test_app.py::test_add"]),
+        "{receipt}"
     );
 }
 
@@ -262,6 +289,25 @@ fn an_added_test_that_fails_sends_the_proposer_back() {
             .as_str()
             .expect("repair line")
             .contains("test_none"),
+        "{receipt}"
+    );
+
+    // lines added inside an old test only add too, and its baseline form
+    // still passes: the failing assertion the candidate added is the
+    // candidate's to repair, not dropped between the two halves
+    let inside = Project::new();
+    let old = std::fs::read_to_string(inside.path().join("tests/test_app.py")).expect("old test");
+    inside.write(
+        "tests/test_app.py",
+        &old.replace(
+            "    assert add(1, 2) == 3\n",
+            "    assert add(1, 2) == 3\n    assert add(None, 2) == 2\n",
+        ),
+    );
+    let (code, receipt) = inside.done(&[]);
+    assert_eq!(code, 3, "{receipt}");
+    assert_eq!(
+        receipt["change"]["failing_tests"][0]["id"], "tests/test_app.py::test_add",
         "{receipt}"
     );
 }

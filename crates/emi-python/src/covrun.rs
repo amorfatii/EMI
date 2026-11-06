@@ -1,8 +1,8 @@
 //! Coverage measured by EMI itself rather than read from a report someone
 //! produced elsewhere: the coverage commands run in order in one fresh,
-//! sandboxed copy of the profiled commit, and the report they write there
+//! sandboxed copy of the commit being checked, and the report they write there
 //! is read back. The evidence then belongs to exactly the commit being
-//! profiled, and the run is recorded next to it.
+//! checked, and the run is recorded next to it.
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path};

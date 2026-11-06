@@ -100,7 +100,8 @@ of them (`not_verified`), with this run's under `this_run`.
   errored and does not reach the change, is redundant. Redundant tests are
   stated in the receipt: such a test does not show the change works, and it
   may still guard behaviour the change must keep, so the proposer is not
-  sent back for it unless the project sets `on_redundant: repair`.
+  sent back for it unless the project sets `on_redundant: repair`, or
+  unless it shows nothing (below).
   Collection/import execution alone does not earn proving credit.
   - An old test the candidate edited is judged in its edited form by the same
     rule, and listed as a proving test with `edited: true`. Whether the edit
@@ -115,7 +116,14 @@ of them (`not_verified`), with this run's under `this_run`.
     base class and run under several subclasses is one function.
   - An added test skipped (or expected to fail) at both revisions is listed
     in `skipped_tests`: it does not run here, shows nothing, and is not a
-    measurement that failed. A changed function is exercised only when a
+    measurement that failed.
+  - **Tests that show nothing** send the proposer back whatever the policy.
+    When the candidate changes product functions and none of its tests
+    proves the change or fails, each redundant or skipped test it added is
+    such a test: it is offered as evidence and cannot be any. A candidate
+    that changes no product function may add tests for behaviour that
+    already holds, so its passing tests are fine; only when every test it
+    added is skipped has it added nothing that runs. A changed function is exercised only when a
   proving test executes its changed body: the lines the change added, or,
   where the change also removed lines from the function (a guard taken out,
   a statement rewritten), any line of it, since a removed line cannot run
@@ -221,7 +229,7 @@ dependencies) and once on the candidate:
   (skipped by the candidate's code), is `broken`;
 - a test the candidate added is not regression evidence: one that fails is
   a failing added test (a `repair`), one that is skipped is listed in the
-  change evidence;
+  change evidence (and is a `repair` when it shows nothing, above);
 - a suite that ran at the baseline and does not start on the candidate (an
   import the change broke stops pytest before any test) is `broken`, with
   the run's last error line. The action is `repair` even though the change

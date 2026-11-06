@@ -171,6 +171,8 @@ fn facts(p: &Parts) -> decide::Facts {
         divergences: p.preserved.map_or(0, crate::preserve::Preserved::count),
         survivors: p.adequacy.map_or(0, |a| a.survivors.len()),
         unapproved: p.old_tests.iter().filter(|e| !e.approved).count(),
+        tests_show_nothing: change.show_nothing.0.len() + change.show_nothing.1.len(),
+        vacuous_proposals: crate::laws::vacuous_proposals(p.laws).len(),
     }
 }
 
@@ -220,6 +222,13 @@ fn redundant_line(t: &crate::change::Redundant) -> String {
     }
 }
 
+/// A skipped test offered as the only evidence for a change.
+fn skipped_line(id: &String) -> String {
+    format!(
+        "{id} is skipped, so it shows nothing; make it run here and fail without your change, or remove it."
+    )
+}
+
 /// The first failing kind of thing, in the order of the action table, with
 /// every item of that kind: one round can then settle all of them. The
 /// proposer reads it, so each line names one thing and says what to do.
@@ -256,10 +265,22 @@ fn repair_lines(p: &Parts) -> Vec<String> {
         .preserved
         .map(crate::preserve::repair_lines)
         .unwrap_or_default();
-    if !failing.is_empty() || !unmet_laws.is_empty() || !diverged.is_empty() {
+    let (hollow, skipped) = &change.show_nothing;
+    let vacuous = crate::laws::vacuous_proposals(p.laws);
+    let row_four = [
+        !failing.is_empty(),
+        !unmet_laws.is_empty(),
+        !diverged.is_empty(),
+        !hollow.is_empty() || !skipped.is_empty(),
+        !vacuous.is_empty(),
+    ];
+    if row_four.contains(&true) {
         let mut out = itemize(&failing, failing_line);
         out.extend(itemize(&unmet_laws, String::clone));
         out.extend(itemize(&diverged, String::clone));
+        out.extend(itemize(hollow, redundant_line));
+        out.extend(itemize(skipped, skipped_line));
+        out.extend(itemize(&vacuous, String::clone));
         return out;
     }
     if p.on_redundant == OnRedundant::Repair && !change.redundant.is_empty() {

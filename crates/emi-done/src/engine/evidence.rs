@@ -122,7 +122,7 @@ fn parse_line(line: &str) -> Option<(&str, Outcome)> {
 /// tests ran. A test's own error line names an id with `::` and is read
 /// from its outcome line instead.
 fn collection_error(line: &str) -> Option<&str> {
-    let file = id_of(line.strip_prefix("ERROR ")?);
+    let file = emi_python::report::id_of(line.strip_prefix("ERROR ")?);
     (!file.contains("::") && !file.contains(char::is_whitespace) && file.ends_with(".py"))
         .then_some(file)
 }
@@ -178,98 +178,21 @@ fn parse_lines(stdout: &str) -> Option<Evidence> {
     Some(ev)
 }
 
-/// Counts from a pytest summary line (`2 failed, 210 passed in 3.1s`).
-#[derive(Clone, Copy, Debug, Default)]
-struct Summary {
-    passed: u64,
-    failed: u64,
-    errors: u64,
-    skipped: u64,
-}
-
-/// Words in the summary line that count nothing reported here.
-const IGNORED: &[&str] = &[
-    "deselected",
-    "warning",
-    "warnings",
-    "rerun",
-    "subtests passed",
-];
-
-fn count(part: &str, summary: &mut Summary) -> Option<()> {
-    let (n, word) = part.trim().split_once(' ')?;
-    let n: u64 = n.parse().ok()?;
-    match word.trim() {
-        "passed" => summary.passed = n,
-        "failed" => summary.failed = n,
-        "error" | "errors" => summary.errors = n,
-        "xfailed" => summary.skipped += n,
-        "xpassed" => summary.skipped += n,
-        "skipped" => summary.skipped += n,
-        w if IGNORED.contains(&w) => {}
-        _ => return None,
-    }
-    Some(())
-}
-
-fn summary_line(line: &str) -> Option<Summary> {
-    let inner = line.trim().trim_matches('=').trim();
-    let (counts, _time) = inner.rsplit_once(" in ")?;
-    if counts == "no tests ran" {
-        return Some(Summary::default());
-    }
-    let mut summary = Summary::default();
-    for part in counts.split(", ") {
-        count(part, &mut summary)?;
-    }
-    Some(summary)
-}
-
-/// Ids named on `FAILED` and `ERROR` lines of the short test summary.
-fn failure_ids(stdout: &str) -> Vec<String> {
-    let mut ids: Vec<String> = stdout
-        .lines()
-        .filter_map(|l| {
-            let rest = l
-                .strip_prefix("FAILED ")
-                .or_else(|| l.strip_prefix("ERROR "))?;
-            let id = id_of(rest);
-            (!id.is_empty()).then(|| id.to_owned())
-        })
-        .collect();
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
-/// The id at the start of a summary line: it ends at the first ` - ` that
-/// is not inside the brackets of a parametrized test's name.
-fn id_of(rest: &str) -> &str {
-    let mut depth = 0u32;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
-            ' ' if depth == 0 && rest[i..].starts_with(" - ") => return rest[..i].trim(),
-            _ => {}
-        }
-    }
-    rest.trim()
-}
-
 /// Pytest-summary evidence in `stdout`, or `None` when it holds no
 /// summary line. Failures the tail cut off still count through the
 /// summary's own numbers, even unnamed.
 fn parse_summary(stdout: &str) -> Option<Evidence> {
-    let summary = stdout.lines().rev().find_map(summary_line)?;
+    let summary = emi_python::report::summary(stdout)?;
     let mut ev = Evidence {
         kind: Kind::Summary,
         summary_passed: summary.passed,
         summary_failed: summary.failed + summary.errors,
-        summary_skipped: summary.skipped,
+        // an expected failure or unexpected pass did not run to its
+        // written expectation: not a pass
+        summary_skipped: summary.skipped + summary.xfailed + summary.xpassed,
         ..Evidence::default()
     };
-    for id in failure_ids(stdout) {
+    for id in emi_python::report::failures(stdout) {
         ev.failed.insert(id);
     }
     Some(ev)

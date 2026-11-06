@@ -4,8 +4,17 @@ on:
   push:
   pull_request:
 
+# a newer push to the same branch makes the older run moot
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  check:
+  lint:
+    name: fmt, clippy, kernel purity, fast tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,5 +22,34 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: fmt, clippy, kernel purity, tests, release build
-        run: scripts/check.sh
+      - run: scripts/check.sh --fast
+      - run: cargo test --quiet --workspace --doc
+
+  # the integration tests run `emi done` on real projects with real pytest:
+  # most of the time, so they are spread over machines and run side by side
+  test:
+    name: tests (shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - run: cargo nextest run --workspace --profile ci --partition hash:${{ matrix.shard }}/3
+
+  release:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --quiet

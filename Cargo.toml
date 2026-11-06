@@ -42,6 +42,12 @@ expect_used = "warn"
 cognitive_complexity = "warn"
 too_many_lines = "warn"
 
+# Tests run the `emi` binary from the dev profile hundreds of times; with
+# dependencies (hashing, JSON, the parser) optimized it does its own work
+# faster, and they are compiled once and cached.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -117,7 +117,7 @@ fn a_law_the_change_breaks_is_repaired_and_an_edited_law_does_not_count() {
 }
 
 #[test]
-fn a_proposed_law_is_asked_about_and_shown_vacuous_when_a_trivial_body_passes_it() {
+fn a_proposed_law_a_trivial_body_passes_goes_back_to_the_proposer_before_a_person() {
     let p = Project::new();
     p.write(
         "app.py",
@@ -129,7 +129,13 @@ fn a_proposed_law_is_asked_about_and_shown_vacuous_when_a_trivial_body_passes_it
         "from app import normalize\n\n\ndef test_normalize_is_idempotent():\n    once = normalize(' a ')\n    assert normalize(once) == once\n",
     );
     let (code, receipt) = p.done(&[]);
-    assert_eq!(code, 4, "{receipt}");
+    assert_eq!(code, 3, "{receipt}");
+    assert!(
+        receipt["repair"][0].as_str().is_some_and(|r| r.starts_with(
+            "The law file you propose, .emi/laws/test_normalize.py, still holds when"
+        )),
+        "{receipt}"
+    );
     let item = &receipt["changed_old_tests"][0];
     assert_eq!(item["item"], "law:.emi/laws/test_normalize.py", "{receipt}");
     let proposal = &receipt["laws"]["proposals"][0];

@@ -1,5 +1,5 @@
 //! The authority store: `<authority>/<task_id>/` holds the frozen contract
-//! revisions, `state.json` (cumulative budget, history) and the
+//! revisions, `state.json` (the current revision and its history) and the
 //! append-only `evidence.jsonl`. It must live outside the candidate's
 //! repository, so the agent under supervision cannot rewrite it through
 //! its own change.
@@ -72,7 +72,6 @@ impl Store {
         let state = json!({
             "task_id": contract["task_id"], "current_revision": contract["revision"],
             "current_contract_id": contract["contract_id"],
-            "cumulative": {"retries": 0, "time_s": 0.0},
             "history": [{"revision": contract["revision"], "contract_id": contract["contract_id"],
                          "actor": "controller", "reason": "initial freeze"}]});
         atomic_write(&self.dir.join("state.json"), &state)
@@ -102,19 +101,6 @@ impl Store {
         rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
             .map_err(|e| format!("lock {}: {e}", self.dir.display()))?;
         Ok(Lock(file))
-    }
-
-    /// Charge one verification of `seconds` to the budget, re-reading the
-    /// state under the lock so concurrent runs are all counted.
-    pub fn charge(&self, seconds: f64) -> Result<Value> {
-        let _lock = self.lock()?;
-        let mut state = self.state()?;
-        state["cumulative"]["retries"] =
-            json!(state["cumulative"]["retries"].as_u64().unwrap_or(0) + 1);
-        state["cumulative"]["time_s"] =
-            json!(state["cumulative"]["time_s"].as_f64().unwrap_or(0.0) + seconds);
-        self.save_state(&state)?;
-        Ok(state)
     }
 
     pub fn state(&self) -> Result<Value> {

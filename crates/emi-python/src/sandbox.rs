@@ -1,4 +1,4 @@
-//! Commands run against a fresh copy of the profiled commit, isolated like
+//! Commands run against a fresh copy of the commit being checked, isolated like
 //! a supervised task's checks: bubblewrap when available, network off
 //! unless asked for, the repository hidden (so imports come from the
 //! copy, never the live checkout), linked dependency directories mounted
@@ -55,7 +55,7 @@ impl Runner<'_> {
     }
 
     /// [`Runner::copy`] of `rev` read from `objects`: a repository that
-    /// holds the commit but is not the one being profiled (a clean view
+    /// holds the commit but is not the one being checked (a clean view
     /// that also holds a snapshot of the working tree). Dependency links
     /// and hidden paths still come from the runner's own repository.
     pub fn copy_of(&self, tag: &str, objects: &Path, rev: &str) -> Result<Copy> {

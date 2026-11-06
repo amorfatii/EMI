@@ -46,6 +46,34 @@ pub struct Facts {
     pub redundant: Vec<Redundant>,
     /// Changed functions no proving test executes, as `file:name (line n)`.
     pub unexercised: Vec<String>,
+    /// Tests offered as evidence that show nothing (see [`show_nothing`]):
+    /// the redundant ones and the skipped ones.
+    pub show_nothing: (Vec<Redundant>, Vec<String>),
+}
+
+/// Tests the candidate offers as evidence that cannot be any, when no test
+/// it added proves anything and none fails. For a change to product code,
+/// every redundant or skipped test it added is such a test. A change that
+/// leaves product code alone may add tests for behaviour that already
+/// holds, which pass on the old code by design; only when every test it
+/// added is skipped does it offer nothing that runs at all.
+fn show_nothing(v: &Value, redundant: &[Redundant]) -> (Vec<Redundant>, Vec<String>) {
+    let list = |key: &str| v[key].as_array().map_or(&[][..], Vec::as_slice);
+    let skipped: Vec<String> = list("skipped_tests")
+        .iter()
+        .filter_map(|t| t.as_str().map(str::to_owned))
+        .collect();
+    let proven_or_failing = !list("proving_tests").is_empty() || !list("failing_tests").is_empty();
+    if proven_or_failing {
+        return (Vec::new(), Vec::new());
+    }
+    if !list("functions").is_empty() {
+        return (redundant.to_vec(), skipped);
+    }
+    if redundant.is_empty() && list("unknown_tests").is_empty() {
+        return (Vec::new(), skipped);
+    }
+    (Vec::new(), Vec::new())
 }
 
 const STATUSES: &[&str] = &[
@@ -112,6 +140,13 @@ impl ChangeEvidence {
         }
         let list = |key: &str| v[key].as_array().map_or(&[][..], Vec::as_slice);
         let text = |t: &Value, key: &str| t[key].as_str().unwrap_or("").to_owned();
+        let redundant: Vec<Redundant> = list("redundant_tests")
+            .iter()
+            .map(|t| Redundant {
+                id: text(t, "id"),
+                reason: text(t, "reason"),
+            })
+            .collect();
         Facts {
             // absent in evidence measured before the list existed: none
             failing: list("failing_tests")
@@ -121,13 +156,8 @@ impl ChangeEvidence {
                     result: text(t, "candidate_result"),
                 })
                 .collect(),
-            redundant: list("redundant_tests")
-                .iter()
-                .map(|t| Redundant {
-                    id: text(t, "id"),
-                    reason: text(t, "reason"),
-                })
-                .collect(),
+            show_nothing: show_nothing(v, &redundant),
+            redundant,
             unexercised: list("functions")
                 .iter()
                 .filter(|f| f["status"] == "unexercised")
@@ -180,8 +210,37 @@ mod tests {
         json!({"status": "partly_exercised",
                "functions": [{"file": "src/a.py", "function": "f", "line": 10, "status": "exercised"},
                              {"file": "src/a.py", "function": "g", "line": 20, "status": "unexercised"}],
-               "proving_tests": [], "redundant_tests": [{"id": "tests/t.py::test_extra"}],
+               "proving_tests": [{"id": "tests/t.py::test_f"}],
+               "redundant_tests": [{"id": "tests/t.py::test_extra"}],
                "unknown_tests": [], "not_measured": []})
+    }
+
+    #[test]
+    fn tests_that_show_nothing_are_counted_only_where_nothing_else_is_evidence() {
+        let hollow = |functions: Value, redundant: Value, skipped: Value| {
+            let c = ChangeEvidence::Measured(json!({"status": "unexercised",
+                "functions": functions, "proving_tests": [], "redundant_tests": redundant,
+                "skipped_tests": skipped, "unknown_tests": [], "not_measured": []}));
+            let (r, s) = c.facts().show_nothing;
+            (r.len(), s.len())
+        };
+        let changed =
+            json!([{"file": "src/a.py", "function": "f", "line": 1, "status": "unexercised"}]);
+        let passes = json!([{"id": "tests/t.py::test_a", "reason": "passes at the baseline"}]);
+        let skip = json!(["tests/t.py::test_b"]);
+        // a change to product code with only redundant or skipped tests
+        assert_eq!(
+            hollow(changed.clone(), passes.clone(), skip.clone()),
+            (1, 1)
+        );
+        // no product change: tests of behaviour that already holds are fine
+        assert_eq!(hollow(json!([]), passes.clone(), skip.clone()), (0, 0));
+        assert_eq!(hollow(json!([]), passes, json!([])), (0, 0));
+        // no product change and nothing that runs at all
+        assert_eq!(hollow(json!([]), json!([]), skip), (0, 1));
+        // a proving test is evidence; nothing is counted then
+        let c = ChangeEvidence::Measured(measured());
+        assert_eq!(c.facts().show_nothing, (Vec::new(), Vec::new()));
     }
 
     #[test]
@@ -208,6 +267,7 @@ mod tests {
                     reason: String::new(),
                 }],
                 unexercised: vec!["src/a.py:g (line 20)".into()],
+                show_nothing: (Vec::new(), Vec::new()),
             }
         );
     }

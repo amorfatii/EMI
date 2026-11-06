@@ -10,16 +10,35 @@ pub fn venv() -> &'static Path {
     VENV.get_or_init(|| {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("emi-python-venv-2");
         let marker = dir.join(".ready");
+        // test binaries may run side by side in separate processes (a
+        // parallel runner, sharded CI): one makes the virtualenv while the
+        // others wait for it, instead of all building it over each other
+        let lock_path = dir.with_extension("lock");
+        let lock = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .expect("open the virtualenv lock");
+        lock.lock().expect("take the virtualenv lock");
         if !marker.exists() {
-            std::fs::create_dir_all(&dir).expect("create virtualenv directory");
+            // a directory without the marker is a half-made or restored
+            // virtualenv (a CI cache keeps target/tmp, whose interpreter
+            // links can point at a Python the runner no longer has): `venv`
+            // over it repairs nothing, so it is made again from nothing
+            let _ = std::fs::remove_dir_all(&dir);
             let created = Command::new("python3")
-                .args(["-m", "venv"])
+                .args(["-m", "venv", "--clear"])
                 .arg(&dir)
                 .output()
                 .expect("create virtualenv");
             assert!(created.status.success(), "{created:?}");
-            let installed = Command::new(dir.join("bin/pip"))
+            // pip through the virtualenv's interpreter: a `bin/pip` script
+            // whose first line names a missing interpreter fails as "not found"
+            let installed = Command::new(dir.join("bin/python"))
                 .args([
+                    "-m",
+                    "pip",
                     "install",
                     "--quiet",
                     "pytest>=8,<9",
@@ -31,6 +50,7 @@ pub fn venv() -> &'static Path {
             assert!(installed.status.success(), "{installed:?}");
             std::fs::write(marker, "ok\n").expect("mark virtualenv ready");
         }
+        drop(lock);
         dir
     })
 }

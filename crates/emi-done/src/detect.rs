@@ -456,6 +456,28 @@ pub fn detect(repo: &Path, default_branch_override: Option<&str>) -> Result<Dete
     })
 }
 
+/// Whether git ignores the configuration file at `repo` (a project that
+/// ignores every dotfile does): a plain `git add` then leaves it out without
+/// a word, and verification reads it from a baseline that does not have it.
+/// A tracked file is not ignored.
+pub fn ignored(repo: &Path) -> Result<bool, Error> {
+    let args = [
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--",
+        config::PATH,
+    ];
+    let out = emi_git::run(repo, &args).map_err(|e| {
+        Error::Usage(format!(
+            "cannot ask git whether {} is ignored: {e}",
+            config::PATH
+        ))
+    })?;
+    Ok(!out.is_empty())
+}
+
 /// Write the configuration into the repository. An existing file is
 /// replaced only with `force`.
 pub fn write(repo: &Path, config: &Config, force: bool) -> Result<PathBuf, Error> {

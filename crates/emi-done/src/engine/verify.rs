@@ -1,7 +1,7 @@
 //! Verify one candidate against the frozen contract and reduce everything
 //! to a decision: `accepted`, `rejected`, `needs_review` or `incomplete`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use std::time::Duration;
@@ -471,6 +471,7 @@ fn added_runner_config(changed: &[(String, &'static str)]) -> Vec<String> {
 /// a verification section only added runner configuration is looked for,
 /// since it changes what every check means whatever the contract asks.
 fn verification_gate(
+    store: &Store,
     setup: &RunSetup,
     restored: Vec<String>,
     held_out: Vec<String>,
@@ -513,10 +514,11 @@ fn verification_gate(
                           "untrusted_test_changes": untrusted,
                           "inventory": {"state": "not_required"}});
     if let Some(candidate_ids) = candidate_ids {
-        let base_ws = scratch.0.join("baseline");
-        let base_ids = setup.prepare_baseline(&base_ws).and_then(|mounts| {
-            inventory_ids(&spec["inventory"], &base_ws, &contract["execution"], mounts)
-        });
+        // the baseline checked as itself, with nothing held out injected,
+        // lists exactly what the candidate's listing lists
+        let same =
+            (setup.candidate == setup.baseline && held_out.is_empty()).then_some(&candidate_ids);
+        let base_ids = baseline_inventory(store, setup, same, scratch);
         match (base_ids, candidate_ids) {
             (Ok(base), Ok(cand)) => {
                 let missing: Vec<&String> = base.difference(&cand).collect();
@@ -546,6 +548,52 @@ fn verification_gate(
     gate["state"] = json!(state);
     gate
 }
+
+/// The baseline's test inventory. The baseline is fixed for a task and its
+/// workspace has nothing restored or injected, so its listing is taken once
+/// and kept in the store; `same` is a listing already taken of that very
+/// workspace (the baseline checked as itself). A listing that could not be taken is not
+/// kept: the next check tries again rather than reusing a failure.
+fn baseline_inventory(
+    store: &Store,
+    setup: &RunSetup,
+    same: Option<&std::result::Result<BTreeSet<String>, String>>,
+    scratch: &Scratch,
+) -> std::result::Result<BTreeSet<String>, String> {
+    let contract = setup.contract;
+    let ours = |r: &Value| {
+        r["contract_id"] == contract["contract_id"]
+            && r["baseline"].as_str() == Some(setup.baseline)
+    };
+    let kept = store.rows(BASELINE_INVENTORY)?.into_iter().rev().find(ours);
+    if let Some(ids) = kept.as_ref().and_then(|r| r["ids"].as_array()) {
+        return Ok(ids
+            .iter()
+            .filter_map(|i| i.as_str().map(str::to_owned))
+            .collect());
+    }
+    let ids = if let Some(listed) = same {
+        listed.clone()?
+    } else {
+        let base_ws = scratch.0.join("baseline");
+        setup.prepare_baseline(&base_ws).and_then(|mounts| {
+            inventory_ids(
+                &contract["verification"]["inventory"],
+                &base_ws,
+                &contract["execution"],
+                mounts,
+            )
+        })?
+    };
+    store.append(
+        BASELINE_INVENTORY,
+        &json!({"contract_id": contract["contract_id"], "baseline": setup.baseline, "ids": ids}),
+    )?;
+    Ok(ids)
+}
+
+/// The store's rows holding a baseline's test inventory.
+const BASELINE_INVENTORY: &str = "baseline_inventory";
 
 fn isolation(execution: &Value) -> Isolation {
     let network = execution["network"].as_bool().unwrap_or(false);
@@ -1113,7 +1161,7 @@ fn run_verified(
         ))
     };
     let (statuses, runs) = run_checks(store, &setup, &scratch.0, &subject.candidate_id)?;
-    let gate = verification_gate(&setup, restored, held_out, candidate_ids, scratch);
+    let gate = verification_gate(store, &setup, restored, held_out, candidate_ids, scratch);
     Ok(Verified {
         statuses,
         runs,

@@ -1,5 +1,5 @@
 //! Sandboxed runs of the test command: listing tests, running chosen ones
-//! and running them under coverage. Every run goes through `emi-profile`'s
+//! and running them under coverage. Every run goes through this crate's
 //! sandbox runner (and so `emi-exec`): a fresh copy of a commit, no network
 //! unless asked, the live repository hidden, dependency directories
 //! read-only, the process group cleaned up and the cleanup verified.
@@ -41,6 +41,39 @@ pub struct Listing {
     pub broken: BTreeSet<String>,
     /// What the listing said went wrong, when it exited nonzero.
     pub problem: Option<String>,
+}
+
+impl Listing {
+    /// A listing kept by [`Listing::write`], or nothing when there is none
+    /// or it does not read back as one.
+    pub fn read(path: &Path) -> Option<Listing> {
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let set = |key: &str| -> Option<BTreeSet<String>> {
+            v[key]
+                .as_array()?
+                .iter()
+                .map(|i| i.as_str().map(str::to_owned))
+                .collect()
+        };
+        Some(Listing {
+            ids: set("ids")?,
+            broken: set("broken")?,
+            problem: v["problem"].as_str().map(str::to_owned),
+        })
+    }
+
+    /// Keep the listing at `path`, written whole or not at all.
+    pub fn write(&self, path: &Path) {
+        let v =
+            serde_json::json!({"ids": self.ids, "broken": self.broken, "problem": self.problem});
+        let part = path.with_extension("part");
+        let written = std::fs::create_dir_all(path.parent().unwrap_or(path))
+            .and_then(|()| std::fs::write(&part, v.to_string()))
+            .and_then(|()| std::fs::rename(&part, path));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+    }
 }
 
 /// How a run ended, in words for the receipt. Nothing in the words varies

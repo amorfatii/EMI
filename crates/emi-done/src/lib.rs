@@ -25,7 +25,6 @@ pub mod laws;
 pub mod oldtests;
 pub mod outcomes;
 pub mod preserve;
-pub mod pytest;
 pub mod receipt;
 pub mod regression;
 pub mod replay;
@@ -116,6 +115,8 @@ pub struct ChangeContext<'a> {
     /// A clean view of the repository that holds `candidate.rev`.
     pub view: &'a Path,
     pub regression: &'a regression::Regression,
+    /// Where the baseline's test listing may be kept between checks.
+    pub listing_cache: Option<emi_python::proving::ListingCache>,
 }
 
 /// The receipt and the action it leads to.

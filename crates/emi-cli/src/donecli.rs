@@ -126,22 +126,31 @@ pub fn init(a: &InitArgs) -> anyhow::Result<u8> {
         }
     }
     detect::write(&repo, &found.config, a.force)?;
-    println!(
-        "Wrote {}. Commit it: enforced verification reads it from the baseline.",
-        path.display()
-    );
+    if detect::ignored(&repo)? {
+        println!(
+            "Wrote {}. git ignores it, so `git add` leaves it out: commit it with `git add -f {}`; enforced verification reads it from the baseline.",
+            path.display(),
+            emi_done::config::PATH
+        );
+    } else {
+        println!(
+            "Wrote {}. Commit it: enforced verification reads it from the baseline.",
+            path.display()
+        );
+    }
     Ok(0)
 }
 
 /// Measure the same frozen candidate as the regression check, not a second
 /// snapshot of a working tree that the proposer may have edited meanwhile.
 fn change_evidence(context: &ChangeContext) -> ChangeEvidence {
-    let req = emi_done::proving_request(
+    let mut req = emi_done::proving_request(
         context.repo,
         context.config,
         context.baseline,
         context.candidate,
     );
+    req.listing_cache.clone_from(&context.listing_cache);
     match emi_python::proving::measure_in(&req, context.view) {
         Ok(evidence) => ChangeEvidence::Measured(evidence.to_json()),
         Err(why) => ChangeEvidence::Failed(format!("change evidence could not be measured: {why}")),

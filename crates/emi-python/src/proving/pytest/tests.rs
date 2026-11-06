@@ -97,22 +97,18 @@ fn coverage_runs_pytest_under_the_same_python() {
         ".emi-proving/coverage.ini",
         ".emi-proving/coverage.json",
     );
-    assert_eq!(steps.len(), 2);
+    assert_eq!(steps.len(), 1, "the run and the report in one interpreter");
+    let step = &steps[0];
     assert_eq!(
-        steps[0][..6],
-        argv(".venv/bin/python -m coverage run --rcfile=.emi-proving/coverage.ini -m")[..]
+        (step[0].as_str(), step[1].as_str()),
+        (".venv/bin/python", "-c")
     );
-    assert_eq!(steps[0][6], "pytest");
+    assert!(step[2].contains("json_report"), "{}", step[2]);
     assert_eq!(
-        steps[0].last().map(String::as_str),
-        Some("tests/test_a.py::t")
+        step[3..7],
+        argv(".emi-proving/coverage.ini .emi-proving/coverage.json -p emi_proving_contexts")[..]
     );
-    assert_eq!(
-        steps[1],
-        argv(
-            ".venv/bin/python -m coverage json --rcfile=.emi-proving/coverage.ini --ignore-errors -o .emi-proving/coverage.json"
-        )
-    );
+    assert_eq!(step.last().map(String::as_str), Some("tests/test_a.py::t"));
     // a bare `pytest` has no interpreter beside it
     let bare = command("pytest").coverage_argv(&[], "settings.ini", "c.json");
     assert_eq!(bare[0][0], "python3");
