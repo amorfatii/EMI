@@ -137,6 +137,7 @@ struct Classified {
     unknown: Vec<UnknownTest>,
     /// What the listing said of files only the candidate cannot collect.
     notes: Vec<String>,
+    candidate_tree: Option<Copy>,
     coverage: Option<(Copy, crate::proving::exec::Coverage)>,
 }
 
@@ -352,6 +353,11 @@ impl Context<'_> {
         s: &Session,
         changed: &Result<ChangedFunctions, String>,
     ) -> Result<Classified, String> {
+        let files = hunks::changes(self.objects, &self.base, Some(&self.cand))
+            .map_err(|e| format!("the files the change touched could not be read: {e}"))?;
+        if files.is_empty() {
+            return Ok(Classified::default());
+        }
         let tree = s.tree("candidate", &self.cand)?;
         let at_candidate = s.list(&tree, "candidate")?;
         let at_baseline = self.baseline_listing(s)?;
@@ -368,8 +374,6 @@ impl Context<'_> {
         if !out.failing.is_empty() {
             out.notes.extend(at_candidate.problem.clone());
         }
-        let files = hunks::changes(self.objects, &self.base, Some(&self.cand))
-            .map_err(|e| format!("the files the change touched could not be read: {e}"))?;
         let added = pytest::added_ids(&at_candidate.ids, &at_baseline.ids, &renames(&files));
         let edited_files: BTreeSet<&str> = files
             .iter()
@@ -391,7 +395,9 @@ impl Context<'_> {
         if targets.added.is_empty() && targets.edited.is_empty() {
             return Ok(out);
         }
-        self.classify_tests(s, &tree, &targets, out)
+        let mut out = self.classify_tests(s, &tree, &targets, out)?;
+        out.candidate_tree = Some(tree);
+        Ok(out)
     }
 
     /// Run the tests against the baseline's product code, with the
@@ -611,9 +617,13 @@ impl Context<'_> {
         if c.proving.is_empty() {
             return c;
         }
+        let kept_tree = c.candidate_tree.take();
         let measured = changed.as_ref().map_err(Clone::clone).and_then(|changed| {
             let scope = self.scope(changed);
-            let tree = s.tree("coverage", &self.cand)?;
+            let tree = match kept_tree {
+                Some(tree) => tree,
+                None => s.tree("coverage", &self.cand)?,
+            };
             let ids = c.proving.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
             let report = s.coverage(&tree, &ids, &self.coverage_sources(&scope))?;
             Ok((tree, report))

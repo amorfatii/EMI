@@ -14,6 +14,7 @@ A `sitecustomize` the environment already had is loaded after this one.
 """
 
 import atexit
+import enum
 import functools
 import importlib.machinery
 import importlib.util
@@ -21,11 +22,24 @@ import json
 import math
 import os
 import sys
+import types
 
 MAX_INPUTS = 50
 MAX_TEXT = 10_000
 INT_BOUND = 2**63
 TUPLE = "$tuple"
+OBJECT = "$object"
+ENUM = "$enum"
+RESERVED_TAGS = (TUPLE, OBJECT, ENUM)
+NON_VALUE_TYPES = (
+    type,
+    types.ModuleType,
+    types.FunctionType,
+    types.MethodType,
+    types.BuiltinFunctionType,
+    types.GeneratorType,
+    types.CoroutineType,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.realpath(os.environ.get("EMI_DRIFT_ROOT", "."))
@@ -35,9 +49,55 @@ class Unencodable(Exception):
     pass
 
 
+def _valid_type_origin(kind):
+    module = getattr(kind, "__module__", None)
+    qualname = getattr(kind, "__qualname__", None)
+    return (
+        isinstance(module, str)
+        and module not in ("builtins", "__main__")
+        and isinstance(qualname, str)
+        and "<locals>" not in qualname
+    )
+
+
+def _encode_object(value, kind, depth):
+    if isinstance(value, NON_VALUE_TYPES) or getattr(kind, "__new__", None) is not object.__new__:
+        raise Unencodable()
+    if not _valid_type_origin(kind):
+        raise Unencodable()
+    attrs = {}
+    has_state = False
+    if hasattr(value, "__dict__"):
+        has_state = True
+        d = value.__dict__
+        if not all(type(k) is str for k in d):
+            raise Unencodable()
+        for k, v in d.items():
+            attrs[k] = encode(v, depth + 1)
+    for cls in kind.__mro__:
+        if "__slots__" in cls.__dict__:
+            has_state = True
+            slots = cls.__dict__["__slots__"]
+            if isinstance(slots, str):
+                slots = (slots,)
+            for s in slots:
+                if s in ("__dict__", "__weakref__"):
+                    continue
+                if hasattr(value, s):
+                    attrs[s] = encode(getattr(value, s), depth + 1)
+    if not has_state:
+        raise Unencodable()
+    return {
+        OBJECT: {
+            "module": kind.__module__,
+            "qualname": kind.__qualname__,
+            "attrs": attrs,
+        }
+    }
+
+
 def encode(value, depth=0):
-    """The value as JSON data, or Unencodable: exact types only, so a
-    subclass (an enum, a namedtuple) is never passed off as its base."""
+    """The value as JSON data, or Unencodable."""
     if depth > 20:
         raise Unencodable()
     kind = type(value)
@@ -57,10 +117,16 @@ def encode(value, depth=0):
         # a tuple and a list behave differently, so the tag keeps them apart
         return {TUPLE: [encode(v, depth + 1) for v in value]}
     if kind is dict:
-        if list(value) == [TUPLE] or not all(type(k) is str for k in value):
+        if (len(value) == 1 and next(iter(value)) in RESERVED_TAGS) or not all(
+            type(k) is str for k in value
+        ):
             raise Unencodable()
         return {k: encode(v, depth + 1) for k, v in value.items()}
-    raise Unencodable()
+    if isinstance(value, enum.Enum):
+        if _valid_type_origin(kind):
+            return {ENUM: [kind.__module__, kind.__qualname__, value.name]}
+        raise Unencodable()
+    return _encode_object(value, kind, depth)
 
 
 def canonical(data):
@@ -139,9 +205,12 @@ def module_root(module, path):
 
 def install(target, module):
     owner, _, name = target.qualname.rpartition(".")
-    holder = getattr(module, owner) if owner else module
+    holder = module
+    if owner:
+        for part in owner.split("."):
+            holder = getattr(holder, part)
     raw = holder.__dict__.get(name) if owner else getattr(module, name, None)
-    if target.kind == "function" and callable(raw):
+    if target.kind in ("function", "instance") and callable(raw):
         setattr(holder, name, recording(target, raw, False))
     elif target.kind == "static" and isinstance(raw, staticmethod):
         setattr(holder, name, staticmethod(recording(target, raw.__func__, False)))

@@ -518,10 +518,11 @@ fn verification_gate(
                           "untrusted_test_changes": untrusted,
                           "inventory": {"state": "not_required"}});
     if let Some(candidate_ids) = candidate_ids {
-        // the baseline checked as itself, with nothing held out injected,
-        // lists exactly what the candidate's listing lists
-        let same =
-            (setup.candidate == setup.baseline && held_out.is_empty()).then_some(&candidate_ids);
+        // the baseline checked as itself (or an unchanged candidate), with
+        // nothing held out injected, lists what the candidate's listing lists
+        let same = ((setup.candidate == setup.baseline || setup.changed.is_empty())
+            && held_out.is_empty())
+        .then_some(&candidate_ids);
         let base_ids = baseline_inventory(store, setup, same, scratch);
         match (base_ids, candidate_ids) {
             (Ok(base), Ok(cand)) => {
@@ -553,6 +554,22 @@ fn verification_gate(
     gate
 }
 
+fn cached_baseline_inventory(
+    store: &Store,
+    contract: &Value,
+    baseline: &str,
+) -> std::result::Result<Option<BTreeSet<String>>, String> {
+    let ours = |r: &Value| {
+        r["contract_id"] == contract["contract_id"] && r["baseline"].as_str() == Some(baseline)
+    };
+    let kept = store.rows(BASELINE_INVENTORY)?.into_iter().rev().find(ours);
+    Ok(kept.as_ref().and_then(|r| r["ids"].as_array()).map(|ids| {
+        ids.iter()
+            .filter_map(|i| i.as_str().map(str::to_owned))
+            .collect()
+    }))
+}
+
 /// The baseline's test inventory. The baseline is fixed for a task and its
 /// workspace has nothing restored or injected, so its listing is taken once
 /// and kept in the store; `same` is a listing already taken of that very
@@ -565,16 +582,8 @@ fn baseline_inventory(
     scratch: &Scratch,
 ) -> std::result::Result<BTreeSet<String>, String> {
     let contract = setup.contract;
-    let ours = |r: &Value| {
-        r["contract_id"] == contract["contract_id"]
-            && r["baseline"].as_str() == Some(setup.baseline)
-    };
-    let kept = store.rows(BASELINE_INVENTORY)?.into_iter().rev().find(ours);
-    if let Some(ids) = kept.as_ref().and_then(|r| r["ids"].as_array()) {
-        return Ok(ids
-            .iter()
-            .filter_map(|i| i.as_str().map(str::to_owned))
-            .collect());
+    if let Some(ids) = cached_baseline_inventory(store, contract, setup.baseline)? {
+        return Ok(ids);
     }
     let ids = if let Some(listed) = same {
         listed.clone()?
@@ -1076,6 +1085,11 @@ fn run_checks(
     candidate_id: &str,
 ) -> Result<(BTreeMap<String, String>, Vec<Value>)> {
     let contract = setup.contract;
+    let prior = if candidate_id == setup.baseline {
+        store.rows("check_run").unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let mut statuses = BTreeMap::new();
     let mut runs = Vec::new();
     for (n, (id, def)) in contract["checks"]
@@ -1084,6 +1098,21 @@ fn run_checks(
         .flatten()
         .enumerate()
     {
+        let declares_evidence = def.get("evidence").is_some_and(|v| !v.is_null());
+        if candidate_id == setup.baseline && !declares_evidence {
+            let def_id = digest("check-definition", def);
+            if let Some(kept) = prior.iter().rev().find(|r| {
+                r["check_id"].as_str() == Some(id.as_str())
+                    && r["candidate_id"].as_str() == Some(candidate_id)
+                    && r["contract_id"] == contract["contract_id"]
+                    && r["check_definition_id"].as_str() == Some(def_id.as_str())
+                    && r["status"].as_str() == Some("passed")
+            }) {
+                statuses.insert(id.clone(), "passed".to_owned());
+                runs.push(kept.clone());
+                continue;
+            }
+        }
         // every check starts from the submitted tree, not from what an
         // earlier check left behind
         let dir = scratch.join(format!("run-{n}"));
@@ -1157,6 +1186,11 @@ fn run_verified(
         .unwrap_or_default();
     let candidate_ids = if vspec["inventory"].is_null() {
         None
+    } else if (subject.rev == subject.baseline || changed.is_empty())
+        && held_out.is_empty()
+        && let Ok(Some(kept)) = cached_baseline_inventory(store, contract, &subject.baseline)
+    {
+        Some(Ok(kept))
     } else {
         let dir = scratch.0.join("inventory");
         let mounts = setup.prepare(&dir)?;

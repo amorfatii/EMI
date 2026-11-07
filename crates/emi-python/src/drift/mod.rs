@@ -30,7 +30,7 @@ use crate::Result;
 use crate::sandbox::{Copy, Runner};
 
 pub const NOTE: &str = "inputs come from the test run on the base commit; drift on inputs the tests never pass is not seen";
-const LIMITS: &str = "Python only; module-level functions, static methods and class methods are replayed; instance methods, nested and async functions are counted, not replayed; pinned is not measured yet";
+const LIMITS: &str = "Python only; module-level functions, static methods, class methods and instance methods are replayed; nested and async functions are counted, not replayed; pinned is not measured yet";
 
 /// A tree the commands of one side run in; removed when dropped.
 pub trait Tree {
@@ -267,20 +267,14 @@ fn targets<S: Side>(
     for (id, (f, (kind, qualname))) in modified.iter().zip(kinds).enumerate() {
         let name = qualname.as_deref().unwrap_or(&f.name);
         let counter = match kind.as_str() {
-            "function" | "static" | "class" => None,
-            "instance" => Some(&mut report.counts.skipped_method),
+            "function" | "static" | "class" | "instance" => None,
             "nested" => Some(&mut report.counts.skipped_nested),
             "async" => Some(&mut report.counts.skipped_async),
             _ => Some(&mut report.counts.unresolved),
         };
         if let Some(n) = counter {
             *n += 1;
-            let reason = if kind == "instance" {
-                "instance_method"
-            } else {
-                &kind
-            };
-            report.skip(&f.file, name, reason);
+            report.skip(&f.file, name, &kind);
             if kind == "not_found" {
                 report.reasons.push(format!(
                     "{} {name}: no definition at line {} on the base side",

@@ -308,6 +308,8 @@ impl<'a> Session<'a> {
                 exit = exit_of(&whole, runner.timeout);
             }
             let report = read_report(&copy.dir, &rel);
+            let _ = std::fs::remove_file(copy.dir.join(&rel));
+            let _ = std::fs::remove_dir(copy.dir.join(WORK));
             if let Ok(r) = &report {
                 for id in batch {
                     if let Some(m) = r.message(id) {

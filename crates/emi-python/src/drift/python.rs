@@ -370,7 +370,7 @@ pub fn replay<S: Side>(
     let request = json!({
         "targets": items.iter().map(|r| json!({
             "id": r.target.id, "module": r.module, "root": r.root,
-            "qualname": r.target.qualname, "inputs": r.inputs,
+            "qualname": r.target.qualname, "kind": r.target.kind, "inputs": r.inputs,
         })).collect::<Vec<_>>(),
         "sys_path": s.sys_path,
         "call_timeout": s.call_timeout_s,
@@ -418,7 +418,7 @@ pub fn generate<S: Side>(
     let request = json!({
         "targets": items.iter().map(|r| json!({
             "id": r.target.id, "module": r.module, "root": r.root,
-            "qualname": r.target.qualname,
+            "qualname": r.target.qualname, "kind": r.target.kind,
         })).collect::<Vec<_>>(),
         "sys_path": sys_path,
         "examples": examples,

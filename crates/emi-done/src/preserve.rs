@@ -144,10 +144,16 @@ impl Preserved {
 }
 
 fn shown(v: &Value) -> String {
-    match (v.get("returned"), v.get("raised"), v.get("timeout")) {
-        (Some(r), _, _) => format!("returned {r}"),
-        (_, Some(e), _) => format!("raised {}", e.as_str().unwrap_or("?")),
-        (_, _, Some(t)) => format!("did not finish within {t} s"),
+    match (
+        v.get("returned"),
+        v.get("self"),
+        v.get("raised"),
+        v.get("timeout"),
+    ) {
+        (Some(r), Some(s), _, _) => format!("returned {r} (leaving self = {s})"),
+        (Some(r), None, _, _) => format!("returned {r}"),
+        (_, _, Some(e), _) => format!("raised {}", e.as_str().unwrap_or("?")),
+        (_, _, _, Some(t)) => format!("did not finish within {t} s"),
         _ => v.to_string(),
     }
 }

@@ -133,3 +133,35 @@ fn decorated_staticmethod_and_classmethod_are_compared_under_preserve() {
     assert_eq!(d["function"], "Calc.double", "{receipt}");
     assert_eq!(d["input"]["args"], serde_json::json!([0]), "{receipt}");
 }
+
+#[test]
+fn instance_methods_and_in_place_mutations_are_compared_under_preserve() {
+    let p = Project::new();
+    git(p.path(), &["switch", "-q", "main"]);
+    p.write(
+        "app.py",
+        "class Account:\n    def __init__(self, balance: int):\n        self.balance = balance\n\n    def deposit(self, amount: int) -> None:\n        if amount > 0:\n            self.balance += amount\n",
+    );
+    p.write(
+        "tests/test_app.py",
+        "from app import Account\n\ndef test_deposit():\n    acc = Account(10)\n    acc.deposit(5)\n    assert acc.balance == 15\n",
+    );
+    p.commit("instance method baseline");
+    git(p.path(), &["switch", "-q", "-C", "task"]);
+    // Candidate mutates self on negative amounts too, which the test never checks
+    p.write(
+        "app.py",
+        "class Account:\n    def __init__(self, balance: int):\n        self.balance = balance\n\n    def deposit(self, amount: int) -> None:\n        if amount != 0:\n            self.balance += amount\n",
+    );
+    let (code, receipt) = done(&p, &["--preserve"]);
+    assert_eq!(code, 3, "{receipt}");
+    let d = &receipt["preserve"]["divergences"][0];
+    assert_eq!(d["function"], "Account.deposit", "{receipt}");
+    assert!(d["now"].get("self").is_some(), "{receipt}");
+    assert!(
+        receipt["repair"][0].as_str().is_some_and(|r| r
+            .contains("app.py::Account.deposit answers differently")
+            && r.contains("leaving self =")),
+        "{receipt}"
+    );
+}

@@ -159,7 +159,7 @@ pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: 
     );
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
     if let Ok(store) = derived::open(&authority, repo, &baseline.sha, &spec) {
-        let _ = derived::baseline_checks_once(&store, &baseline.sha, &authority);
+        let _ = derived::baseline_checks_once_in(&store, view, &baseline.sha, &authority);
     }
 }
 
@@ -169,7 +169,7 @@ pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: 
 /// runs disagree on is quarantined, and the rest are compared with what
 /// either baseline run showed.
 fn compared(
-    (store, authority): (&crate::engine::Store, &Path),
+    (store, authority, view): (&crate::engine::Store, &Path, &Path),
     baseline: &Baseline,
     verified: &derived::Verified,
     pytest: bool,
@@ -177,7 +177,7 @@ fn compared(
 ) -> Result<Regression, String> {
     let check = verified.check.as_ref();
     let (base, unstable) = if pytest {
-        let runs = derived::baseline_checks_once(store, &baseline.sha, authority)?;
+        let runs = derived::baseline_checks_once_in(store, view, &baseline.sha, authority)?;
         let outcomes: Option<Vec<Outcomes>> = runs.iter().map(|r| Outcomes::of(Some(r))).collect();
         match outcomes.as_deref() {
             Some([one, two]) => (Some(one.merged(two)), one.unstable(two)),
@@ -241,7 +241,13 @@ fn try_measure(
     }
     let pytest = derived::is_pytest(&config.tests.command);
     let scope = oldtests::scope(entries);
-    let regression = compared((&store, &authority), baseline, &verified, pytest, &scope)?;
+    let regression = compared(
+        (&store, &authority, view),
+        baseline,
+        &verified,
+        pytest,
+        &scope,
+    )?;
     let second = Second {
         repo,
         view,

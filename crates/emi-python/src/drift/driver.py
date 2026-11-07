@@ -21,6 +21,7 @@ without an exact JSON encoding are counted and left out.
 """
 
 import ast
+import enum
 import importlib
 import json
 import math
@@ -28,8 +29,21 @@ import os
 import signal
 import sys
 import time
+import types
 
 TUPLE = "$tuple"
+OBJECT = "$object"
+ENUM = "$enum"
+RESERVED_TAGS = (TUPLE, OBJECT, ENUM)
+NON_VALUE_TYPES = (
+    type,
+    types.ModuleType,
+    types.FunctionType,
+    types.MethodType,
+    types.BuiltinFunctionType,
+    types.GeneratorType,
+    types.CoroutineType,
+)
 MAX_TEXT = 10_000
 INT_BOUND = 2**63
 REPLAYABLE = {"staticmethod": "static", "classmethod": "class"}
@@ -92,12 +106,30 @@ def classify(req):
     return {"targets": out}
 
 
+def _resolve_qualname(module_name, qualname):
+    obj = importlib.import_module(module_name)
+    for part in qualname.split("."):
+        if part:
+            obj = getattr(obj, part)
+    return obj
+
+
 def decode(data):
     if isinstance(data, list):
         return [decode(v) for v in data]
     if isinstance(data, dict):
         if list(data) == [TUPLE]:
             return tuple(decode(v) for v in data[TUPLE])
+        if list(data) == [ENUM]:
+            mod, qn, name = data[ENUM]
+            return getattr(_resolve_qualname(mod, qn), name)
+        if list(data) == [OBJECT]:
+            spec = data[OBJECT]
+            cls = _resolve_qualname(spec["module"], spec["qualname"])
+            obj = object.__new__(cls)
+            for k, v in spec["attrs"].items():
+                object.__setattr__(obj, k, decode(v))
+            return obj
         return {k: decode(v) for k, v in data.items()}
     return data
 
@@ -106,8 +138,55 @@ class Unencodable(Exception):
     pass
 
 
+def _valid_type_origin(kind):
+    module = getattr(kind, "__module__", None)
+    qualname = getattr(kind, "__qualname__", None)
+    return (
+        isinstance(module, str)
+        and module not in ("builtins", "__main__")
+        and isinstance(qualname, str)
+        and "<locals>" not in qualname
+    )
+
+
+def _encode_object(value, kind, depth):
+    if isinstance(value, NON_VALUE_TYPES) or getattr(kind, "__new__", None) is not object.__new__:
+        raise Unencodable()
+    if not _valid_type_origin(kind):
+        raise Unencodable()
+    attrs = {}
+    has_state = False
+    if hasattr(value, "__dict__"):
+        has_state = True
+        d = value.__dict__
+        if not all(type(k) is str for k in d):
+            raise Unencodable()
+        for k, v in d.items():
+            attrs[k] = encode(v, depth + 1)
+    for cls in kind.__mro__:
+        if "__slots__" in cls.__dict__:
+            has_state = True
+            slots = cls.__dict__["__slots__"]
+            if isinstance(slots, str):
+                slots = (slots,)
+            for s in slots:
+                if s in ("__dict__", "__weakref__"):
+                    continue
+                if hasattr(value, s):
+                    attrs[s] = encode(getattr(value, s), depth + 1)
+    if not has_state:
+        raise Unencodable()
+    return {
+        OBJECT: {
+            "module": kind.__module__,
+            "qualname": kind.__qualname__,
+            "attrs": attrs,
+        }
+    }
+
+
 def encode(value, depth=0):
-    """The recorder's encoding, applied to a return value."""
+    """The recorder's encoding, applied to a return value or instance state."""
     if depth > 20:
         raise Unencodable()
     kind = type(value)
@@ -121,9 +200,17 @@ def encode(value, depth=0):
         return [encode(v, depth + 1) for v in value]
     if kind is tuple:
         return {TUPLE: [encode(v, depth + 1) for v in value]}
-    if kind is dict and list(value) != [TUPLE] and all(type(k) is str for k in value):
+    if kind is dict:
+        if (len(value) == 1 and next(iter(value)) in RESERVED_TAGS) or not all(
+            type(k) is str for k in value
+        ):
+            raise Unencodable()
         return {k: encode(v, depth + 1) for k, v in value.items()}
-    raise Unencodable()
+    if isinstance(value, enum.Enum):
+        if _valid_type_origin(kind):
+            return {ENUM: [kind.__module__, kind.__qualname__, value.name]}
+        raise Unencodable()
+    return _encode_object(value, kind, depth)
 
 
 def type_name(cls):
@@ -142,27 +229,43 @@ def returned(value):
     return {"returned": data}
 
 
-def call(fn, data, seconds):
+def call(fn, data, seconds, kind="function"):
     signal.setitimer(signal.ITIMER_REAL, seconds)
     try:
-        value = fn(*decode(data["args"]), **decode(data["kwargs"]))
+        args = decode(data["args"])
+        kwargs = decode(data["kwargs"])
+        value = fn(*args, **kwargs)
     except CallTimeout:
         return {"timeout": seconds}
     except BaseException as e:
         return {"raised": type_name(type(e))}
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
-    return returned(value)
+    out = returned(value)
+    if "returned" in out and kind == "instance" and args:
+        try:
+            after = encode(args[0])
+            if after != data["args"][0]:
+                out["self"] = after
+                if len(json.dumps(out, allow_nan=False)) > MAX_TEXT:
+                    return {"unencodable_result": type_name(type(args[0]))}
+        except (Unencodable, RecursionError, ValueError):
+            return {"unencodable_result": type_name(type(args[0]))}
+    return out
 
 
-def resolve(t):
+def resolve_with_holder(t):
     module = importlib.import_module(t["module"])
     owner, _, name = t["qualname"].rpartition(".")
-    holder = getattr(module, owner) if owner else module
+    holder = _resolve_qualname(t["module"], owner) if owner else module
     fn = getattr(holder, name)
     if not callable(fn):
         raise TypeError(f"{t['qualname']} is not callable")
-    return fn
+    return fn, (holder if owner else None)
+
+
+def resolve(t):
+    return resolve_with_holder(t)[0]
 
 
 def replay_one(t, req, deadline):
@@ -170,11 +273,14 @@ def replay_one(t, req, deadline):
         fn = resolve(t)
     except BaseException as e:
         return {"import_error": f"{type_name(type(e))}: {e}"[:500]}
+    kind = t.get("kind", "function")
     outcomes = []
     for data in t["inputs"]:
         if time.monotonic() > deadline:
             break
-        outcomes.append([call(fn, data, req["call_timeout"]) for _ in range(req["repeat"])])
+        outcomes.append(
+            [call(fn, data, req["call_timeout"], kind) for _ in range(req["repeat"])]
+        )
     return {"outcomes": outcomes}
 
 
@@ -194,7 +300,30 @@ def replay(req):
     return {"results": results}
 
 
-def _strategy(fn):
+def _holder_strategy(holder, st, typing, inspect):
+    if (
+        holder is None
+        or not isinstance(holder, type)
+        or getattr(holder, "__new__", None) is not object.__new__
+    ):
+        return None
+    init = getattr(holder, "__init__", None)
+    if init is object.__init__:
+        return st.builds(holder)
+    try:
+        hints = typing.get_type_hints(init)
+        sig = inspect.signature(init)
+    except Exception:
+        return None
+    for idx, (pname, p) in enumerate(sig.parameters.items()):
+        if idx == 0 or p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            continue
+        if pname not in hints and p.default is p.empty:
+            return None
+    return st.builds(holder)
+
+
+def _strategy(fn, holder=None, kind="function"):
     """`(positional names, keyword-only names, strategy of a dict)`, or why
     the function's parameters cannot be generated."""
     import inspect
@@ -207,12 +336,18 @@ def _strategy(fn):
     except Exception as e:
         return f"its annotations cannot be read ({type_name(type(e))})"
     positional, keyword, fields = [], [], {}
-    for name, p in inspect.signature(fn).parameters.items():
+    for idx, (name, p) in enumerate(inspect.signature(fn).parameters.items()):
         if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
             continue
-        if name not in hints:
+        if name in hints:
+            fields[name] = st.from_type(hints[name])
+        elif idx == 0 and kind == "instance":
+            self_st = _holder_strategy(holder, st, typing, inspect)
+            if self_st is None:
+                return f"parameter {name} has no annotation"
+            fields[name] = self_st
+        else:
             return f"parameter {name} has no annotation"
-        fields[name] = st.from_type(hints[name])
         (keyword if p.kind == p.KEYWORD_ONLY else positional).append(name)
     return positional, keyword, st.fixed_dictionaries(fields)
 
@@ -223,8 +358,8 @@ def generate_one(t, req):
     except ImportError:
         return {"error": "Hypothesis is not installed in the test environment"}
     try:
-        fn = resolve(t)
-        made = _strategy(fn)
+        fn, holder = resolve_with_holder(t)
+        made = _strategy(fn, holder, t.get("kind", "function"))
     except BaseException as e:
         return {"error": f"{type_name(type(e))}: {e}"[:300]}
     if isinstance(made, str):

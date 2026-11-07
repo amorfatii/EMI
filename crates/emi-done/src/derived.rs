@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::engine::{Candidate, Store, contract, runner_config, verify};
+use crate::engine::{Store, contract, runner_config, verify};
 use emi_kernel::json::digest;
 use emi_kernel::pins::Pins;
 use serde_json::{Value, json};
@@ -324,6 +324,18 @@ pub const BASELINE_RUNS: usize = 2;
 /// of the same task; a contract revision (new dependencies) runs them again.
 pub fn baseline_checks(store: &Store, baseline: &str) -> Result<Vec<Value>, String> {
     let contract = store.contract()?;
+    let repo = Path::new(contract["repo"].as_str().unwrap_or(""));
+    let view = emi_git::CleanView::of(repo)?;
+    baseline_checks_in(store, view.path(), baseline)
+}
+
+/// [`baseline_checks`] reading from the caller's clean object view.
+pub fn baseline_checks_in(
+    store: &Store,
+    view: &Path,
+    baseline: &str,
+) -> Result<Vec<Value>, String> {
+    let contract = store.contract()?;
     let id = contract["contract_id"].as_str().unwrap_or("");
     // a run recorded by an older reader names its tests differently
     let kept = |store: &Store| -> Result<Vec<Value>, String> {
@@ -340,7 +352,7 @@ pub fn baseline_checks(store: &Store, baseline: &str) -> Result<Vec<Value>, Stri
     };
     let mut runs = kept(store)?;
     while runs.len() < BASELINE_RUNS {
-        let decision = verify(store, &Candidate::Ref(baseline.to_owned()))?;
+        let decision = verify::verify_in(store, view, baseline, baseline)?;
         if recorded_check(store, &decision, CHECK)?.is_none() {
             // the check did not run at all: running it again says no more
             return Ok(runs);
@@ -369,6 +381,24 @@ pub fn baseline_checks_once(
     lock.lock()
         .map_err(|e| format!("lock {}: {e}", path.display()))?;
     baseline_checks(store, baseline)
+}
+
+/// [`baseline_checks_once`] reading from the caller's clean object view.
+pub fn baseline_checks_once_in(
+    store: &Store,
+    view: &Path,
+    baseline: &str,
+    authority: &Path,
+) -> Result<Vec<Value>, String> {
+    let path = authority.join("baseline.lock");
+    let lock = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("lock {}: {e}", path.display()))?;
+    lock.lock()
+        .map_err(|e| format!("lock {}: {e}", path.display()))?;
+    baseline_checks_in(store, view, baseline)
 }
 
 fn recorded_check(store: &Store, decision: &Value, id: &str) -> Result<Option<Value>, String> {
