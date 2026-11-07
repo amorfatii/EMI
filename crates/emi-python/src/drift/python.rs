@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 use super::{Side, Tree};
 use crate::sandbox::tail;
 
-const DRIVER: &str = include_str!("driver.py");
-const RECORDER: &str = include_str!("recorder.py");
+pub(crate) const DRIVER: &str = include_str!("driver.py");
+pub(crate) const RECORDER: &str = include_str!("recorder.py");
 /// Inside a copy; a dot directory, so test discovery skips it.
 const WORK: &str = ".emi-drift";
 /// Distinct inputs kept per function across all test processes.

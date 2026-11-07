@@ -64,15 +64,15 @@ fn signal(kind: &str, meaning: &str, file: &str, (line, text): &(u32, String)) -
 }
 
 /// The signals in the lines the change from `baseline` to `rev` added to
-/// Python product files (not tests, not laws).
+/// Python product files (not tests, not laws), or why they could not be
+/// looked for.
 pub fn find(
     view: &Path,
     (baseline, rev): (&str, &str),
     is_test: impl Fn(&str) -> bool,
-) -> Vec<Value> {
-    let Ok(files) = emi_tree::hunks::changes(view, baseline, Some(rev)) else {
-        return Vec::new();
-    };
+) -> Result<Vec<Value>, String> {
+    let files = emi_tree::hunks::changes(view, baseline, Some(rev))
+        .map_err(|e| format!("the change's files could not be read: {e}"))?;
     let mut out = Vec::new();
     for f in files
         .iter()
@@ -94,14 +94,19 @@ pub fn find(
             }
         }
     }
-    out
+    Ok(out)
 }
 
-/// The receipt's limits line for the signals, when there are any.
-pub fn limits(signals: &[Value]) -> Vec<String> {
-    if signals.is_empty() {
-        return Vec::new();
-    }
+/// The receipt's limits line for the signals, when there are any or they
+/// could not be looked for.
+pub fn limits(signals: &Result<Vec<Value>, String>) -> Vec<String> {
+    let signals = match signals {
+        Ok(found) if found.is_empty() => return Vec::new(),
+        Ok(found) => found,
+        Err(why) => {
+            return vec![format!("Escape-hatch signals were not looked for: {why}.")];
+        }
+    };
     let first = &signals[0];
     vec![format!(
         "{} escape-hatch signal(s) in the change's product code, found by pattern and not acted \
@@ -153,6 +158,17 @@ mod tests {
             (4, "        return self.id == other.id".to_owned()),
         ];
         assert!(!always_equal(&real, 0));
+    }
+
+    #[test]
+    fn signals_that_could_not_be_looked_for_are_said_not_found() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let found = find(dir.path(), ("base", "rev"), |_| false);
+        assert!(found.is_err(), "{found:?}");
+        let lines = limits(&found);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Escape-hatch signals were not looked for"));
+        assert!(limits(&Ok(Vec::new())).is_empty());
     }
 
     #[test]

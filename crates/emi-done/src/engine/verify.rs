@@ -1085,11 +1085,6 @@ fn run_checks(
     candidate_id: &str,
 ) -> Result<(BTreeMap<String, String>, Vec<Value>)> {
     let contract = setup.contract;
-    let prior = if candidate_id == setup.baseline {
-        store.rows("check_run").unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     let mut statuses = BTreeMap::new();
     let mut runs = Vec::new();
     for (n, (id, def)) in contract["checks"]
@@ -1098,21 +1093,6 @@ fn run_checks(
         .flatten()
         .enumerate()
     {
-        let declares_evidence = def.get("evidence").is_some_and(|v| !v.is_null());
-        if candidate_id == setup.baseline && !declares_evidence {
-            let def_id = digest("check-definition", def);
-            if let Some(kept) = prior.iter().rev().find(|r| {
-                r["check_id"].as_str() == Some(id.as_str())
-                    && r["candidate_id"].as_str() == Some(candidate_id)
-                    && r["contract_id"] == contract["contract_id"]
-                    && r["check_definition_id"].as_str() == Some(def_id.as_str())
-                    && r["status"].as_str() == Some("passed")
-            }) {
-                statuses.insert(id.clone(), "passed".to_owned());
-                runs.push(kept.clone());
-                continue;
-            }
-        }
         // every check starts from the submitted tree, not from what an
         // earlier check left behind
         let dir = scratch.join(format!("run-{n}"));

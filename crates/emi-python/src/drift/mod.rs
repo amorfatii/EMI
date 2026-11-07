@@ -14,7 +14,7 @@
 //! checks'. Both go through a [`Side`].
 
 mod compare;
-mod python;
+pub(crate) mod python;
 
 use std::collections::BTreeMap;
 use std::path::Path;

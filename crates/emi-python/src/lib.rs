@@ -16,6 +16,7 @@ pub mod functions;
 pub mod mutate;
 pub mod mutation;
 pub mod pins;
+pub mod producer;
 pub mod proving;
 pub mod report;
 pub mod sandbox;

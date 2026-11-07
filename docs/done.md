@@ -172,7 +172,8 @@ of them (`not_verified`), with this run's under `this_run`.
 - **`signals`**: lines the change added to Python product code that match
   a known escape hatch (a checker suppression, `eval`/`exec`, test-runner
   sniffing, an `__eq__` that returns `True`). They are found by pattern,
-  labelled `assurance: pattern`, and never change the action.
+  labelled `assurance: pattern`, and never change the action. `null` when
+  they could not be looked for; `this_run` says why.
 - **`inputs`, `input_id`, `decision_id`, `policy`**: what the decision is a
   function of (`determinism.md`). `meta` says where it ran and is the only
   part a replay does not reproduce.

@@ -18,6 +18,9 @@ use emi_exec::{Outcome, Status};
 use crate::proving::junit::{self, Observed, RunExit};
 use crate::proving::pytest::{self, Command};
 
+/// The coverage plugin that names each test's context.
+pub(crate) const CONTEXTS: &str = include_str!("emi_proving_contexts.py");
+
 /// Reports larger than this are not read: a real one is a few kilobytes
 /// per hundred tests.
 const MAX_REPORT_BYTES: u64 = 64 << 20;
@@ -342,7 +345,7 @@ impl<'a> Session<'a> {
         write_new(&copy.dir.join(&rcfile), rc.as_bytes())?;
         write_new(
             &copy.dir.join("emi_proving_contexts.py"),
-            include_bytes!("emi_proving_contexts.py"),
+            CONTEXTS.as_bytes(),
         )?;
         let output = format!("{WORK}/coverage.json");
         let run = CoverageRun {

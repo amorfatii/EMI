@@ -169,11 +169,7 @@ impl Command {
     /// The tests' own Python running the reporter in place of `-m pytest`;
     /// the import path is the same (the current directory first).
     fn reporter(&self) -> Vec<String> {
-        vec![
-            self.interpreter.clone(),
-            "-c".to_owned(),
-            include_str!("emi_report.py").to_owned(),
-        ]
+        vec![self.interpreter.clone(), "-c".to_owned(), REPORT.to_owned()]
     }
 
     /// Run what the configured command runs, ending with one exact outcome
@@ -234,7 +230,9 @@ impl Command {
 }
 
 /// Pytest under coverage and the JSON report, in one interpreter.
-const COVERAGE_RUN: &str = include_str!("emi_coverage_run.py");
+pub(crate) const COVERAGE_RUN: &str = include_str!("emi_coverage_run.py");
+/// The reporter that prints one exact outcome line per test.
+pub(crate) const REPORT: &str = include_str!("emi_report.py");
 
 fn not_pytest(first: &str) -> String {
     format!(

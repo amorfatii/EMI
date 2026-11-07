@@ -89,8 +89,9 @@ pub struct Parts<'a> {
     pub preserved: Option<&'a crate::preserve::Preserved>,
     /// The mutants of the changed lines, when configured.
     pub adequacy: Option<&'a crate::adequacy::Adequacy>,
-    /// Escape-hatch signals (report only).
-    pub signals: &'a [Value],
+    /// Escape-hatch signals (report only); `None` when they could not be
+    /// looked for, which the limits say.
+    pub signals: Option<&'a [Value]>,
     pub on_unproven: OnUnproven,
     pub on_redundant: OnRedundant,
     pub on_survivors: OnUnproven,
@@ -160,21 +161,18 @@ fn failing_line(t: &crate::change::Failing) -> String {
     }
 }
 
+/// The changed functions no proving test executes, less those whose
+/// behaviour the person asked to keep and the comparison found unchanged:
+/// for those, a test that fails without the change cannot exist.
 fn unexercised(p: &Parts, change: &crate::change::Facts) -> Vec<String> {
-    let Some(preserved) = p.preserved else {
-        return change.unexercised.clone();
-    };
     change
         .unexercised
         .iter()
-        .filter(|entry| {
-            let head = entry.split(" (line ").next().unwrap_or(entry.as_str());
-            let Some((file, function)) = head.split_once(':') else {
-                return true;
-            };
-            !preserved.verified(file, function)
+        .filter(|f| {
+            p.preserved
+                .is_none_or(|kept| !kept.verified(&f.file, &f.function))
         })
-        .cloned()
+        .map(|f| f.label.clone())
         .collect()
 }
 
@@ -504,7 +502,7 @@ mod tests {
             laws: &laws,
             preserved: None,
             adequacy: None,
-            signals: &[],
+            signals: Some(&[]),
             on_survivors: OnUnproven::Report,
             inputs: json!({"test": true}),
             repo: Path::new("/r"),

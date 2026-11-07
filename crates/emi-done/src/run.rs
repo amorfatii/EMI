@@ -38,17 +38,15 @@ pub fn proving_request(
     req
 }
 
-/// The baseline listing kept per repository, keyed (inside) by the
-/// environment it was taken in. An environment that could not be
-/// identified keeps nothing: a listing from another one could be stale.
+/// What is kept per repository from baseline runs (listings, laws,
+/// recorded calls), keyed by the environment it was taken in and the EMI
+/// that took it. An environment that could not be identified keeps
+/// nothing: a result from another one could be stale.
 pub fn listing_cache(
     repo_dir: &Path,
     environment: Option<&str>,
 ) -> Option<emi_python::proving::ListingCache> {
-    environment.map(|e| emi_python::proving::ListingCache {
-        dir: repo_dir.join("listings"),
-        environment: e.to_owned(),
-    })
+    environment.map(|e| emi_python::proving::ListingCache::new(&repo_dir.join("listings"), e))
 }
 
 /// What a second look needs beside the regression it looks at again.
@@ -353,7 +351,8 @@ struct Beyond {
     laws: emi_python::proving::laws::LawEvidence,
     preserved: Option<crate::preserve::Preserved>,
     adequacy: Option<crate::adequacy::Adequacy>,
-    signals: Vec<serde_json::Value>,
+    /// The signals, or why they could not be looked for.
+    signals: Result<Vec<serde_json::Value>, String>,
 }
 
 fn beyond(
@@ -403,8 +402,16 @@ fn beyond(
                 fault: Some("laws measurement panicked".to_owned()),
                 ..Default::default()
             });
-        let preserved = preserved_h.join().unwrap_or(None);
-        let signals = signals_h.join().unwrap_or_default();
+        // a stage that panicked measured nothing: it is said, never read
+        // as "not asked for" or "nothing found"
+        let preserved = preserved_h.join().unwrap_or_else(|_| {
+            intent
+                .preserve
+                .then(|| crate::preserve::not_compared("the comparison panicked"))
+        });
+        let signals = signals_h
+            .join()
+            .unwrap_or_else(|_| Err("the search panicked".to_owned()));
         (change, laws, preserved, signals)
     });
     if let Some(p) = &mut preserved {
@@ -549,7 +556,7 @@ pub fn check(
         laws: &more.laws,
         preserved: more.preserved.as_ref(),
         adequacy: more.adequacy.as_ref(),
-        signals: &more.signals,
+        signals: more.signals.as_deref().ok(),
         on_unproven: config.on_unproven,
         on_redundant: config.on_redundant,
         on_survivors: config.adequacy.on_survivors,

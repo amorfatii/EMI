@@ -137,7 +137,6 @@ struct Classified {
     unknown: Vec<UnknownTest>,
     /// What the listing said of files only the candidate cannot collect.
     notes: Vec<String>,
-    candidate_tree: Option<Copy>,
     coverage: Option<(Copy, crate::proving::exec::Coverage)>,
 }
 
@@ -395,9 +394,7 @@ impl Context<'_> {
         if targets.added.is_empty() && targets.edited.is_empty() {
             return Ok(out);
         }
-        let mut out = self.classify_tests(s, &tree, &targets, out)?;
-        out.candidate_tree = Some(tree);
-        Ok(out)
+        self.classify_tests(s, &tree, &targets, out)
     }
 
     /// Run the tests against the baseline's product code, with the
@@ -624,13 +621,11 @@ impl Context<'_> {
         if c.proving.is_empty() {
             return c;
         }
-        let kept_tree = c.candidate_tree.take();
         let measured = changed.as_ref().map_err(Clone::clone).and_then(|changed| {
             let scope = self.scope(changed);
-            let tree = match kept_tree {
-                Some(tree) => tree,
-                None => s.tree("coverage", &self.cand)?,
-            };
+            // a fresh tree: the one the tests were classified in holds
+            // whatever they left behind
+            let tree = s.tree("coverage", &self.cand)?;
             let ids = c.proving.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
             let report = s.coverage(&tree, &ids, &self.coverage_sources(&scope))?;
             Ok((tree, report))

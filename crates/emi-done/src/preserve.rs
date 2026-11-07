@@ -282,10 +282,15 @@ pub fn measure(
     };
     match drift::measure(&req) {
         Ok(report) => read_report(&report, intent),
-        Err(why) => Preserved {
-            reasons: vec![format!("behaviour could not be compared: {why}")],
-            ..Preserved::default()
-        },
+        Err(why) => not_compared(&why),
+    }
+}
+
+/// The evidence when the behaviour could not be compared at all.
+pub fn not_compared(why: &str) -> Preserved {
+    Preserved {
+        reasons: vec![format!("behaviour could not be compared: {why}")],
+        ..Preserved::default()
     }
 }
 

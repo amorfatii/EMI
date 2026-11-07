@@ -44,7 +44,7 @@
 pub mod classify;
 mod contexts;
 pub mod evidence;
-mod exec;
+pub(crate) mod exec;
 pub mod junit;
 pub mod laws;
 mod measure;
@@ -53,7 +53,7 @@ mod proof;
 pub mod pytest;
 mod rerun;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use classify::BaselineResult;
@@ -133,6 +133,18 @@ pub struct ListingCache {
     pub dir: PathBuf,
     /// The installed environment's identity (interpreter and packages).
     pub environment: String,
+}
+
+impl ListingCache {
+    /// A cache under `root` for results taken in `environment`, kept apart
+    /// per [`crate::producer::producer`]: what EMI's own scripts produced
+    /// is not read by an EMI whose scripts differ.
+    pub fn new(root: &Path, environment: &str) -> Self {
+        Self {
+            dir: root.join(crate::producer::producer()),
+            environment: environment.to_owned(),
+        }
+    }
 }
 
 impl Request {

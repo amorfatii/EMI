@@ -264,7 +264,7 @@ fn unconfigured(
         laws: &laws,
         preserved: None,
         adequacy: None,
-        signals: &[],
+        signals: Some(&[]),
         repo,
         inputs: receipt::inputs(&receipt::Inputs {
             baseline,

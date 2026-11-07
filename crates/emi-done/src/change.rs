@@ -44,11 +44,20 @@ pub struct Facts {
     /// Tests the candidate adds that do not pass on it.
     pub failing: Vec<Failing>,
     pub redundant: Vec<Redundant>,
-    /// Changed functions no proving test executes, as `file:name (line n)`.
-    pub unexercised: Vec<String>,
+    /// Changed functions no proving test executes.
+    pub unexercised: Vec<Unexercised>,
     /// Tests offered as evidence that show nothing (see [`show_nothing`]):
     /// the redundant ones and the skipped ones.
     pub show_nothing: (Vec<Redundant>, Vec<String>),
+}
+
+/// A changed function no proving test executes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Unexercised {
+    pub file: String,
+    pub function: String,
+    /// How the receipt names it: `file:name (line n)`.
+    pub label: String,
 }
 
 /// Tests the candidate offers as evidence that cannot be any, when no test
@@ -161,7 +170,11 @@ impl ChangeEvidence {
             unexercised: list("functions")
                 .iter()
                 .filter(|f| f["status"] == "unexercised")
-                .map(function_name)
+                .map(|f| Unexercised {
+                    file: text(f, "file"),
+                    function: text(f, "function"),
+                    label: function_name(f),
+                })
                 .collect(),
         }
     }
@@ -266,7 +279,11 @@ mod tests {
                     id: "tests/t.py::test_extra".into(),
                     reason: String::new(),
                 }],
-                unexercised: vec!["src/a.py:g (line 20)".into()],
+                unexercised: vec![Unexercised {
+                    file: "src/a.py".into(),
+                    function: "g".into(),
+                    label: "src/a.py:g (line 20)".into(),
+                }],
                 show_nothing: (Vec::new(), Vec::new()),
             }
         );
