@@ -364,7 +364,14 @@ fn held_to(run: &Run) -> Result<LawEvidence, String> {
             evidence.not_measured.push(format!("{id}: {why}"));
         }
     }
-    evidence.checked = checked(run, &base, &evidence.laws)?;
+    // which functions the laws execute is measured apart from the laws'
+    // verdicts, which stand when it cannot be
+    match checked(run, &base, &evidence.laws) {
+        Ok(c) => evidence.checked = c,
+        Err(why) => evidence
+            .not_measured
+            .push(format!("which changed functions the laws execute: {why}")),
+    }
     Ok(evidence)
 }
 

@@ -48,7 +48,7 @@ The receipt (`emi-done-receipt-1.0`) names its inputs:
 - the laws' digest;
 - the intent (`preserve`);
 - the setting;
-- the version of EMI and of its decision rules (`policy`, `emi-policy-2`).
+- the version of EMI and of its decision rules (`policy`, `emi-policy-3`).
 
 From these come `input_id`. From everything in the receipt except where it
 ran (`meta`) comes `decision_id`. The decision itself is computed by

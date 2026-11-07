@@ -5,8 +5,8 @@
 //!
 //! | # | condition | action |
 //! |---|---|---|
-//! | 1 | a part could not be measured (an environment fault) | incomplete |
-//! | 2 | an old test or a law that held at the baseline fails, reproducibly | repair |
+//! | 1 | an old test or a law that held at the baseline fails, reproducibly | repair |
+//! | 2 | a part could not be measured (an environment fault) | incomplete |
 //! | 3 | a stable test's or law's outcome did not reproduce under the same pins | incomplete |
 //! | 4 | a failing added test, an open law still failing, a divergence or a new timeout under preserve intent, tests that show nothing, or a proposed law a stand-in survives | repair |
 //! | 5 | redundant tests, unexercised functions or surviving mutants, each when its policy says repair | repair |
@@ -14,8 +14,10 @@
 //! | 7 | surviving mutants when their policy says ask_person | ask_person |
 //! | 8 | otherwise | stop |
 //!
-//! Row 2 comes before row 3: a break that shows twice is established
-//! whatever else could not be reproduced.
+//! Row 1 comes before rows 2 and 3: a break that shows twice against a
+//! baseline that passed is established whatever else could not be measured
+//! or reproduced, and the proposer can act on it. Both rows block `stop`
+//! alike; once the break is repaired, the fault decides the next check.
 //!
 //! "Tests that show nothing" (row 4) are tests the proposer offers as
 //! evidence that cannot be any: a test that is skipped, or that passes on
@@ -25,7 +27,7 @@
 
 /// Any change to [`decide`] or to what [`Facts`] holds bumps this, so a
 /// receipt names the rules it was decided under.
-pub const POLICY: &str = "emi-policy-2";
+pub const POLICY: &str = "emi-policy-3";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
@@ -149,8 +151,8 @@ fn when(policy: OnFinding, count: usize, wanted: OnFinding) -> bool {
 pub fn decide(policy: &Policy, f: &Facts) -> Action {
     use OnFinding::{AskPerson, Repair};
     let rows: [(bool, Action); 7] = [
-        (!f.faults.is_empty(), Action::Incomplete),
         (f.regression_broken || f.laws_broken > 0, Action::Repair),
+        (!f.faults.is_empty(), Action::Incomplete),
         (f.nondeterministic > 0, Action::Incomplete),
         (
             f.failing_tests > 0
@@ -279,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reproduced_break_outranks_nondeterminism_but_not_a_fault() {
+    fn a_reproduced_break_outranks_nondeterminism_and_a_fault() {
         let p = Policy::default();
         let mut f = Facts {
             regression_broken: true,
@@ -287,7 +289,9 @@ mod tests {
             ..Facts::default()
         };
         assert_eq!(decide(&p, &f), Action::Repair);
-        f.faults.push("no sandbox".into());
+        f.faults.push("the laws could not be measured".into());
+        assert_eq!(decide(&p, &f), Action::Repair);
+        f.regression_broken = false;
         assert_eq!(decide(&p, &f), Action::Incomplete);
     }
 
@@ -312,7 +316,13 @@ mod tests {
                         "adding {name} to {f:?} under {p:?} gave stop"
                     );
                     if before == Action::Incomplete && !f.faults.is_empty() {
-                        assert_eq!(after, Action::Incomplete, "a fault stays decisive");
+                        let breaks = more.regression_broken || more.laws_broken > 0;
+                        let want = if breaks {
+                            Action::Repair
+                        } else {
+                            Action::Incomplete
+                        };
+                        assert_eq!(after, want, "a fault is decisive below a break");
                     }
                 }
             }

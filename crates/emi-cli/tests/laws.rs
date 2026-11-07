@@ -191,6 +191,33 @@ fn a_property_law_reports_its_falsifying_example() {
 }
 
 #[test]
+fn laws_measured_stand_when_what_they_execute_cannot_be() {
+    // the second law holds when run, and fails under the tracer coverage
+    // installs: which functions the laws execute cannot be measured
+    let p = with_laws(&[(
+        LAWS,
+        "import sys\n\nfrom app import add\n\n\ndef test_add_commutes():\n    assert add(2, 3) == add(3, 2)\n\n\ndef test_untraced():\n    assert sys.gettrace() is None\n",
+    )]);
+    p.write("app.py", "def add(a, b):\n    return b + a\n");
+    let (_, receipt) = p.done(&[]);
+    assert!(receipt["laws"]["fault"].is_null(), "{receipt}");
+    for name in ["test_add_commutes", "test_untraced"] {
+        assert_eq!(
+            law(&receipt, &format!("{LAWS}::{name}"))["status"],
+            "holds",
+            "{receipt}"
+        );
+    }
+    assert_ne!(receipt["action"], "incomplete", "{receipt}");
+    assert!(
+        receipt["not_verified"]
+            .to_string()
+            .contains("which changed functions the laws execute"),
+        "{receipt}"
+    );
+}
+
+#[test]
 fn without_laws_the_receipt_says_what_is_missing() {
     let p = Project::new();
     p.write("notes.txt", "x\n");
