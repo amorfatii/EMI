@@ -93,7 +93,7 @@ fn done_exits_with_the_action_and_prints_canonical_json() {
     assert!(held.status.success(), "{held:?}");
     assert!(
         held.stdout
-            .starts_with(br#"{"action":"stop","adequacy":null,"assurance":"#),
+            .starts_with(br#"{"action":"stop","adequacy":null,"ask":[],"assurance":"#),
         "{:?}",
         held.stdout
     );

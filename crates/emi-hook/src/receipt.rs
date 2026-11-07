@@ -105,6 +105,12 @@ fn parse(exit_action: Action, stdout: &str) -> Result<DoneResult, String> {
     let repair = string_list(&receipt["repair"]);
     let not_verified = string_list(&receipt["not_verified"]);
     let approve = unapproved_items(&receipt);
+    // receipts written before the field existed asked only for approvals
+    let ask = if receipt.get("ask").is_none() {
+        Some(Vec::new())
+    } else {
+        string_list(&receipt["ask"])
+    };
     let held = receipt["regression"]["status"].as_str() == Some("held");
     let checks = [
         (
@@ -139,9 +145,12 @@ fn parse(exit_action: Action, stdout: &str) -> Result<DoneResult, String> {
             named != Some(Action::Repair) || repair.as_ref().is_some_and(|r| !r.is_empty()),
             "the action is repair but there are no repair lines",
         ),
+        (ask.is_some(), "the ask list is not a list of strings"),
         (
-            named != Some(Action::AskPerson) || approve.as_ref().is_some_and(|a| !a.is_empty()),
-            "the action is ask_person but no changed old test awaits approval",
+            named != Some(Action::AskPerson)
+                || approve.as_ref().is_some_and(|a| !a.is_empty())
+                || ask.as_ref().is_some_and(|a| !a.is_empty()),
+            "the action is ask_person but it names nothing to approve or decide",
         ),
     ];
     if let Some((_, why)) = checks.iter().find(|(ok, _)| !ok) {
@@ -152,6 +161,7 @@ fn parse(exit_action: Action, stdout: &str) -> Result<DoneResult, String> {
         repair: repair.unwrap_or_default(),
         summary: render(&receipt, exit_action, &not_verified.unwrap_or_default()),
         approve: approve.unwrap_or_default(),
+        ask: ask.unwrap_or_default(),
         evidence: evidence(&receipt, exit_action),
     })
 }
@@ -419,6 +429,22 @@ mod tests {
                 .join("\n")
                 .contains("tests/b.py (deleted, approved)")
         );
+    }
+
+    #[test]
+    fn an_ask_person_receipt_may_name_a_decision_instead_of_an_approval() {
+        let mut v = receipt("ask_person");
+        v["ask"] = json!(["The checks ran without a sandbox: accept, or check it elsewhere."]);
+        let r = run(4, &v);
+        assert_eq!(r.action, Action::AskPerson);
+        assert!(r.approve.is_empty());
+        assert_eq!(
+            r.ask,
+            vec!["The checks ran without a sandbox: accept, or check it elsewhere."]
+        );
+        let mut wrong = receipt("ask_person");
+        wrong["ask"] = json!([1]);
+        assert_eq!(run(4, &wrong).action, Action::Incomplete);
     }
 
     #[test]

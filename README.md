@@ -11,7 +11,8 @@ environment. When the answer is no, the agent is sent back with what failed
 and, where there is one, the input that breaks it. **EMI reports a status; it
 never merges.**
 
-Python with pytest, on Linux. It needs bubblewrap, and pytest and coverage.py
+Python with pytest, on Linux. It needs bubblewrap (without it, a passing
+check goes to a person instead of letting the agent stop), and pytest and coverage.py
 (7.9 or newer) in the project's environment; Hypothesis for property laws
 and for generated inputs. Claude Code and OpenCode V2 adapters are included.
 
@@ -38,7 +39,7 @@ The action and the exit status:
 |---|---|---|
 | 0 | `stop` | The evidence in the receipt holds. Not a statement that the task is done. |
 | 3 | `repair` | Something the agent can fix, named with what to do. |
-| 4 | `ask_person` | A changed old test, runner configuration or law waits for a person's approval. |
+| 4 | `ask_person` | A changed old test, runner configuration or law waits for a person's approval, or the checks ran without a sandbox. |
 | 5 | `incomplete` | Something could not be measured, or did not reproduce. Never a pass. |
 | 2 | | Usage or configuration error. |
 

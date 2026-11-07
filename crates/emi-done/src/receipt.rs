@@ -192,7 +192,47 @@ fn facts(p: &Parts) -> decide::Facts {
         unapproved: p.old_tests.iter().filter(|e| !e.approved).count(),
         tests_show_nothing: change.show_nothing.0.len() + change.show_nothing.1.len(),
         vacuous_proposals: crate::laws::vacuous_proposals(p.laws).len(),
+        unsandboxed: unsandboxed(p),
     }
+}
+
+/// Whether the checks ran outside the sandbox the configuration asks for
+/// where it exists. Every run of a check asks for `best`, which a machine
+/// resolves once (bubblewrap if it can start, process groups if not), so
+/// the regression's isolation stands for all of them; an explicit
+/// `"isolation": "none"` is reported as `unsandboxed (...)`, not here.
+fn unsandboxed(p: &Parts) -> bool {
+    p.isolation == "process-group"
+}
+
+/// What a person has to decide, beyond the old tests and files awaiting
+/// approval (`changed_old_tests`), when the action is theirs: every reason
+/// that applies, since the person decides them together.
+fn ask_lines(p: &Parts) -> Vec<String> {
+    let change = p.change.facts();
+    let mut out = Vec::new();
+    if p.on_redundant == OnRedundant::AskPerson {
+        out.extend(itemize(&change.redundant, redundant_line));
+    }
+    if p.on_unproven == OnUnproven::AskPerson {
+        out.extend(itemize(&unexercised(p, &change), |f| {
+            format!("No proving test runs {f}: accept it as it is, or ask for a test that fails without the change.")
+        }));
+    }
+    if p.on_survivors == OnUnproven::AskPerson {
+        let lines = p
+            .adequacy
+            .map(crate::adequacy::repair_lines)
+            .unwrap_or_default();
+        out.extend(itemize(&lines, String::clone));
+    }
+    if unsandboxed(p) {
+        out.push(
+            "The checks ran without a sandbox: bubblewrap is not available on this machine, so what they show was not kept from the host. Accept the change as it is, or check it where bubblewrap runs."
+                .to_owned(),
+        );
+    }
+    out
 }
 
 /// The configured treatment of each finding.
@@ -345,6 +385,11 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
     } else {
         Vec::new()
     };
+    let ask: Vec<String> = if action == Action::AskPerson {
+        ask_lines(p)
+    } else {
+        Vec::new()
+    };
     let mut receipt = json!({
         "schema": SCHEMA,
         "policy": emi_kernel::decide::POLICY,
@@ -362,6 +407,7 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
         "signals": p.signals,
         "action": action.as_str(),
         "repair": repair,
+        "ask": ask,
         "not_verified": p.not_verified,
         "this_run": p.this_run,
     });

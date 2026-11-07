@@ -82,7 +82,13 @@ impl Project {
     }
 
     pub fn emi(&self, args: &[&str], input: Option<&Value>) -> Output {
+        self.emi_env(args, input, &[])
+    }
+
+    /// [`Project::emi`] with `env` set on top of the test's environment.
+    pub fn emi_env(&self, args: &[&str], input: Option<&Value>, env: &[(&str, &str)]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_emi"));
+        c.envs(env.iter().copied());
         c.args(args)
             .current_dir(self.path())
             .env("XDG_STATE_HOME", self.state.path())
@@ -107,9 +113,14 @@ impl Project {
     }
 
     pub fn done(&self, args: &[&str]) -> (i32, Value) {
+        self.done_env(args, &[])
+    }
+
+    /// [`Project::done`] with `env` set on top of the test's environment.
+    pub fn done_env(&self, args: &[&str], env: &[(&str, &str)]) -> (i32, Value) {
         let mut command = vec!["done", "--format", "json"];
         command.extend(args);
-        let out = self.emi(&command, None);
+        let out = self.emi_env(&command, None, env);
         let v =
             serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("receipt: {e}: {out:?}"));
         (out.status.code().expect("exit code"), v)

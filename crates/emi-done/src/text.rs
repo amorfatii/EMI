@@ -219,6 +219,7 @@ pub fn render_with(receipt: &Value, detail: Detail) -> String {
     lines.extend(
         strs(&receipt["repair"])
             .into_iter()
+            .chain(strs(&receipt["ask"]))
             .map(|r| format!("  {r}")),
     );
     if action == "incomplete" {
@@ -270,6 +271,18 @@ mod tests {
         assert!(!text.contains("a standing thing"), "{text}");
         let full = render_with(&receipt(), Detail::Full);
         assert!(full.contains("  - a standing thing") && full.contains("  - this run's thing"));
+    }
+
+    #[test]
+    fn what_a_person_decides_is_listed_under_the_action() {
+        let mut r = receipt();
+        r["action"] = json!("ask_person");
+        r["ask"] = json!(["The checks ran without a sandbox."]);
+        let text = render(&r);
+        assert!(
+            text.contains("Action: ask_person\n  The checks ran without a sandbox."),
+            "{text}"
+        );
     }
 
     #[test]

@@ -591,3 +591,47 @@ fn a_test_that_does_not_fail_without_the_change_is_stated_not_sent_back() {
         "{receipt}"
     );
 }
+
+/// A directory holding only `git`, from the test's own `PATH`: a machine
+/// where bubblewrap is not installed, as far as `emi` can tell.
+fn path_without_bubblewrap() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = std::env::var_os("PATH").expect("PATH");
+    let git = std::env::split_paths(&path)
+        .map(|d| d.join("git"))
+        .find(|g| g.is_file())
+        .expect("git on PATH");
+    std::os::unix::fs::symlink(git, dir.path().join("git")).expect("link git");
+    dir
+}
+
+#[test]
+fn without_bubblewrap_a_passing_change_goes_to_a_person() {
+    let p = Project::new();
+    p.write(
+        "app.py",
+        "def add(a, b):\n    if a is None:\n        return b\n    return a + b\n",
+    );
+    p.write(
+        "tests/test_new.py",
+        "from app import add\n\ndef test_none():\n    assert add(None, 2) == 2\n",
+    );
+    let bin = path_without_bubblewrap();
+    let path = bin.path().to_str().expect("utf-8 path");
+    let (code, receipt) = p.done_env(&[], &[("PATH", path)]);
+    assert_eq!(code, 4, "{receipt}");
+    assert_eq!(receipt["policy"], "emi-policy-4");
+    assert_eq!(
+        receipt["assurance"]["isolation"], "process-group",
+        "{receipt}"
+    );
+    assert_eq!(receipt["regression"]["status"], "held", "{receipt}");
+    let ask = receipt["ask"].to_string();
+    assert!(ask.contains("without a sandbox"), "{receipt}");
+    // the hook reads it as a decision for a person, not a broken receipt
+    let read = emi_hook::receipt::interpret(Some(code), &receipt.to_string(), "");
+    assert_eq!(read.action, emi_hook::decision::Action::AskPerson);
+    // where bubblewrap runs, the same change is the proposer's to finish
+    let (code, receipt) = p.done(&[]);
+    assert_eq!(code, 0, "{receipt}");
+}

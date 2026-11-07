@@ -174,6 +174,10 @@ of them (`not_verified`), with this run's under `this_run`.
   sniffing, an `__eq__` that returns `True`). They are found by pattern,
   labelled `assurance: pattern`, and never change the action. `null` when
   they could not be looked for; `this_run` says why.
+- **`ask`**: when the action is `ask_person`, what a person has to decide
+  beyond the items in `changed_old_tests`: redundant tests, unexercised
+  functions or surviving mutants whose policy is `ask_person`, and checks
+  that ran without a sandbox.
 - **`inputs`, `input_id`, `decision_id`, `policy`**: what the decision is a
   function of (`determinism.md`). `meta` says where it ran and is the only
   part a replay does not reproduce.
@@ -184,7 +188,7 @@ of them (`not_verified`), with this run's under `this_run`.
 |---|---|---|
 | 0 | `stop` | Regression held, no failing added test, no unapproved changed old test/runner configuration. It lets the proposer stop; it is not a statement that the task is done. |
 | 3 | `repair` | Something the proposer can fix; `repair` names every item of the first failing kind (up to five, then a count), each with what to do. |
-| 4 | `ask_person` | A changed old test or runner configuration file waits for an approval. |
+| 4 | `ask_person` | A changed old test or runner configuration file waits for an approval, or something else is a person's to decide; the receipt's `ask` lists it. One such case: the checks ran without a sandbox because bubblewrap is not available on this machine. A failure there still sends the change back; a pass is not the proposer's to accept. |
 | 5 | `incomplete` | EMI could not measure (no sandbox, no pytest, config absent at the baseline). Not a pass. An old test or law that held at the baseline and fails reproducibly is `repair` even then: the break is established whatever else could not be measured. |
 | 2 | | Usage or configuration error. |
 

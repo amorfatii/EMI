@@ -12,12 +12,20 @@
 //! | 5 | redundant tests, unexercised functions or surviving mutants, each when its policy says repair | repair |
 //! | 6 | an unapproved changed old test, runner configuration or law file | ask_person |
 //! | 7 | surviving mutants when their policy says ask_person | ask_person |
-//! | 8 | otherwise | stop |
+//! | 8 | the checks ran without the sandbox the configuration asks for where it exists | ask_person |
+//! | 9 | otherwise | stop |
 //!
 //! Row 1 comes before rows 2 and 3: a break that shows twice against a
 //! baseline that passed is established whatever else could not be measured
 //! or reproduced, and the proposer can act on it. Both rows block `stop`
 //! alike; once the break is repaired, the fault decides the next check.
+//!
+//! Row 8: under the default isolation (`best`), a machine without
+//! bubblewrap runs the checks in process groups. What they show was not
+//! kept from the host, so it is not the proposer's to accept: a failure
+//! is still a failure (rows 1 to 5 come first), a pass goes to a person.
+//! An explicit `"isolation": "none"` is the person's own opt-out and does
+//! not count here.
 //!
 //! "Tests that show nothing" (row 4) are tests the proposer offers as
 //! evidence that cannot be any: a test that is skipped, or that passes on
@@ -27,7 +35,7 @@
 
 /// Any change to [`decide`] or to what [`Facts`] holds bumps this, so a
 /// receipt names the rules it was decided under.
-pub const POLICY: &str = "emi-policy-3";
+pub const POLICY: &str = "emi-policy-4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
@@ -127,7 +135,9 @@ pub struct Facts {
     /// included.
     pub divergences: usize,
     pub redundant_tests: usize,
-    /// Changed functions no proving test executes.
+    /// Changed functions no proving test executes, less those whose
+    /// behaviour the person asked to keep and the comparison found
+    /// unchanged (no test can fail without such a change).
     pub unexercised_functions: usize,
     /// Mutants of the changed lines no law or proving test kills.
     pub survivors: usize,
@@ -141,6 +151,9 @@ pub struct Facts {
     /// replaces the code they check: the person would be asked to approve
     /// a law that pins nothing down.
     pub vacuous_proposals: usize,
+    /// The checks ran without the sandbox the configuration asks for where
+    /// it exists (`best` on a machine without bubblewrap).
+    pub unsandboxed: bool,
 }
 
 fn when(policy: OnFinding, count: usize, wanted: OnFinding) -> bool {
@@ -150,7 +163,7 @@ fn when(policy: OnFinding, count: usize, wanted: OnFinding) -> bool {
 /// Evaluated top to bottom; the first row that matches wins.
 pub fn decide(policy: &Policy, f: &Facts) -> Action {
     use OnFinding::{AskPerson, Repair};
-    let rows: [(bool, Action); 7] = [
+    let rows: [(bool, Action); 8] = [
         (f.regression_broken || f.laws_broken > 0, Action::Repair),
         (!f.faults.is_empty(), Action::Incomplete),
         (f.nondeterministic > 0, Action::Incomplete),
@@ -178,6 +191,7 @@ pub fn decide(policy: &Policy, f: &Facts) -> Action {
             when(policy.on_survivors, f.survivors, AskPerson),
             Action::AskPerson,
         ),
+        (f.unsandboxed, Action::AskPerson),
     ];
     rows.into_iter()
         .find(|(matches, _)| *matches)
@@ -205,6 +219,7 @@ mod tests {
         ("unapproved", |f| f.unapproved = 1),
         ("show nothing", |f| f.tests_show_nothing = 1),
         ("vacuous proposal", |f| f.vacuous_proposals = 1),
+        ("unsandboxed", |f| f.unsandboxed = true),
     ];
 
     const TREATMENTS: [OnFinding; 3] = [OnFinding::Report, OnFinding::Repair, OnFinding::AskPerson];
@@ -257,7 +272,9 @@ mod tests {
             Action::AskPerson,
             Action::Repair,
             Action::Repair,
+            Action::AskPerson,
         ];
+        assert_eq!(want.len(), FINDINGS.len());
         for ((name, edit), want) in FINDINGS.iter().zip(want) {
             let mut f = Facts::default();
             edit(&mut f);
@@ -331,7 +348,7 @@ mod tests {
 
     #[test]
     fn a_hard_finding_is_never_stop_whatever_the_policy() {
-        let hard = [0usize, 1, 2, 3, 4, 5, 6, 10, 11, 12];
+        let hard = [0usize, 1, 2, 3, 4, 5, 6, 10, 11, 12, 13];
         for p in policies() {
             for (bits, f) in all_facts() {
                 if hard.iter().any(|i| bits & (1 << i) != 0) {
@@ -339,6 +356,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_unsandboxed_pass_goes_to_a_person_and_a_failure_stays_a_failure() {
+        let p = Policy::default();
+        let mut f = Facts {
+            unsandboxed: true,
+            ..Facts::default()
+        };
+        assert_eq!(decide(&p, &f), Action::AskPerson);
+        f.failing_tests = 1;
+        assert_eq!(decide(&p, &f), Action::Repair);
     }
 
     #[test]

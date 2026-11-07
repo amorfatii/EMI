@@ -36,6 +36,8 @@ pub struct DoneResult {
     pub summary: Vec<String>,
     /// Review items only a person can approve.
     pub approve: Vec<String>,
+    /// What else a person has to decide (the receipt's `ask` lines).
+    pub ask: Vec<String>,
     /// What the receipt showed, in counts, for the journal; `null` when
     /// there was no receipt to read.
     pub evidence: serde_json::Value,
@@ -49,6 +51,7 @@ impl DoneResult {
             repair: Vec::new(),
             summary: vec![reason.into()],
             approve: Vec::new(),
+            ask: Vec::new(),
             evidence: serde_json::Value::Null,
         }
     }
@@ -148,11 +151,20 @@ fn indented(lines: &[String]) -> String {
 
 fn ask_message(done: &DoneResult, done_command: &str) -> String {
     let mut text = indented(&done.summary);
-    text.push_str("\nA person has to decide. To approve, run:\n  ");
-    text.push_str(done_command);
-    for item in &done.approve {
-        text.push_str(" --approve ");
-        text.push_str(&shlex::try_quote(item).map_or_else(|_| item.clone(), |q| q.into_owned()));
+    text.push_str("\nA person has to decide.");
+    for line in done.ask.iter().take(MAX_REPAIR_LINES) {
+        text.push_str("\n- ");
+        text.push_str(&clip(line));
+    }
+    if !done.approve.is_empty() {
+        text.push_str("\nTo approve, run:\n  ");
+        text.push_str(done_command);
+        for item in &done.approve {
+            text.push_str(" --approve ");
+            text.push_str(
+                &shlex::try_quote(item).map_or_else(|_| item.clone(), |q| q.into_owned()),
+            );
+        }
     }
     text
 }
@@ -245,8 +257,27 @@ mod tests {
             repair: vec!["tests/test_a.py::test_x fails".into()],
             summary: vec!["EMI receipt".into(), "Regression: held".into()],
             approve: vec!["old-test:tests/test_a.py".into()],
+            ask: Vec::new(),
             evidence: serde_json::Value::Null,
         }
+    }
+
+    #[test]
+    fn a_person_is_told_what_to_decide_and_shown_approve_only_with_items() {
+        let mut d = done(Action::AskPerson);
+        d.approve.clear();
+        d.ask = vec!["The checks ran without a sandbox.".into()];
+        let text = ask_message(&d, "emi done");
+        assert!(
+            text.contains("A person has to decide.\n- The checks ran without a sandbox."),
+            "{text}"
+        );
+        assert!(!text.contains("To approve"), "{text}");
+        let text = ask_message(&done(Action::AskPerson), "emi done");
+        assert!(
+            text.contains("To approve, run:\n  emi done --approve old-test:tests/test_a.py"),
+            "{text}"
+        );
     }
 
     fn input<'a>(content_id: &'a str) -> StopInput<'a> {
