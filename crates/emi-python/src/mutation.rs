@@ -119,10 +119,10 @@ fn baseline(plan: &Plan) -> Result<(Value, bool, Duration, String)> {
 }
 
 /// One mutant's verdict (errors preparing the copy count as errors).
-fn run_mutant(plan: &Plan, key: &FunctionKey, m: &Mutant, n: usize, timeout: Duration) -> Verdict {
+fn run_mutant(plan: &Plan, key: &FunctionKey, m: &Mutant, timeout: Duration) -> Verdict {
     let prepared = plan
         .runner
-        .copy(&format!("mutant-{n}"))
+        .copy("mutant")
         .and_then(|copy| write_mutant(&copy.dir, &key.0, m).map(|()| copy));
     match prepared {
         Ok(copy) => verdict(&plan.runner.run(&copy, plan.command, timeout)),
@@ -153,11 +153,9 @@ pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
     for t in targets {
         results.tallies.entry(t.key.clone()).or_default();
     }
-    let jobs: Vec<(&FunctionKey, &Mutant, usize)> = targets
+    let jobs: Vec<(&FunctionKey, &Mutant)> = targets
         .iter()
         .flat_map(|t| t.mutants.iter().map(move |m| (&t.key, m)))
-        .enumerate()
-        .map(|(i, (key, m))| (key, m, i + 1))
         .collect();
     let workers = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
@@ -166,7 +164,7 @@ pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
         let outcomes: Vec<(&FunctionKey, &Mutant, Verdict)> = std::thread::scope(|s| {
             let handles: Vec<_> = chunk
                 .iter()
-                .map(|&(key, m, n)| s.spawn(move || (key, m, run_mutant(plan, key, m, n, timeout))))
+                .map(|&(key, m)| s.spawn(move || (key, m, run_mutant(plan, key, m, timeout))))
                 .collect();
             handles
                 .into_iter()

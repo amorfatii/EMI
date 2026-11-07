@@ -569,7 +569,7 @@ fn run_stand_ins(
                 .map(|(i, (f_file, f_name, stand_in))| {
                     let n = chunk_idx * workers + i;
                     s.spawn(move || {
-                        let trial = run.laid(&format!("laws-standin-{n}"), base_ref, only_ref)?;
+                        let trial = run.laid("laws-standin", base_ref, only_ref)?;
                         std::fs::write(trial.dir.join(f_file), &stand_in.source)
                             .map_err(|e| e.to_string())?;
                         let seen =

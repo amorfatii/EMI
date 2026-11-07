@@ -59,11 +59,15 @@ impl Runner<'_> {
     /// that also holds a snapshot of the working tree). Dependency links
     /// and hidden paths still come from the runner's own repository.
     pub fn copy_of(&self, tag: &str, objects: &Path, rev: &str) -> Result<Copy> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let dir =
-            std::env::temp_dir().join(format!("emi-profile-{tag}-{}-{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "emi-profile-{tag}-{}-{nanos}-{seq}",
+            std::process::id()
+        ));
         let mut copy = Copy {
             dir,
             files: Vec::new(),

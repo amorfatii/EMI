@@ -232,7 +232,7 @@ fn pinned<S: Side>(r: &Request<S>, old_dir: &Path, new_dir: &Path, t: &Target) -
     else {
         return "unknown";
     };
-    let Ok(trial) = r.head_side.tree(&format!("drift-pin-{}", t.id)) else {
+    let Ok(trial) = r.head_side.tree("drift-pin") else {
         return "unknown";
     };
     if std::fs::write(trial.dir().join(&t.file), reverted).is_err() {

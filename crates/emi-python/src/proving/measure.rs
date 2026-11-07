@@ -804,7 +804,7 @@ impl Context<'_> {
                         old_start,
                         new_start,
                     )
-                    && let Ok(trial) = session.tree(&format!("strict-{idx}"), &self.cand)
+                    && let Ok(trial) = session.tree("strict", &self.cand)
                     && std::fs::write(trial.dir.join(&f.file), reverted).is_ok()
                 {
                     let seen = session.observe(&trial, proving, &format!("strict-{idx}"));

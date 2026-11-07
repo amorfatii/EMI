@@ -864,6 +864,7 @@ mod tests {
             ("emi-git-view-17-99", Some(17)),
             ("emi-diff-1029893-439168965-0", Some(1_029_893)),
             ("emi-profile-baseline-list-77-123", Some(77)),
+            ("emi-profile-laws-standin-77-123-0", Some(77)),
             ("emi-done-index-5-6-0", Some(5)),
             // not EMI's scratch, or not named the way it names scratch
             ("emi-audit-20261001", None),
