@@ -305,3 +305,12 @@ fn an_example_ends_where_a_native_traceback_starts() {
         "Failing test case: test_never_negative( x=-1, )"
     );
 }
+
+#[test]
+fn an_example_ends_where_a_traceback_starts_on_its_last_line() {
+    let text = "Failing test case: test_never_negative(\n    x=-1,\n)Traceback (most recent call last):\n  File \"runner.py\", line 344, in from_call";
+    assert_eq!(
+        counterexample("assert -1 >= 0", text),
+        "Failing test case: test_never_negative( x=-1, )"
+    );
+}

@@ -64,15 +64,22 @@ const TRACEBACK: &str = "Traceback (most recent call last)";
 /// Nothing in it depends on where the run happened, once the caller has
 /// taken the copy's path out: object addresses are masked.
 pub fn counterexample(message: &str, text: &str) -> String {
-    let falsifying: Vec<&str> = text
+    let falsifying: Vec<String> = text
         .lines()
         .skip_while(|l| {
             let l = l.trim_start();
             !EXAMPLE_HEADS.iter().any(|h| l.starts_with(h))
         })
+        .collect::<Vec<_>>()
+        .join("\n")
         // the example ends at a blank line, or where a traceback starts:
-        // Python's own style puts one straight after it
-        .take_while(|l| !l.trim().is_empty() && !l.trim_start().starts_with(TRACEBACK))
+        // Python's own style can follow it with one on the same line
+        .split(TRACEBACK)
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .take_while(|l| !l.trim().is_empty())
+        .map(str::to_owned)
         .collect();
     let point = if falsifying.is_empty() {
         message.trim().to_owned()
