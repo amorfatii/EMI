@@ -121,3 +121,23 @@ fn a_language_no_driver_knows_is_a_configuration_error() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("no driver for language \"cobol\""), "{err}");
 }
+
+#[test]
+fn a_rust_check_from_nothing_cached_reaches_the_same_decision() {
+    let repo = project();
+    write(
+        repo.path(),
+        "src/lib.rs",
+        &LIB.replace("    a + b\n", "    a + b + 1\n"),
+    );
+    let (first, second) = (
+        tempfile::tempdir().expect("state"),
+        tempfile::tempdir().expect("state"),
+    );
+    let (code, one) = done(repo.path(), first.path());
+    assert_eq!(code, 3, "{one}");
+    let (_, two) = done(repo.path(), second.path());
+    assert!(one["decision_id"].is_string(), "{one}");
+    assert_eq!(one["input_id"], two["input_id"], "{one}\n{two}");
+    assert_eq!(one["decision_id"], two["decision_id"], "{one}\n{two}");
+}

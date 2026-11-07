@@ -43,6 +43,59 @@ pub struct Report {
     cases: BTreeMap<(String, String), Vec<Kind>>,
     /// What a failing or erroring case said, shortened to its point.
     messages: BTreeMap<(String, String), String>,
+    /// The `emi_examples` properties each case carries, as written.
+    examples: BTreeMap<(String, String), Vec<String>>,
+}
+
+/// The JUnit property the pins plugin writes what Hypothesis ran into.
+const EXAMPLES_PROPERTY: &str = "emi_examples";
+
+/// Why Hypothesis stopped when it had tried every input.
+const EVERY_INPUT: &str = "nothing left to do";
+
+/// The `emi_examples` property values of `case`.
+fn examples_of(case: roxmltree::Node) -> Vec<String> {
+    case.children()
+        .filter(|c| c.has_tag_name("properties"))
+        .flat_map(|p| p.children())
+        .filter(|p| p.has_tag_name("property") && p.attribute("name") == Some(EXAMPLES_PROPERTY))
+        .map(|p| p.attribute("value").unwrap_or("").to_owned())
+        .collect()
+}
+
+/// Read what the pins plugin recorded for one test.
+fn parse_examples(text: &str) -> Result<emi_driver::Examples, String> {
+    let v: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| format!("its record of the inputs it ran is not JSON: {e}"))?;
+    let count = |key: &str| {
+        v[key]
+            .as_u64()
+            .ok_or_else(|| format!("its record of the inputs it ran has no count `{key}`"))
+    };
+    let stopped: Vec<&str> = v["stopped"]
+        .as_array()
+        .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let events = v["events"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, n)| {
+                    n.as_u64()
+                        .map(|n| (without_addresses(k), n))
+                        .ok_or_else(|| format!("the event {k:?} has no count"))
+                })
+                .collect::<Result<_, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(emi_driver::Examples {
+        valid: count("valid")?,
+        invalid: count("invalid")?,
+        failing: count("failing")?,
+        every_input: !stopped.is_empty() && stopped.iter().all(|s| *s == EVERY_INPUT),
+        events,
+    })
 }
 
 /// Longest counterexample kept for one test.
@@ -238,6 +291,14 @@ pub fn parse(xml: &str) -> Result<Report, String> {
         if let Some(message) = message_of(case) {
             report.messages.insert(key.clone(), message);
         }
+        let examples = examples_of(case);
+        if !examples.is_empty() {
+            report
+                .examples
+                .entry(key.clone())
+                .or_default()
+                .extend(examples);
+        }
         report.cases.entry(key).or_default().push(kind_of(case));
     }
     Ok(report)
@@ -264,6 +325,20 @@ impl Report {
 
     fn lookup(&self, key: &(String, String)) -> Option<&[Kind]> {
         self.cases.get(key).map(Vec::as_slice)
+    }
+
+    /// The inputs the test `id` ran on, when it draws them. A test that
+    /// recorded them more than once (twice in one run, or a project's own
+    /// plugin writing the same property) is not read: which is EMI's
+    /// record cannot be told.
+    pub fn examples(&self, id: &str) -> Option<Result<emi_driver::Examples, String>> {
+        match self.examples.get(&address(id))?.as_slice() {
+            [one] => Some(parse_examples(one)),
+            many => Some(Err(format!(
+                "the report records the inputs it ran {} times",
+                many.len()
+            ))),
+        }
     }
 
     /// What the failing or erroring test `id` said, if the report holds it.

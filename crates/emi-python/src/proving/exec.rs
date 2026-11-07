@@ -155,6 +155,16 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     file.write_all(bytes).map_err(|e| e.to_string())
 }
 
+/// What a run of chosen tests showed about each.
+pub struct Observation {
+    pub seen: BTreeMap<String, Observed>,
+    /// What each failing test said.
+    pub said: BTreeMap<String, String>,
+    /// The inputs each test that draws them ran on, or why that could not
+    /// be read.
+    pub examples: BTreeMap<String, Result<emi_driver::Examples, String>>,
+}
+
 impl<'a> Session<'a> {
     pub fn new(runner: Runner<'a>, objects: &'a Path, command: &'a Command) -> Session<'a> {
         Session {
@@ -270,7 +280,7 @@ impl<'a> Session<'a> {
             env: &env,
             ..self.runner
         };
-        self.observe_with(&runner, copy, ids, tag).0
+        self.observe_with(&runner, copy, ids, tag).seen
     }
 
     /// [`Session::observe`], with what each failing test said (its
@@ -281,18 +291,20 @@ impl<'a> Session<'a> {
         ids: &[String],
         tag: &str,
     ) -> (BTreeMap<String, Observed>, BTreeMap<String, String>) {
+        let o = self.observe_with(&self.runner, copy, ids, tag);
+        (o.seen, o.said)
+    }
+
+    /// [`Session::observe_explained`], with the inputs each test that
+    /// draws them ran on.
+    pub fn observe_all(&self, copy: &Copy, ids: &[String], tag: &str) -> Observation {
         self.observe_with(&self.runner, copy, ids, tag)
     }
 
-    fn observe_with(
-        &self,
-        runner: &Runner,
-        copy: &Copy,
-        ids: &[String],
-        tag: &str,
-    ) -> (BTreeMap<String, Observed>, BTreeMap<String, String>) {
+    fn observe_with(&self, runner: &Runner, copy: &Copy, ids: &[String], tag: &str) -> Observation {
         let mut seen = BTreeMap::new();
         let mut said = BTreeMap::new();
+        let mut examples = BTreeMap::new();
         let dir = copy.dir.to_string_lossy().into_owned();
         for (n, batch) in pytest::batches(ids).into_iter().enumerate() {
             let rel = format!("{WORK}/junit-{tag}-{n}.xml");
@@ -318,11 +330,18 @@ impl<'a> Session<'a> {
                     if let Some(m) = r.message(id) {
                         said.insert(id.clone(), m.replace(dir.as_str(), "<tree>"));
                     }
+                    if let Some(e) = r.examples(id) {
+                        examples.insert(id.clone(), e);
+                    }
                 }
             }
             seen.extend(junit::observe(&exit, report, batch));
         }
-        (seen, said)
+        Observation {
+            seen,
+            said,
+            examples,
+        }
     }
 
     /// Run exactly `ids` under coverage.py in `copy` and place its report

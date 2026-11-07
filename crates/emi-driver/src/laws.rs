@@ -17,6 +17,45 @@ pub struct Law {
     pub status: &'static str,
     /// What the failing law said: the falsifying example, or the failure.
     pub counterexample: Option<String>,
+    /// For a law that draws its inputs (a property, a state machine): the
+    /// inputs it ran on. None for a law with one fixed input.
+    pub examples: Option<Examples>,
+}
+
+/// The inputs a law that draws them ran on, in its candidate run. A
+/// property that held showed no counterexample among these, which is a
+/// proof only when they were every input it can draw (`every_input`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Examples {
+    /// Inputs the law ran on.
+    pub valid: u64,
+    /// Inputs its assumptions threw away.
+    pub invalid: u64,
+    /// Inputs that failed it.
+    pub failing: u64,
+    /// The generator stopped because nothing was left to try: the law ran
+    /// on every input it can draw.
+    pub every_input: bool,
+    /// How many inputs each label the law gave its inputs reached: which
+    /// cases the inputs reached, and which were never reached.
+    pub events: BTreeMap<String, u64>,
+}
+
+impl Examples {
+    pub fn to_json(&self) -> Value {
+        json!({"valid": self.valid, "invalid": self.invalid, "failing": self.failing,
+               "every_input": self.every_input, "events": self.events})
+    }
+
+    /// The inputs as the receipt words them: "every input (20)", or "100
+    /// sampled inputs".
+    pub fn words(&self) -> String {
+        if self.every_input {
+            format!("every input ({})", self.valid)
+        } else {
+            format!("{} sampled inputs", self.valid)
+        }
+    }
 }
 
 /// What a law the agent proposed would be worth.
@@ -65,7 +104,8 @@ impl LawEvidence {
     pub fn to_json(&self) -> Value {
         let law = |l: &Law| {
             json!({"id": l.id, "baseline": l.baseline, "candidate": l.candidate,
-                   "status": l.status, "counterexample": l.counterexample})
+                   "status": l.status, "counterexample": l.counterexample,
+                   "examples": l.examples.as_ref().map(Examples::to_json)})
         };
         json!({
             "laws": self.laws.iter().map(law).collect::<Vec<_>>(),

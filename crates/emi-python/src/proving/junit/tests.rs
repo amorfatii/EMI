@@ -314,3 +314,37 @@ fn an_example_ends_where_a_traceback_starts_on_its_last_line() {
         "Failing test case: test_never_negative( x=-1, )"
     );
 }
+
+fn with_property(values: &[&str]) -> String {
+    let props: String = values
+        .iter()
+        .map(|v| format!(r#"<property name="emi_examples" value="{v}" />"#))
+        .collect();
+    format!(
+        r#"<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0"><testcase classname="t" name="test_a"><properties>{props}</properties></testcase></testsuite></testsuites>"#
+    )
+}
+
+#[test]
+fn the_inputs_a_property_ran_on_are_read_from_its_report() {
+    let every = "{&quot;events&quot;: {&quot;neg at 0x7f3a&quot;: 3}, &quot;failing&quot;: 0, &quot;invalid&quot;: 2, &quot;stopped&quot;: [&quot;nothing left to do&quot;], &quot;valid&quot;: 20}";
+    let report = parse(&with_property(&[every])).expect("report");
+    let e = report.examples("t.py::test_a").expect("recorded").expect("read");
+    assert_eq!((e.valid, e.invalid, e.failing, e.every_input), (20, 2, 0, true));
+    assert_eq!(e.events.get("neg at 0x…"), Some(&3));
+
+    let sampled = every.replace("nothing left to do", "settings.max_examples=100");
+    let report = parse(&with_property(&[&sampled])).expect("report");
+    let e = report.examples("t.py::test_a").expect("recorded").expect("read");
+    assert!(!e.every_input);
+
+    // recorded twice, by EMI and by someone else: neither is read
+    let report = parse(&with_property(&[every, every])).expect("report");
+    assert!(report.examples("t.py::test_a").expect("recorded").is_err());
+    // missing a count: an error, never a zero
+    let report = parse(&with_property(&["{&quot;valid&quot;: 3}"])).expect("report");
+    assert!(report.examples("t.py::test_a").expect("recorded").is_err());
+    // a test that recorded nothing draws no inputs
+    let report = parse(&with_property(&[])).expect("report");
+    assert!(report.examples("t.py::test_a").is_none());
+}

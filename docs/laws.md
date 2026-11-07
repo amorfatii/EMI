@@ -62,6 +62,31 @@ test_never_negative( x=-1, )
 Hypothesis runs derandomized and with no example database, so the same
 code gives the same counterexample every time.
 
+**Which inputs a law held on.** A law that draws its inputs (a Hypothesis
+property or state machine) records, in its candidate run, the inputs it ran
+on: `examples.valid`, the inputs its assumptions threw away
+(`examples.invalid`), and the labels its `event()` calls gave, with how
+many inputs reached each (`examples.events`). When Hypothesis stopped
+because nothing was left to try, `examples.every_input` is true: the law
+ran on every input its strategies can draw, and holding is a proof over
+that space. Otherwise it held on a sample, and the receipt says so in
+`not_verified`:
+
+```
+2 law(s) hold on sampled inputs, not on every input: no counterexample
+among them is evidence, not a proof: .emi/laws/test_add.py::test_commutes
+(100 sampled inputs), ...
+```
+
+A law whose assumptions threw away more inputs than it ran on is named
+too: it was shown little. The summary line counts both kinds: `Laws: 3 of
+3 hold, 1 on every input, 2 on sampled inputs.` The counts come from the
+pins plugin, which reads Hypothesis's own statistics and writes them into
+the JUnit report as the test's `emi_examples` property; under the pins they
+are the same on every run, so they are part of the hashed receipt. A test
+whose report carries that property twice (a project plugin writing the
+same name) is not read, and the receipt says so.
+
 **Law-checked functions.** Each passing law runs once under per-test
 coverage. A changed function whose changed lines a passing law executes
 lists that law under `laws` in the receipt's `change.functions`. The
@@ -111,7 +136,9 @@ the actual guarantee, and the OpenCode adapter has no such hook.
 ## What laws do not establish
 
 - A law is a test: it holds on the inputs it runs, not on all inputs.
-  Hypothesis widens those inputs; it does not prove the property.
+  Hypothesis widens those inputs; it proves the property only when it ran
+  on every input its strategies can draw (`every_input`), and only over
+  that space.
 - Vacuity is checked only against the four stand-ins, and only for
   proposals. An approved law is taken as the person wrote it.
 - Without laws, what the change should do is shown only by the proposer's

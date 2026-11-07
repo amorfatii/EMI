@@ -27,7 +27,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::functions::{ChangeKind, ChangedFn, changed_functions};
-use crate::proving::exec::{Coverage, Session};
+use crate::proving::exec::{Coverage, Observation, Session};
 use crate::proving::junit::Observed;
 use crate::proving::overlay::place;
 use crate::proving::proof::{FnStatus, judge};
@@ -37,7 +37,7 @@ use crate::sandbox::{Copy, Runner};
 use crate::standins::stand_ins;
 use crate::syntax;
 
-pub use emi_driver::laws::{Law, LawEvidence, LawFiles, Proposal};
+pub use emi_driver::laws::{Examples, Law, LawEvidence, LawFiles, Proposal};
 
 fn shown(o: Option<&Observed>) -> &'static str {
     match o {
@@ -333,6 +333,7 @@ fn held_to(run: &Run, cache_path: Option<&Path>) -> Result<LawEvidence, String> 
             candidate: "not collected".to_owned(),
             status: "unmet",
             counterexample: Some(said.clone()),
+            examples: None,
         });
     }
     if cand_ids.is_empty() {
@@ -344,7 +345,8 @@ fn held_to(run: &Run, cache_path: Option<&Path>) -> Result<LawEvidence, String> 
             at_base.insert(id.clone(), Observed::Errored);
         }
     }
-    let (at_cand, said) = run.session.observe_explained(&cand, &cand_ids, "laws-cand");
+    let on_cand = run.session.observe_all(&cand, &cand_ids, "laws-cand");
+    let at_cand = &on_cand.seen;
     // a held law that fails is run once more, under the same pins
     let suspects: Vec<String> = cand_ids
         .iter()
@@ -362,21 +364,14 @@ fn held_to(run: &Run, cache_path: Option<&Path>) -> Result<LawEvidence, String> 
             .observe_confirming(&copy, &suspects, "laws-again")
     };
     for id in &cand_ids {
-        let unknown = Observed::Unknown("the run did not report the law".into());
-        let c = at_cand.get(id).unwrap_or(&unknown);
-        let s = status(at_base.get(id), c, again.get(id));
-        evidence.laws.push(Law {
-            id: id.clone(),
-            baseline: shown(at_base.get(id)).to_owned(),
-            candidate: shown(Some(c)).to_owned(),
-            status: s,
-            counterexample: matches!(s, "broken" | "unmet" | "nondeterministic")
-                .then(|| said.get(id).cloned())
-                .flatten(),
-        });
-        if let (Observed::Unknown(why), "unknown") = (c, s) {
-            evidence.not_measured.push(format!("{id}: {why}"));
-        }
+        let law = law_of(
+            id,
+            at_base.get(id),
+            &on_cand,
+            again.get(id),
+            &mut evidence.not_measured,
+        );
+        evidence.laws.push(law);
     }
     // which functions the laws execute is measured apart from the laws'
     // verdicts, which stand when it cannot be
@@ -387,6 +382,42 @@ fn held_to(run: &Run, cache_path: Option<&Path>) -> Result<LawEvidence, String> 
             .push(format!("which changed functions the laws execute: {why}")),
     }
     Ok(evidence)
+}
+
+/// What the law `id` showed, from its baseline outcome, its candidate
+/// run, and the second candidate run of a held law that failed. What could
+/// not be read is added to `not_measured`.
+fn law_of(
+    id: &str,
+    base: Option<&Observed>,
+    on_cand: &Observation,
+    again: Option<&Observed>,
+    not_measured: &mut Vec<String>,
+) -> Law {
+    let unknown = Observed::Unknown("the run did not report the law".into());
+    let c = on_cand.seen.get(id).unwrap_or(&unknown);
+    let s = status(base, c, again);
+    if let (Observed::Unknown(why), "unknown") = (c, s) {
+        not_measured.push(format!("{id}: {why}"));
+    }
+    let examples = match on_cand.examples.get(id) {
+        None => None,
+        Some(Ok(e)) => Some(e.clone()),
+        Some(Err(why)) => {
+            not_measured.push(format!("which inputs {id} ran on: {why}"));
+            None
+        }
+    };
+    Law {
+        id: id.to_owned(),
+        baseline: shown(base).to_owned(),
+        candidate: shown(Some(c)).to_owned(),
+        status: s,
+        counterexample: matches!(s, "broken" | "unmet" | "nondeterministic")
+            .then(|| on_cand.said.get(id).cloned())
+            .flatten(),
+        examples,
+    }
 }
 
 /// The directories coverage reports on: the repository and where the
@@ -511,7 +542,8 @@ fn propose(run: &Run, file: &str, p: &mut Proposal, budget: &mut usize) -> Resul
         .into_iter()
         .filter(|id| crate::proving::pytest::file_of(id) == file)
         .collect();
-    let (seen, said) = run.session.observe_explained(&copy, &ids, "proposal");
+    let on_copy = run.session.observe_all(&copy, &ids, "proposal");
+    let (seen, said) = (&on_copy.seen, &on_copy.said);
     let mut passing = Vec::new();
     for id in &ids {
         let o = seen
@@ -531,6 +563,7 @@ fn propose(run: &Run, file: &str, p: &mut Proposal, budget: &mut usize) -> Resul
                 "unmet"
             },
             counterexample: said.get(id).cloned(),
+            examples: on_copy.examples.get(id).and_then(|e| e.clone().ok()),
         });
     }
     if passing.is_empty() {

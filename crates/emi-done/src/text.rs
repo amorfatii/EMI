@@ -114,6 +114,23 @@ fn laws_line(laws: &Value) -> Option<String> {
             parts.push(format!("{n} {words}"));
         }
     }
+    let held = |l: &&Value| matches!(l["status"].as_str(), Some("holds" | "now_holds"));
+    let every = all
+        .iter()
+        .filter(held)
+        .filter(|l| l["examples"]["every_input"] == true)
+        .count();
+    let sampled = all
+        .iter()
+        .filter(held)
+        .filter(|l| l["examples"]["every_input"] == false)
+        .count();
+    if every > 0 {
+        parts.push(format!("{every} on every input"));
+    }
+    if sampled > 0 {
+        parts.push(format!("{sampled} on sampled inputs"));
+    }
     let checked = laws["checked_functions"].as_object().map_or(0, |m| m.len());
     if checked > 0 {
         parts.push(format!("{checked} changed function(s) law-checked"));
@@ -345,5 +362,17 @@ mod tests {
             )
         );
         assert_eq!(laws_line(&json!({"laws": []})), None);
+    }
+
+    #[test]
+    fn the_line_says_which_laws_held_on_every_input() {
+        let laws = json!({"laws": [
+            {"id": "a", "status": "holds", "examples": {"every_input": true}},
+            {"id": "b", "status": "holds", "examples": {"every_input": false}},
+            {"id": "c", "status": "holds", "examples": null}]});
+        assert_eq!(
+            laws_line(&laws).as_deref(),
+            Some("Laws: 3 of 3 hold, 1 on every input, 1 on sampled inputs.")
+        );
     }
 }

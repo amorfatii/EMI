@@ -98,6 +98,7 @@ pub fn limits(laws: &LawEvidence, dir: &str) -> Vec<String> {
         )];
     }
     let mut out = laws.not_measured.clone();
+    out.extend(sampled(laws));
     out.extend(laws.proposals.iter().filter(|p| !p.vacuous_for.is_empty()).map(|p| {
         format!(
             "The proposed law file {} still holds when {}: it does not pin that behaviour down.",
@@ -105,5 +106,59 @@ pub fn limits(laws: &LawEvidence, dir: &str) -> Vec<String> {
             p.vacuous_for.join("; ")
         )
     }));
+    out
+}
+
+/// Most laws named in one line.
+const NAMED: usize = 3;
+
+/// `ids` named, the rest counted.
+fn named(ids: &[String]) -> String {
+    let mut out = ids
+        .iter()
+        .take(NAMED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if ids.len() > NAMED {
+        out.push_str(&format!(" and {} more", ids.len() - NAMED));
+    }
+    out
+}
+
+/// What a law that holds on drawn inputs does not establish. Where its
+/// inputs were every one it can draw, it holds for all of them; where they
+/// were a sample, no counterexample among them is not a proof. A law whose
+/// assumptions threw away more inputs than it ran on was shown little.
+fn sampled(laws: &LawEvidence) -> Vec<String> {
+    let held = laws
+        .laws
+        .iter()
+        .filter(|l| matches!(l.status, "holds" | "now_holds"))
+        .filter_map(|l| l.examples.as_ref().map(|e| (l, e)));
+    let mut sample = Vec::new();
+    let mut out = Vec::new();
+    for (law, e) in held {
+        if !e.every_input {
+            sample.push(format!("{} ({})", law.id, e.words()));
+        }
+        if e.invalid > e.valid {
+            out.push(format!(
+                "{} ran on {} input(s) and its assumptions threw away {}: it was shown little.",
+                law.id, e.valid, e.invalid
+            ));
+        }
+    }
+    if !sample.is_empty() {
+        out.insert(
+            0,
+            format!(
+                "{} law(s) hold on sampled inputs, not on every input: no counterexample among \
+                 them is evidence, not a proof: {}.",
+                sample.len(),
+                named(&sample)
+            ),
+        );
+    }
     out
 }

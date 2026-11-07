@@ -134,6 +134,7 @@ mod tests {
                     candidate: "passed".into(),
                     status: "holds",
                     counterexample: None,
+                    examples: None,
                 },
                 emi_driver::Law {
                     id: ".emi/laws/l.py::y".into(),
@@ -141,6 +142,7 @@ mod tests {
                     candidate: "failed".into(),
                     status: "unmet",
                     counterexample: None,
+                    examples: None,
                 },
             ],
             ..LawEvidence::default()

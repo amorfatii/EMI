@@ -19,7 +19,7 @@ use serde_json::Value;
 
 pub mod laws;
 
-pub use laws::{Law, LawEvidence, LawFiles, Proposal};
+pub use laws::{Examples, Law, LawEvidence, LawFiles, Proposal};
 
 /// The file a test id belongs to. Every driver names a test
 /// `<file>::<name>`, the file repository-relative, so that a test is found

@@ -16,6 +16,12 @@ This plugin pins what can only be set inside the process:
   for a fixed number of test calls rather than until a clock runs out, so
   the counterexample does not depend on the machine's speed.
 
+For each Hypothesis test it also records what the run showed it: the
+inputs it ran on, the inputs its assumptions threw away, the labels its
+`event()` calls gave, and why Hypothesis stopped ("nothing left to do"
+when every input was tried). Pytest writes that into the JUnit report as
+the test's `emi_examples` property.
+
 A run that only confirms a failure (EMI_PIN_CONFIRM=1) does not shrink:
 generation is derandomized, so it reaches the same first failure, and
 whether it fails is all it is asked.
@@ -25,9 +31,12 @@ EMI_PIN_HYPOTHESIS) as the configuration says.
 """
 
 import hashlib
+import json
 import os
 import random
 import sys
+
+import pytest
 
 
 def _on(name):
@@ -131,6 +140,64 @@ def _pin(settings, item):
         return
     own = getattr(test, "_hypothesis_internal_use_settings", None) or settings.default
     test._hypothesis_internal_use_settings = _pinned(settings, own)
+
+
+#: Name of the JUnit property that carries what Hypothesis ran for a test.
+EXAMPLES_PROPERTY = "emi_examples"
+
+#: Events Hypothesis records itself; the reason an input was filtered out
+#: is already counted as an invalid example.
+_OWN_EVENTS = ("gave up because", "Retried draw", "Aborted test because")
+
+#: Most distinct event labels kept for one test.
+_MAX_EVENTS = 20
+
+
+def _examples(stats):
+    # What the property was shown: inputs it ran on (valid), inputs its
+    # assumptions threw away (invalid), inputs that failed it (failing),
+    # summed over the phases that look for inputs. Shrinking only revisits
+    # a failure and is not counted. Times are left out: they differ
+    # between runs, and these counts go into the receipt's hashed part.
+    counts = {"valid": 0, "invalid": 0, "failing": 0, "events": {}, "stopped": []}
+    for one in stats:
+        for phase in ("reuse-phase", "generate-phase", "target-phase"):
+            for case in one.get(phase, {}).get("test-cases", []):
+                status = case.get("status")
+                key = {"valid": "valid", "invalid": "invalid", "overrun": "invalid",
+                       "interesting": "failing"}.get(status)
+                if key:
+                    counts[key] += 1
+                for event in case.get("events", []):
+                    label = str(event)
+                    if label.startswith(_OWN_EVENTS):
+                        continue
+                    events = counts["events"]
+                    if label in events or len(events) < _MAX_EVENTS:
+                        events[label] = events.get(label, 0) + 1
+        counts["stopped"].append(str(one.get("stopped-because", "")))
+    return counts
+
+
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_runtest_call(item):
+    # Innermost, so Hypothesis's own plugin, which sets a collector of its
+    # own around the call, does not take the statistics first.
+    # A test that is not Hypothesis's reports nothing and gets nothing.
+    try:
+        from hypothesis.statistics import collector
+    except ImportError:
+        collector = None
+    if collector is None or not _on("EMI_PIN_HYPOTHESIS"):
+        yield
+        return
+    seen = []
+    with collector.with_value(seen.append):
+        yield
+    if seen:
+        item.user_properties.append(
+            (EXAMPLES_PROPERTY, json.dumps(_examples(seen), sort_keys=True))
+        )
 
 
 def pytest_runtest_setup(item):

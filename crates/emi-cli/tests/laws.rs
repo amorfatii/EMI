@@ -282,3 +282,87 @@ fn a_locked_laws_directory_refuses_the_agents_edits_as_they_are_made() {
         "product code is the agent's to edit"
     );
 }
+
+const PROPERTY_LAWS: &str = r#"from hypothesis import assume, event, given, strategies as st
+
+from app import add
+
+
+@given(st.integers(0, 9), st.booleans())
+def test_small(x, b):
+    assert add(x, int(b)) == x + int(b)
+
+
+@given(st.integers(), st.integers())
+def test_commutes(a, b):
+    event("negative" if a < 0 else "not negative")
+    assert add(a, b) == add(b, a)
+
+
+@given(st.integers())
+def test_multiples_of_three(x):
+    assume(x % 3 == 0)
+    assert add(x, 0) == x
+"#;
+
+#[test]
+fn a_property_law_says_which_inputs_it_held_on() {
+    let p = with_laws(&[(LAWS, PROPERTY_LAWS)]);
+    p.write(
+        "app.py",
+        "def add(a, b):\n    # the sum\n    return a + b\n",
+    );
+    let (code, receipt) = p.done(&[]);
+    assert_eq!(code, 0, "{receipt}");
+
+    // a space Hypothesis tried every input of: the law holds for all
+    let small = &law(&receipt, &format!("{LAWS}::test_small"))["examples"];
+    assert_eq!(small["every_input"], true, "{receipt}");
+    assert_eq!(small["valid"], 20, "{receipt}");
+
+    // a sample, and which cases its inputs reached
+    let commutes = &law(&receipt, &format!("{LAWS}::test_commutes"))["examples"];
+    assert_eq!(commutes["every_input"], false, "{receipt}");
+    assert_eq!(commutes["valid"], 100, "{receipt}");
+    let events = commutes["events"].as_object().expect("events");
+    assert!(
+        events.contains_key("negative") && events.contains_key("not negative"),
+        "{receipt}"
+    );
+
+    // what was not shown is said
+    let not_verified = receipt["not_verified"].to_string();
+    assert!(
+        not_verified.contains("hold on sampled inputs, not on every input"),
+        "{not_verified}"
+    );
+    assert!(!not_verified.contains("test_small ("), "{not_verified}");
+    assert!(
+        not_verified.contains("test_multiples_of_three ran on"),
+        "{not_verified}"
+    );
+
+    // from nothing cached, the same inputs and the same decision
+    clear(p.state.path());
+    let (_, again) = p.done(&[]);
+    assert!(receipt["decision_id"].is_string() && receipt["input_id"].is_string());
+    assert_eq!(again["input_id"], receipt["input_id"], "{receipt}\n{again}");
+    assert_eq!(
+        again["decision_id"], receipt["decision_id"],
+        "{receipt}\n{again}"
+    );
+    assert_eq!(again["laws"], receipt["laws"]);
+}
+
+/// Empty the state directory: no cache, no journal.
+fn clear(dir: &std::path::Path) {
+    for entry in std::fs::read_dir(dir).expect("state") {
+        let path = entry.expect("entry").path();
+        let gone = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        gone.expect("clear state");
+    }
+}
