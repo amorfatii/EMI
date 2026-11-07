@@ -218,6 +218,31 @@ fn laws_measured_stand_when_what_they_execute_cannot_be() {
 }
 
 #[test]
+fn measuring_the_same_broken_law_twice_gives_the_same_decision_id() {
+    // called through the module, pytest's message shows the function's
+    // repr, with its address in memory
+    let p = with_laws(&[(
+        LAWS,
+        "import app\n\n\ndef test_adds():\n    assert app.add(2, 3) == 5\n",
+    )]);
+    p.write("app.py", project::BROKEN);
+    let (code, first) = p.done(&[]);
+    assert_eq!(code, 3, "{first}");
+    let broken = law(&first, &format!("{LAWS}::test_adds"));
+    assert!(
+        broken["counterexample"]
+            .as_str()
+            .is_some_and(|c| c.contains("at 0x…")),
+        "{broken}"
+    );
+    let (_, second) = p.done(&[]);
+    assert_eq!(
+        first["decision_id"], second["decision_id"],
+        "{first}\n{second}"
+    );
+}
+
+#[test]
 fn without_laws_the_receipt_says_what_is_missing() {
     let p = Project::new();
     p.write("notes.txt", "x\n");

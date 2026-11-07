@@ -286,3 +286,13 @@ fn a_counterexample_is_the_falsifying_input_when_there_is_one() {
     let long = "x".repeat(700);
     assert!(counterexample(&long, "").ends_with(" …"));
 }
+
+#[test]
+fn a_counterexample_holds_no_object_address() {
+    let one = "assert False\n +  where False = <function Sorted at 0x7f049b7cc5e0>([2, 1])";
+    let two = "assert False\n +  where False = <function Sorted at 0x7f9ef9ce85e0>([2, 1])";
+    assert_eq!(counterexample(one, ""), counterexample(two, ""));
+    assert!(counterexample(one, "").contains("<function Sorted at 0x…>"));
+    // text that only looks like the start of an address is kept
+    assert_eq!(counterexample("seen at 0xg", ""), "seen at 0xg");
+}
