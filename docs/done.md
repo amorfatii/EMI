@@ -184,7 +184,7 @@ of them (`not_verified`), with this run's under `this_run`.
 | 0 | `stop` | Regression held, no failing added test, no unapproved changed old test/runner configuration. It lets the proposer stop; it is not a statement that the task is done. |
 | 3 | `repair` | Something the proposer can fix; `repair` names every item of the first failing kind (up to five, then a count), each with what to do. |
 | 4 | `ask_person` | A changed old test or runner configuration file waits for an approval. |
-| 5 | `incomplete` | EMI could not measure (no sandbox, no pytest, config absent at the baseline). Not a pass. |
+| 5 | `incomplete` | EMI could not measure (no sandbox, no pytest, config absent at the baseline). Not a pass. An old test or law that held at the baseline and fails reproducibly is `repair` even then: the break is established whatever else could not be measured. |
 | 2 | | Usage or configuration error. |
 
 "Stop" does not mean "correct": it means the evidence in the receipt holds.

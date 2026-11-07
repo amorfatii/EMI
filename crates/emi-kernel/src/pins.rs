@@ -37,6 +37,9 @@ impl Default for Pins {
 pub const PLUGIN: &str = "emi_pins";
 /// Where, relative to a run's working directory, the plugin is written.
 pub const PLUGIN_DIR: &str = ".emi-pins";
+/// Set to `1` on a run that only confirms a failure: the plugin then lets
+/// Hypothesis stop at its first failure instead of shrinking it.
+pub const CONFIRM_ENV: &str = "EMI_PIN_CONFIRM";
 
 fn flag(on: bool) -> String {
     if on { "1" } else { "0" }.to_owned()

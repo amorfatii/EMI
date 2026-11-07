@@ -56,18 +56,30 @@ const EXAMPLE_HEADS: [&str; 3] = [
     "Failing test case",
 ];
 
+/// The first line of a traceback in Python's own style.
+const TRACEBACK: &str = "Traceback (most recent call last)";
+
 /// The point of a failure: Hypothesis's falsifying example when there is
 /// one (the input that breaks the property), else the failure's message.
 /// Nothing in it depends on where the run happened, once the caller has
-/// taken the copy's path out.
+/// taken the copy's path out: object addresses are masked.
 pub fn counterexample(message: &str, text: &str) -> String {
-    let falsifying: Vec<&str> = text
+    let falsifying: Vec<String> = text
         .lines()
         .skip_while(|l| {
             let l = l.trim_start();
             !EXAMPLE_HEADS.iter().any(|h| l.starts_with(h))
         })
+        .collect::<Vec<_>>()
+        .join("\n")
+        // the example ends at a blank line, or where a traceback starts:
+        // Python's own style can follow it with one on the same line
+        .split(TRACEBACK)
+        .next()
+        .unwrap_or_default()
+        .lines()
         .take_while(|l| !l.trim().is_empty())
+        .map(str::to_owned)
         .collect();
     let point = if falsifying.is_empty() {
         message.trim().to_owned()
@@ -78,6 +90,7 @@ pub fn counterexample(message: &str, text: &str) -> String {
             .collect::<Vec<_>>()
             .join(" ")
     };
+    let point = without_addresses(&point);
     let mut out: String = point.chars().take(MAX_MESSAGE).collect();
     if point.chars().count() > MAX_MESSAGE {
         out.push_str(" …");
@@ -98,6 +111,27 @@ fn message_of(case: roxmltree::Node) -> Option<String> {
         bad.attribute("message").unwrap_or(""),
         &text,
     ))
+}
+
+/// `text` with each object address Python prints in a repr (`<function f
+/// at 0x7f3a...>`) replaced by `0x…`: an address differs from run to run,
+/// and the message goes into the receipt's hashed part.
+fn without_addresses(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(" at 0x") {
+        let start = at + " at 0x".len();
+        let hex = rest[start..]
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .unwrap_or(rest.len() - start);
+        out.push_str(&rest[..start]);
+        if hex > 0 {
+            out.push('…');
+        }
+        rest = &rest[start + hex..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The `(classname, name)` pytest writes for a node id: the path without

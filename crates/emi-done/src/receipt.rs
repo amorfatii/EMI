@@ -46,6 +46,9 @@ pub fn inputs(i: &Inputs) -> Value {
         "setting": i.setting.as_str(),
         "config": i.config.map(|c| emi_kernel::json::digest("emi-config", &c.to_value())),
         "pins": i.config.map(|c| c.pins.to_value()),
+        // the plugin applies the in-process pins; a change to it changes
+        // what a run draws, so it is an input like the pins themselves
+        "pins_plugin": i.config.map(|_| emi_kernel::json::digest("emi-pins-plugin", &json!(emi_python::pins::SOURCE))),
         "environment": i.environment.and_then(|e| e.as_ref().ok()),
         "laws": i.laws,
         "intent": i.intent,

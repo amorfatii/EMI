@@ -286,3 +286,31 @@ fn a_counterexample_is_the_falsifying_input_when_there_is_one() {
     let long = "x".repeat(700);
     assert!(counterexample(&long, "").ends_with(" …"));
 }
+
+#[test]
+fn a_counterexample_holds_no_object_address() {
+    let one = "assert False\n +  where False = <function Sorted at 0x7f049b7cc5e0>([2, 1])";
+    let two = "assert False\n +  where False = <function Sorted at 0x7f9ef9ce85e0>([2, 1])";
+    assert_eq!(counterexample(one, ""), counterexample(two, ""));
+    assert!(counterexample(one, "").contains("<function Sorted at 0x…>"));
+    // text that only looks like the start of an address is kept
+    assert_eq!(counterexample("seen at 0xg", ""), "seen at 0xg");
+}
+
+#[test]
+fn an_example_ends_where_a_native_traceback_starts() {
+    let text = "Failing test case: test_never_negative(\n    x=-1,\n)\nTraceback (most recent call last):\n  File \"runner.py\", line 344, in from_call\nAssertionError: assert -1 >= 0";
+    assert_eq!(
+        counterexample("assert -1 >= 0", text),
+        "Failing test case: test_never_negative( x=-1, )"
+    );
+}
+
+#[test]
+fn an_example_ends_where_a_traceback_starts_on_its_last_line() {
+    let text = "Failing test case: test_never_negative(\n    x=-1,\n)Traceback (most recent call last):\n  File \"runner.py\", line 344, in from_call";
+    assert_eq!(
+        counterexample("assert -1 >= 0", text),
+        "Failing test case: test_never_negative( x=-1, )"
+    );
+}

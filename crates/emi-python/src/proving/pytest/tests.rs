@@ -69,12 +69,13 @@ fn the_reporters_listing_is_exact_and_must_be_whole() {
 
 #[test]
 fn running_chosen_tests_drops_the_selectors_and_what_hides_failures() {
-    let c = command("python -m pytest -q -x --maxfail 2 -k fast tests/ tests/a.py::t");
+    // the project's traceback style gives way to Python's own
+    let c = command("python -m pytest -q -x --maxfail 2 --tb=long -k fast tests/ tests/a.py::t");
     let ids = argv("tests/test_a.py::test_new tests/test_a.py::test_p[1]");
     assert_eq!(
         c.run_argv(&ids, ".emi-proving/j.xml"),
         argv(
-            "python -m pytest -q -k fast --continue-on-collection-errors -p emi_pins \
+            "python -m pytest -q -k fast --continue-on-collection-errors --tb=native -p emi_pins \
              -p no:randomly -p no:cacheprovider --junitxml=.emi-proving/j.xml tests/test_a.py::test_new tests/test_a.py::test_p[1]"
         )
     );
@@ -83,7 +84,7 @@ fn running_chosen_tests_drops_the_selectors_and_what_hides_failures() {
     assert_eq!(
         c.run_argv(&[], "j.xml"),
         argv(
-            "pytest --ignore tests/slow -p xdist --continue-on-collection-errors \
+            "pytest --ignore tests/slow -p xdist --continue-on-collection-errors --tb=native \
              -p emi_pins -p no:randomly -p no:cacheprovider --junitxml=j.xml"
         )
     );
