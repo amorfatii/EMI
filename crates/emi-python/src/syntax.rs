@@ -8,6 +8,8 @@ use tree_sitter::{Node, Parser, Tree};
 pub struct Function {
     /// The name the definition gives (`def name`), without its class.
     pub name: String,
+    /// Enclosing class and function names, outermost first (`C`, `C.inner`).
+    pub scope: String,
     /// First line, decorators included.
     pub start: u32,
     pub end: u32,
@@ -66,6 +68,22 @@ fn outer(def: Node) -> Node {
         .unwrap_or(def)
 }
 
+/// Enclosing class and function names around `def`, outermost first.
+fn enclosing_scope(def: Node, src: &[u8]) -> String {
+    let mut names = Vec::new();
+    let mut cur = def.parent();
+    while let Some(p) = cur {
+        if matches!(p.kind(), "class_definition" | "function_definition")
+            && let Some(n) = p.child_by_field_name("name")
+        {
+            names.push(text(n, src));
+        }
+        cur = p.parent();
+    }
+    names.reverse();
+    names.join(".")
+}
+
 /// Every function definition in `src`, nested ones included, ordered by
 /// position. `None` when the file does not parse: its functions are
 /// unknown, not absent.
@@ -84,6 +102,7 @@ pub fn functions(src: &[u8]) -> Option<Vec<Function>> {
             let (start, end) = lines.span(outer(node));
             found.push(Function {
                 name: text(name, src),
+                scope: enclosing_scope(node, src),
                 start,
                 end,
                 body_start: lines.line(body.start_byte()),
@@ -109,11 +128,12 @@ mod tests {
         assert_eq!(
             (
                 fns[0].name.as_str(),
+                fns[0].scope.as_str(),
                 fns[0].start,
                 fns[0].end,
                 fns[0].body_start
             ),
-            ("f", 1, 6, 6)
+            ("f", "", 1, 6, 6)
         );
         assert_eq!((fns[1].start, fns[1].end, fns[1].body_start), (8, 8, 8));
         assert_eq!(&src[fns[1].body.0..fns[1].body.1], b"return 1");
@@ -122,12 +142,12 @@ mod tests {
     #[test]
     fn nested_definitions_are_their_own_functions() {
         let src = b"class A:\n    def m(self):\n        def inner():\n            pass\n        return inner\n";
-        let names: Vec<String> = functions(src)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| f.name)
+        let found = functions(src).unwrap_or_default();
+        let names: Vec<(&str, &str)> = found
+            .iter()
+            .map(|f| (f.scope.as_str(), f.name.as_str()))
             .collect();
-        assert_eq!(names, ["m", "inner"]);
+        assert_eq!(names, [("A", "m"), ("A.m", "inner")]);
     }
 
     #[test]

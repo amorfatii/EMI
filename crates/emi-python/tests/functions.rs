@@ -209,3 +209,24 @@ fn json_shape() {
     assert_eq!(v["functions"][0]["old"], serde_json::json!([5, 7]));
     assert_eq!(v["unparsed"], serde_json::json!([]));
 }
+
+#[test]
+fn same_named_methods_across_classes_stay_with_their_class() {
+    let r = repo("classes");
+    let before = "class A:\n    def run(self):\n        return 1\n\nclass B:\n    def run(self):\n        return 2\n";
+    let after = "class New:\n    def run(self):\n        return 0\n\nclass A:\n    def run(self):\n        return 1\n\nclass B:\n    def run(self):\n        return 22\n";
+    let (b, h) = two(&r, &[("m.py", before)], &[("m.py", after)]);
+    let got = run(&r, &b, &h);
+    let rows: Vec<_> = got
+        .functions
+        .iter()
+        .map(|f| (f.name.as_str(), f.kind, f.old, f.new))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("run", ChangeKind::Added, None, Some((2, 3))),
+            ("run", ChangeKind::Modified, Some((6, 7)), Some((10, 11))),
+        ]
+    );
+}

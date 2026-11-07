@@ -242,18 +242,27 @@ fn modified(report: &mut Report, repo: &Path) -> Result<Vec<ChangedFn>> {
     Ok(modified)
 }
 
+/// The Python interpreter the test commands name, or `"python3"`.
+fn command_python(commands: &[Vec<String>]) -> String {
+    commands
+        .first()
+        .and_then(|cmd| crate::proving::pytest::Command::parse(cmd).ok())
+        .map_or_else(|| "python3".to_owned(), |c| c.interpreter().to_owned())
+}
+
 /// The replayable targets; the rest are counted by kind.
 fn targets<S: Side>(
     report: &mut Report,
     side: &S,
     tree: &S::Tree,
+    python: &str,
     modified: &[ChangedFn],
 ) -> Result<Vec<Target>> {
     let asked: Vec<(String, String, u32)> = modified
         .iter()
         .map(|f| (f.file.clone(), f.name.clone(), f.old.map_or(0, |s| s.0)))
         .collect();
-    let kinds = python::classify(side, tree, &asked)?;
+    let kinds = python::classify(side, tree, python, &asked)?;
     let mut out = Vec::new();
     for (id, (f, (kind, qualname))) in modified.iter().zip(kinds).enumerate() {
         let name = qualname.as_deref().unwrap_or(&f.name);
@@ -308,7 +317,13 @@ pub fn measure<S: Side>(r: &Request<S>) -> Result<Value> {
         return Ok(report.finish());
     }
     let tree = r.base_side.tree("drift-harvest")?;
-    let found = targets(&mut report, r.base_side, &tree, &modified);
+    let found = targets(
+        &mut report,
+        r.base_side,
+        &tree,
+        &command_python(r.commands),
+        &modified,
+    );
     let targets = match found {
         Ok(t) if t.is_empty() => return Ok(report.finish()),
         Ok(t) => t,

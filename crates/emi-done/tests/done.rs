@@ -27,9 +27,14 @@ fn a_clean_change_holds_and_the_receipt_is_deterministic() {
         r["candidate"]["content_id"].as_str().map(str::len),
         Some(40)
     );
+    let expected_isolation = if emi_exec::bwrap_available() {
+        "sandboxed"
+    } else {
+        "process-group"
+    };
     assert_eq!(
         r["assurance"],
-        json!({"setting": "cooperative", "isolation": "sandboxed"})
+        json!({"setting": "cooperative", "isolation": expected_isolation})
     );
     assert_eq!(r["changed_old_tests"], json!([]));
     assert_eq!(r["change"]["status"], "unknown");

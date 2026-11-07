@@ -5,7 +5,9 @@
 //! linked directory; a verification whose directories no longer match
 //! cannot count its checks.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 
@@ -14,37 +16,143 @@ use crate::engine::contract::Result;
 /// What a linked path held when it was pinned, if it did not exist.
 const ABSENT: &str = "absent";
 
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct FileStamp {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mode: u32,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+
+#[cfg(unix)]
+fn stamp_if_settled(meta: &std::fs::Metadata) -> Option<FileStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())?;
+    let mtime = meta.mtime();
+    let ctime = meta.ctime();
+    // Only trust stat stamps for files that settled at least 2 seconds ago
+    // (Git's racy-clean rule), so sub-second in-place overwrites of equal
+    // byte length always read and hash the file contents.
+    if now.saturating_sub(mtime) < 2 || now.saturating_sub(ctime) < 2 {
+        return None;
+    }
+    Some(FileStamp {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        size: meta.len(),
+        mode: mode(meta),
+        mtime,
+        mtime_nsec: meta.mtime_nsec(),
+        ctime,
+        ctime_nsec: meta.ctime_nsec(),
+    })
+}
+
+#[cfg(unix)]
+fn digest_cache() -> &'static Mutex<HashMap<FileStamp, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<FileStamp, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn file_digest(path: &Path, meta: &std::fs::Metadata) -> Result<String> {
+    #[cfg(unix)]
+    let stamp = stamp_if_settled(meta);
+    #[cfg(unix)]
+    if let Some(s) = stamp
+        && let Ok(guard) = digest_cache().lock()
+        && let Some(cached) = guard.get(&s)
+    {
+        return Ok(cached.clone());
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let digest = emi_kernel::hash::sha256_hex(&bytes);
+    #[cfg(unix)]
+    if let Some(s) = stamp
+        && let Ok(mut guard) = digest_cache().lock()
+    {
+        guard.insert(s, digest.clone());
+    }
+    Ok(digest)
+}
+
+fn file_line((rel, path, meta): &(String, PathBuf, std::fs::Metadata)) -> Result<String> {
+    let digest = file_digest(path, meta)?;
+    Ok(format!("{rel}\0f {} {digest}\n", mode(meta)))
+}
+
 /// Digest of everything under `root` (not following links): every entry's
 /// relative path and kind, file contents and link targets.
 pub fn tree_digest(root: &Path) -> Result<String> {
     let mut lines = Vec::new();
-    walk(root, root, &mut lines)?;
+    let mut files = Vec::new();
+    walk(root, root, &mut lines, &mut files)?;
+    if files.len() <= 32 {
+        for item in &files {
+            lines.push(file_line(item)?);
+        }
+    } else {
+        let workers = std::thread::available_parallelism()
+            .map_or(4, std::num::NonZeroUsize::get)
+            .min(files.len());
+        let chunk_size = files.len().div_ceil(workers);
+        let chunks: Vec<Result<Vec<String>>> = std::thread::scope(|s| {
+            let handles: Vec<_> = files
+                .chunks(chunk_size)
+                .map(|chunk| s.spawn(move || chunk.iter().map(file_line).collect()))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("file digest worker panicked".to_owned()))
+                })
+                .collect()
+        });
+        for chunk in chunks {
+            lines.extend(chunk?);
+        }
+    }
     lines.sort();
     Ok(emi_kernel::hash::sha256_hex(lines.concat().as_bytes()))
 }
 
-fn walk(root: &Path, dir: &Path, lines: &mut Vec<String>) -> Result<()> {
+fn walk(
+    root: &Path,
+    dir: &Path,
+    lines: &mut Vec<String>,
+    files: &mut Vec<(String, PathBuf, std::fs::Metadata)>,
+) -> Result<()> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for entry in entries {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
         let meta = path
             .symlink_metadata()
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
-        let value = if meta.file_type().is_symlink() {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        if meta.file_type().is_symlink() {
             let target =
                 std::fs::read_link(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            format!("l {}", target.to_string_lossy())
+            lines.push(format!("{rel}\0l {}\n", target.to_string_lossy()));
         } else if meta.is_dir() {
-            walk(root, &path, lines)?;
-            "d".to_owned()
+            walk(root, &path, lines, files)?;
+            lines.push(format!("{rel}\0d\n"));
         } else if meta.is_file() {
-            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            format!("f {} {}", mode(&meta), emi_kernel::hash::sha256_hex(&bytes))
+            files.push((rel, path, meta));
         } else {
-            "o".to_owned()
-        };
-        lines.push(format!("{rel}\0{value}\n"));
+            lines.push(format!("{rel}\0o\n"));
+        }
     }
     Ok(())
 }

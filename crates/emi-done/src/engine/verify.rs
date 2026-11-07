@@ -335,10 +335,14 @@ fn files_matching(repo: &Path, rev: &str, globs: &[String]) -> Result<Vec<String
         .collect())
 }
 
-/// Whether the contract accepts only sandboxed runs (anything but an
-/// explicit `"isolation": "none"`).
+/// Whether the contract accepts only sandboxed runs: `"isolation": "bwrap"`,
+/// or `"best"` when bubblewrap is available on this machine.
 fn sandbox_required(execution: &Value) -> bool {
-    execution["isolation"].as_str() != Some("none")
+    match execution["isolation"].as_str() {
+        Some("none") => false,
+        Some("bwrap") => true,
+        _ => emi_exec::bwrap_available(),
+    }
 }
 
 /// Test ids the inventory command lists in `workspace`, or why it could not.
@@ -1051,13 +1055,16 @@ fn assurance(reasons: &[Reason], isolation: &str) -> Value {
     json!({"structural": structural, "catch_kind": catch_kind, "isolation": isolation})
 }
 
-/// What the checks' results are worth: sandboxed runs, or an explicit
-/// opt-out of isolation (weaker: the candidate could reach the host).
+/// What the checks' results are worth: sandboxed runs, process-group
+/// isolation when bubblewrap is unavailable under `"best"`, or an explicit
+/// opt-out of isolation.
 fn isolation_of(contract: &Value) -> &'static str {
     if sandbox_required(&contract["execution"]) {
         "sandboxed"
-    } else {
+    } else if contract["execution"]["isolation"].as_str() == Some("none") {
         "unsandboxed (execution.isolation = none)"
+    } else {
+        "process-group"
     }
 }
 
@@ -1207,28 +1214,21 @@ fn candidate_rev(
     }
 }
 
-/// Verify a candidate: run every frozen check, compute the gates, reduce,
-/// and record the evidence.
-pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
+/// Verify a candidate whose content is already at `rev` in `view`.
+pub fn verify_in(store: &Store, view: &Path, candidate_id: &str, rev: &str) -> Result<Value> {
     let contract = store.contract()?;
     let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
     let baseline = contract["baseline"]["sha"]
         .as_str()
         .unwrap_or("")
         .to_owned();
-    let candidate_id = match candidate {
-        Candidate::Ref(r) => snapshot::resolve_ref(&repo, r)?,
-        Candidate::Worktree => WORKTREE.to_owned(),
-    };
-    let view = emi_git::CleanView::of(&repo)?;
-    let rev = candidate_rev(&repo, view.path(), candidate, &candidate_id)?;
     let subject = Subject {
-        objects: view.path().to_path_buf(),
+        objects: view.to_path_buf(),
         repo,
         authority: store.dir.parent().unwrap_or(&store.dir).to_path_buf(),
         baseline,
-        rev,
-        candidate_id: candidate_id.clone(),
+        rev: rev.to_owned(),
+        candidate_id: candidate_id.to_owned(),
     };
     let eval = evaluate(store, &contract, &subject)?;
     let g = &eval.gates;
@@ -1250,4 +1250,18 @@ pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
     }
     store.append("decision", &d)?;
     Ok(d)
+}
+
+/// Verify a candidate: run every frozen check, compute the gates, reduce,
+/// and record the evidence.
+pub fn verify(store: &Store, candidate: &Candidate) -> Result<Value> {
+    let contract = store.contract()?;
+    let repo = PathBuf::from(contract["repo"]["path"].as_str().unwrap_or("."));
+    let candidate_id = match candidate {
+        Candidate::Ref(r) => snapshot::resolve_ref(&repo, r)?,
+        Candidate::Worktree => WORKTREE.to_owned(),
+    };
+    let view = emi_git::CleanView::of(&repo)?;
+    let rev = candidate_rev(&repo, view.path(), candidate, &candidate_id)?;
+    verify_in(store, view.path(), &candidate_id, &rev)
 }

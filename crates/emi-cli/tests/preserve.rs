@@ -108,3 +108,28 @@ fn the_recorded_intent_applies_until_cleared() {
     assert_eq!(code, 0, "{receipt}");
     assert!(receipt["preserve"].is_null());
 }
+
+#[test]
+fn decorated_staticmethod_and_classmethod_are_compared_under_preserve() {
+    let p = Project::new();
+    git(p.path(), &["switch", "-q", "main"]);
+    p.write(
+        "app.py",
+        "class Calc:\n    @staticmethod\n    def double(n: int) -> int:\n        return n * 2\n",
+    );
+    p.write(
+        "tests/test_app.py",
+        "from app import Calc\n\ndef test_double():\n    assert Calc.double(3) == 6\n",
+    );
+    p.commit("staticmethod baseline");
+    git(p.path(), &["switch", "-q", "-C", "task"]);
+    p.write(
+        "app.py",
+        "class Calc:\n    @staticmethod\n    def double(n: int) -> int:\n        return n + n if n != 0 else 1\n",
+    );
+    let (code, receipt) = done(&p, &["--preserve"]);
+    assert_eq!(code, 3, "{receipt}");
+    let d = &receipt["preserve"]["divergences"][0];
+    assert_eq!(d["function"], "Calc.double", "{receipt}");
+    assert_eq!(d["input"]["args"], serde_json::json!([0]), "{receipt}");
+}

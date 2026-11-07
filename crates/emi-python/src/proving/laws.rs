@@ -418,7 +418,10 @@ fn checked(run: &Run, base: &Copy, laws: &[Law]) -> Result<BTreeMap<String, Vec<
             }
         }
         if !by.is_empty() {
-            out.insert(format!("{}::{}", f.file, f.name), by);
+            let entry = out.entry(format!("{}::{}", f.file, f.name)).or_default();
+            entry.extend(by);
+            entry.sort();
+            entry.dedup();
         }
     }
     Ok(out)

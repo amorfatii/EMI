@@ -195,14 +195,16 @@ fn lines_in(lines: &[(u32, String)], (start, end): (u32, u32)) -> Vec<u32> {
         .collect()
 }
 
-/// Functions keyed by name and the occurrence of that name in the file, so
-/// overloads and same-named nested functions pair up in source order.
-fn keyed(fns: &[Function]) -> BTreeMap<(&str, usize), &Function> {
-    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+/// Functions keyed by enclosing scope, name, and the occurrence of that
+/// `(scope, name)` in the file, so overloads pair up in source order while
+/// methods of different classes stay separate.
+fn keyed(fns: &[Function]) -> BTreeMap<(&str, &str, usize), &Function> {
+    let mut seen: BTreeMap<(&str, &str), usize> = BTreeMap::new();
     let mut out = BTreeMap::new();
     for f in fns {
-        let n = seen.entry(f.name.as_str()).or_default();
-        out.insert((f.name.as_str(), *n), f);
+        let pair = (f.scope.as_str(), f.name.as_str());
+        let n = seen.entry(pair).or_default();
+        out.insert((pair.0, pair.1, *n), f);
         *n += 1;
     }
     out
@@ -226,7 +228,7 @@ fn classify(file: &FileChange, old: &[Function], new: &[Function]) -> Vec<Change
         }
         out.push(ChangedFn {
             file: file.path.clone(),
-            name: key.0.to_owned(),
+            name: key.1.to_owned(),
             old: old_span,
             new: Some(new_span),
             new_body: Some(n.body_start),
@@ -246,7 +248,7 @@ fn classify(file: &FileChange, old: &[Function], new: &[Function]) -> Vec<Change
         }
         out.push(ChangedFn {
             file: file.old_path.clone().unwrap_or_else(|| file.path.clone()),
-            name: key.0.to_owned(),
+            name: key.1.to_owned(),
             old: Some((o.start, o.end)),
             new: None,
             new_body: None,

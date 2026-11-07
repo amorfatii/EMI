@@ -60,13 +60,19 @@ def kind_of(node, scope):
     return "async" if isinstance(node, ast.AsyncFunctionDef) else kind
 
 
+def start_line(node):
+    return node.decorator_list[0].lineno if node.decorator_list else node.lineno
+
+
 def find(tree, name, line):
-    """(kind, qualname) of the definition of `name` whose `def` is on `line`."""
+    """(kind, qualname) of the definition of `name` starting on `line` (or whose `def` is on `line`)."""
     stack = [(tree, [])]
     while stack:
         node, scope = stack.pop()
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, DEFS) and child.name == name and child.lineno == line:
+            if isinstance(child, DEFS) and child.name == name and (
+                start_line(child) == line or child.lineno == line
+            ):
                 return kind_of(child, scope), ".".join([p.name for p in scope] + [name])
             inner = scope + [child] if isinstance(child, DEFS + (ast.ClassDef,)) else scope
             stack.append((child, inner))

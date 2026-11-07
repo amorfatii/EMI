@@ -43,20 +43,60 @@ fn class_matches(set: &[char], c: char) -> bool {
 }
 
 fn matches_at(n: &[char], p: &[char]) -> bool {
-    match p.first() {
-        None => n.is_empty(),
-        Some('*') => (0..=n.len()).any(|k| matches_at(&n[k..], &p[1..])),
-        Some('?') => !n.is_empty() && matches_at(&n[1..], &p[1..]),
-        Some('[') => match class_end(p) {
-            Some(end) => {
-                !n.is_empty()
-                    && class_matches(&p[1..end], n[0])
-                    && matches_at(&n[1..], &p[end + 1..])
+    let (mut ni, mut pi) = (0usize, 0usize);
+    let mut star_pi: Option<usize> = None;
+    let mut star_ni = 0usize;
+    while ni < n.len() {
+        match p.get(pi) {
+            Some('*') => {
+                while p.get(pi) == Some(&'*') {
+                    pi += 1;
+                }
+                star_pi = Some(pi);
+                star_ni = ni;
             }
-            None => n.first() == Some(&'[') && matches_at(&n[1..], &p[1..]),
-        },
-        Some(&c) => n.first() == Some(&c) && matches_at(&n[1..], &p[1..]),
+            Some('?') => {
+                ni += 1;
+                pi += 1;
+            }
+            Some('[') => match class_end(&p[pi..]) {
+                Some(end) if class_matches(&p[pi + 1..pi + end], n[ni]) => {
+                    ni += 1;
+                    pi += end + 1;
+                }
+                None if n[ni] == '[' => {
+                    ni += 1;
+                    pi += 1;
+                }
+                _ => {
+                    if let Some(sp) = star_pi {
+                        star_ni += 1;
+                        ni = star_ni;
+                        pi = sp;
+                    } else {
+                        return false;
+                    }
+                }
+            },
+            Some(&c) if n[ni] == c => {
+                ni += 1;
+                pi += 1;
+            }
+            _ => {
+                if let Some(sp) = star_pi {
+                    star_ni += 1;
+                    ni = star_ni;
+                    pi = sp;
+                } else {
+                    return false;
+                }
+            }
+        }
     }
+    while p.get(pi) == Some(&'*') {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 #[cfg(test)]
@@ -72,5 +112,13 @@ mod tests {
         assert!(fnmatch("a[", "a["));
         assert!(!fnmatch("x.py", "*.js"));
         assert!(fnmatch("tests/sub/test_x.py", "tests/*"));
+    }
+
+    #[test]
+    fn fnmatch_handles_many_stars_in_linear_time() {
+        let name = "a".repeat(80);
+        let pat = "*a*a*a*a*a*a*a*a*a*a*b";
+        assert!(!fnmatch(&name, pat));
+        assert!(fnmatch(&format!("{name}b"), pat));
     }
 }

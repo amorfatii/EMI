@@ -118,23 +118,26 @@ pub struct Outcome {
 
 /// Whether bubblewrap can run here (installed and permitted).
 pub fn bwrap_available() -> bool {
-    Command::new("bwrap")
-        .args([
-            "--ro-bind",
-            "/",
-            "/",
-            "--unshare-pid",
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "true",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("bwrap")
+            .args([
+                "--ro-bind",
+                "/",
+                "/",
+                "--unshare-pid",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "true",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 fn resolve_isolation(isolation: &Isolation) -> Option<bool> {
@@ -475,7 +478,7 @@ pub fn run(spec: &Spec) -> Outcome {
         receipt.group_killed = platform::kill_group(g);
         receipt.group_empty = platform::group_empty(g);
     }
-    receipt.orphans_killed = if subreaper {
+    receipt.orphans_killed = if subreaper && !(receipt.pid_namespace && receipt.group_empty) {
         platform::reap_orphans(pgid, marker.as_deref())
     } else {
         Vec::new()
@@ -601,6 +604,9 @@ mod platform {
         let Some(p) = Pid::from_raw(pgid) else {
             return true;
         };
+        if test_kill_process_group(p) == Err(rustix::io::Errno::SRCH) {
+            return true;
+        }
         // Killed members linger as zombies until their parent (us, as
         // subreaper, once reparented) reaps them: reap ours, then probe.
         for _ in 0..400 {

@@ -171,7 +171,12 @@ fn a_test_that_fails_at_the_baseline_and_passes_on_the_candidate_proves_the_chan
     assert_eq!(v["unknown_tests"], json!([]));
     assert_eq!(function(&v, "add")["status"], "exercised");
     assert_eq!(v["functions"].as_array().map(Vec::len), Some(1), "{v}");
-    assert_eq!(evidence.isolation.as_deref(), Some("bwrap"));
+    let expected_isolation = if emi_exec::bwrap_available() {
+        "bwrap"
+    } else {
+        "process-group"
+    };
+    assert_eq!(evidence.isolation.as_deref(), Some(expected_isolation));
     // the same inputs give the same object
     assert_eq!(change(&req).to_json(), v);
 }

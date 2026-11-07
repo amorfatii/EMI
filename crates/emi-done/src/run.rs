@@ -4,8 +4,6 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::engine::Candidate as Subject;
-
 use crate::baseline::Baseline;
 use crate::candidate::{self, Candidate};
 use crate::change::ChangeEvidence;
@@ -61,7 +59,6 @@ struct Second<'a> {
     baseline: &'a Baseline,
     cand: &'a Candidate,
     store: &'a crate::engine::Store,
-    subject: &'a Subject,
     decision: &'a serde_json::Value,
     scope: &'a regression::Scope,
 }
@@ -103,7 +100,7 @@ fn confirm(r: Regression, s: &Second) -> Regression {
         );
         return regression::cleared(r, &alone, note, s.decision, s.scope);
     }
-    let again = derived::run(s.store, s.subject, false)
+    let again = derived::run(s.store, s.view, s.cand, false)
         .ok()
         .and_then(|v| Outcomes::of(v.check.as_ref()));
     let Some(again) = again else { return r };
@@ -220,11 +217,7 @@ fn try_measure(
     let spec = derived::spec(repo, config, &baseline.sha, (&trusted, &own), environment);
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
     let store = derived::open(&authority, repo, &baseline.sha, &spec).map_err(|e| e.to_string())?;
-    let subject = match req.candidate {
-        candidate::Spec::Worktree => Subject::Worktree,
-        candidate::Spec::Ref(_) => Subject::Ref(cand.id.clone()),
-    };
-    let verified = derived::run(&store, &subject, req.setting == Setting::Cooperative)?;
+    let verified = derived::run(&store, view, cand, req.setting == Setting::Cooperative)?;
     let isolation = verified.decision["assurance"]["isolation"]
         .as_str()
         .unwrap_or("unknown")
@@ -256,7 +249,6 @@ fn try_measure(
         baseline,
         cand,
         store: &store,
-        subject: &subject,
         decision: &verified.decision,
         scope: &scope,
     };

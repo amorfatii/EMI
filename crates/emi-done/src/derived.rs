@@ -379,13 +379,18 @@ fn recorded_check(store: &Store, decision: &Value, id: &str) -> Result<Option<Va
     }))
 }
 
-/// Verify `candidate` (a commit id, or the working tree) under the task.
+/// Verify `candidate` (already read into `view`) under the task.
 /// With `repin`, linked dependencies that changed since the task was
 /// frozen are pinned as they are now and the check runs once more: on a
 /// person's machine the environment changes between checks, and a fresh
 /// pin still catches a change during a run.
-pub fn run(store: &Store, candidate: &Candidate, repin: bool) -> Result<Verified, String> {
-    let mut decision = verify(store, candidate)?;
+pub fn run(
+    store: &Store,
+    view: &Path,
+    candidate: &crate::candidate::Candidate,
+    repin: bool,
+) -> Result<Verified, String> {
+    let mut decision = verify::verify_in(store, view, &candidate.id, &candidate.rev)?;
     if repin && decision["gates"]["dependencies"]["state"] == "unverified" {
         let execution = store.contract()?["execution"].clone();
         store.revise(
@@ -393,7 +398,7 @@ pub fn run(store: &Store, candidate: &Candidate, repin: bool) -> Result<Verified
             "emi done",
             "linked dependencies changed between checks",
         )?;
-        decision = verify(store, candidate)?;
+        decision = verify::verify_in(store, view, &candidate.id, &candidate.rev)?;
     }
     let check = recorded_check(store, &decision, CHECK)?;
     let foreign_imports = foreign_imports(store, &decision)?;

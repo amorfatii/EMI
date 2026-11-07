@@ -98,13 +98,14 @@ fn driver<S: Side>(
 pub fn classify<S: Side>(
     side: &S,
     tree: &S::Tree,
+    python: &str,
     targets: &[(String, String, u32)],
 ) -> Result<Vec<(String, Option<String>)>, String> {
     let request = json!({"targets": targets.iter().map(|(file, name, line)| {
         json!({"file": file, "name": name, "line": line})
     }).collect::<Vec<_>>()});
     let how = Invocation {
-        python: "python3",
+        python,
         env: side.env(),
         timeout: CLASSIFY_TIMEOUT,
     };
