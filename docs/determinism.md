@@ -44,15 +44,16 @@ failure instead of shrinking it again. Generation is derandomized, so that
 is the failure the first run found; whether it fails is all the second run
 is asked.
 
-The pins, and the digest of the plugin that applies them
-(`pins_plugin`), are recorded in the receipt's `inputs`.
+The pins, and the language driver with the digest of its own code
+(`driver`: its version and every script it puts into the runs, the pins
+plugin among them), are recorded in the receipt's `inputs`.
 
 ## What a decision is a function of
 
 The receipt (`emi-done-receipt-1.0`) names its inputs:
 
 - the baseline commit and the candidate's tree;
-- the configuration's digest, the pins and the pins plugin's digest;
+- the configuration's digest, the pins and the driver with its code's digest;
 - the Python environment's digest: the interpreter, the architecture, and
   every installed distribution with its version;
 - the laws' digest;

@@ -62,12 +62,12 @@ fn fresh_state(real_root: &Path, repo: &Path, into: &Path) -> Result<(), Error> 
     Ok(())
 }
 
-/// Replay `original` in `repo`. `measure` supplies the change evidence, as
-/// for `emi done`.
+/// Replay `original` in `repo`, in the language of `driver`. `measure`
+/// supplies the change evidence, as for `emi done`.
 pub fn replay(
-    repo: &Path,
-    state_root: &Path,
+    (repo, state_root): (&Path, &Path),
     original: &Value,
+    drivers: &'static [&'static dyn emi_driver::Driver],
     measure: impl FnOnce(&crate::ChangeContext) -> crate::ChangeEvidence,
 ) -> Result<Replayed, Error> {
     if field(original, &["schema"])? != receipt::SCHEMA {
@@ -104,6 +104,7 @@ pub fn replay(
         _ => None,
     };
     let req = Request {
+        drivers,
         repo: &repo,
         state_root: scratch.path(),
         baseline: given,

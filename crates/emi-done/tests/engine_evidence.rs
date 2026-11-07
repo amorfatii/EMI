@@ -123,6 +123,7 @@ impl Task {
         }
         create(authority.path(), &spec).unwrap_or_else(|e| panic!("{e}"));
         let store = Store::open(authority.path(), "evidence", repo.path())
+            .map(|s| s.reading(&emi_python::driver::Python))
             .unwrap_or_else(|e| panic!("{e}"));
         Task {
             repo,

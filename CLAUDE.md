@@ -51,8 +51,10 @@ started with are archived at tag `archive/burden-final` (ADR 0005).
 - Functions stay under cognitive complexity 15 and 80 lines (clippy config
   enforces warnings; CI denies them). Validators with many guards use a table
   of (predicate, message), not an if-chain.
-- Language knowledge stays in its adapter: `emi-python` is the only crate
-  that knows Python or pytest syntax.
+- Language knowledge stays in its driver: `emi-python` is the only crate
+  that knows Python or pytest syntax. `emi-done` is given a driver
+  (`emi-driver`'s trait) and depends on no language crate (ADR 0009);
+  `scripts/emi-done-has-no-language.sh` checks it.
 - No new crate or subcommand without a decision record saying why.
 - Comments explain why; no work-package, audit or ticket ids in code.
 - Tests clean up what they create (`tempfile`) and never depend on build

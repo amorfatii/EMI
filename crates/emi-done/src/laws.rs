@@ -4,11 +4,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use emi_python::proving::laws::{LawEvidence, LawFiles, measure_laws};
+use emi_driver::{Driver, LawEvidence, LawFiles};
 
 use crate::Config;
-use crate::baseline::Baseline;
-use crate::candidate::Candidate;
 use crate::oldtests::{Entry, What};
 
 /// Most stand-in runs one check spends on proposed laws.
@@ -23,17 +21,16 @@ fn baseline_has_laws(view: &Path, baseline: &str, dir: &str) -> bool {
 /// Measure the laws for this check. Nothing runs when there are none at
 /// the baseline and the candidate proposes none.
 pub fn measure(
-    repo: &Path,
-    view: &Path,
-    (config, baseline, cand): (&Config, &Baseline, &Candidate),
+    run: &emi_driver::Run,
+    config: &Config,
     entries: &[Entry],
-    listing_cache: Option<emi_python::proving::ListingCache>,
+    driver: &dyn Driver,
 ) -> LawEvidence {
     let laws: Vec<&Entry> = entries
         .iter()
         .filter(|e| e.changed.what == What::Law)
         .collect();
-    if laws.is_empty() && !baseline_has_laws(view, &baseline.sha, &config.laws.dir) {
+    if laws.is_empty() && !baseline_has_laws(run.view, run.baseline, &config.laws.dir) {
         return LawEvidence::default();
     }
     let (approved, proposed): (Vec<&Entry>, Vec<&Entry>) =
@@ -48,9 +45,7 @@ pub fn measure(
         proposed: &proposed,
         max_stand_in_runs: MAX_STAND_IN_RUNS,
     };
-    let mut req = crate::run::proving_request(repo, config, baseline, cand);
-    req.listing_cache = listing_cache;
-    measure_laws(&req, view, &files)
+    driver.laws(run, &files)
 }
 
 /// One instruction per law the proposer must make hold.

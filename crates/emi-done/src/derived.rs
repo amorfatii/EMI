@@ -9,9 +9,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::engine::{Store, contract, runner_config, verify};
+use crate::engine::{Store, contract, verify};
+use emi_driver::Driver;
 use emi_kernel::json::digest;
-use emi_kernel::pins::Pins;
 use serde_json::{Value, json};
 
 use crate::Error;
@@ -21,113 +21,32 @@ use crate::config::Config;
 const CHECK: &str = "tests";
 /// The check that the tests import the candidate's own code.
 const IMPORTS: &str = "imports";
-/// Most names the import check looks up.
-const MAX_OWN_NAMES: usize = 30;
-
-/// Where each of the project's own top-level names would be imported from,
-/// seen by the Python that runs the tests, in the directory the tests run
-/// in. A name found outside that directory is an installed copy (an
-/// editable install of another checkout, a package in site-packages): the
-/// tests would then exercise that copy, not the candidate. A name that
-/// cannot be found is left to the tests themselves to report.
-const IMPORT_ORIGINS: &str = r#"
-import importlib.util, os, sys
-here = os.path.realpath(os.getcwd()) + os.sep
-foreign = []
-for name in sys.argv[1:]:
-    if name in getattr(sys, "stdlib_module_names", ()):
-        continue
-    try:
-        spec = importlib.util.find_spec(name)
-    except Exception:
-        spec = None
-    if spec is None:
-        continue
-    origin = spec.origin
-    if origin is None and spec.submodule_search_locations:
-        origin = list(spec.submodule_search_locations)[0]
-    if origin and not (os.path.realpath(origin) + os.sep).startswith(here):
-        foreign.append(f"{name} from {origin}")
-if foreign:
-    print("the tests would not import the code being checked: " + "; ".join(foreign))
-    sys.exit(3)
-print("own code is imported from the checked copy")
-"#;
-
-/// Names that are files of a repository, not code its tests import.
-const NOT_OWN: &[&str] = &["setup", "conftest", "noxfile", "tests", "test", "docs"];
-
-fn identifier(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with(|c: char| c.is_ascii_digit())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// The top-level name `path` gives under import root `root`: a package
-/// (`root/pkg/__init__.py`) anywhere, a module (`root/mod.py`) only under
-/// a root other than the repository's (a module at the repository root may
-/// share its name with anything).
-fn own_name<'a>(path: &'a str, root: &str) -> Option<&'a str> {
-    let rest = if root == "." {
-        path
-    } else {
-        path.strip_prefix(root)?.strip_prefix('/')?
-    };
-    let name = match rest.split_once('/') {
-        Some((pkg, "__init__.py")) => pkg,
-        None if root != "." => rest.strip_suffix(".py")?,
-        _ => return None,
-    };
-    (identifier(name) && !NOT_OWN.contains(&name)).then_some(name)
-}
-
-/// The project's own top-level importable names at `baseline`: what the
-/// import check looks up. Taken from the baseline, so the same baseline
-/// and configuration always give the same contract.
-pub fn own_names(view: &Path, baseline: &str, config: &Config) -> Result<Vec<String>, Error> {
+/// The project's files at `baseline`, from which a driver names the
+/// project's own code (the same baseline always gives the same contract).
+fn baseline_files(view: &Path, baseline: &str) -> Result<Vec<String>, Error> {
     let raw = emi_git::run(view, &["ls-tree", "-r", "-z", "--name-only", baseline])
         .map_err(|e| Error::Usage(format!("cannot list the files of the baseline: {e}")))?;
-    let mut roots: Vec<&str> = config.python_path.iter().map(String::as_str).collect();
-    roots.extend([config.source.as_str(), "."]);
-    let is_test = |p: &str| {
-        config
-            .tests
-            .globs
-            .iter()
-            .any(|g| emi_kernel::glob::fnmatch(p, g))
-    };
-    let mut names: BTreeSet<String> = BTreeSet::new();
-    for path in raw.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-        let path = String::from_utf8_lossy(path);
-        if is_test(&path) {
-            continue;
-        }
-        names.extend(
-            roots
-                .iter()
-                .filter_map(|r| own_name(&path, r))
-                .map(str::to_owned),
-        );
-    }
-    Ok(names.into_iter().take(MAX_OWN_NAMES).collect())
+    Ok(raw
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect())
 }
+
+/// The command that checks the tests import the candidate's own code, when
+/// the driver has one for this project.
+pub fn import_check(
+    run: &emi_driver::Run,
+    driver: &dyn Driver,
+) -> Result<Option<Vec<String>>, Error> {
+    let files = baseline_files(run.view, run.baseline)?;
+    Ok(driver.import_check(run, &files))
+}
+
 /// Generous bounds: a check that ends at the timeout is `incomplete`, not
 /// a failure, so these only guard against a hung runner.
 const TEST_TIMEOUT_S: u64 = 1800;
 const INVENTORY_TIMEOUT_S: u64 = 600;
-
-/// The Python the configured test command runs, when it is pytest.
-pub fn interpreter(config: &Config) -> Option<String> {
-    emi_python::proving::pytest::Command::parse(&config.tests.command)
-        .ok()
-        .map(|c| c.interpreter().to_owned())
-}
-
-/// Whether the configured test command runs pytest, whose output and exit
-/// statuses the receipt knows how to read.
-pub fn is_pytest(command: &[String]) -> bool {
-    emi_python::proving::pytest::Command::parse(command).is_ok()
-}
 
 /// The globs of the files restored from the baseline for every run: the
 /// tests, and the laws (should the test command collect them).
@@ -154,10 +73,10 @@ fn literal(path: &str) -> String {
 /// them. Listing them one by one is what lets an approval release a single
 /// file; the list is sorted, so the same inputs name the same contract.
 pub fn trusted(
-    view: &Path,
-    baseline: &str,
+    (view, baseline): (&Path, &str),
     globs: &[String],
     approved: &BTreeSet<String>,
+    driver: &dyn Driver,
 ) -> Result<Vec<String>, Error> {
     let raw = emi_git::run(view, &["ls-tree", "-r", "-z", "--name-only", baseline])
         .map_err(|e| Error::Usage(format!("cannot list the files of the baseline: {e}")))?;
@@ -167,7 +86,7 @@ pub fn trusted(
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .filter(|p| !approved.contains(p))
         .filter(|p| {
-            runner_config::matches(p) || globs.iter().any(|g| emi_kernel::glob::fnmatch(p, g))
+            driver.is_runner_config(p) || globs.iter().any(|g| emi_kernel::glob::fnmatch(p, g))
         })
         .map(|p| literal(&p))
         .collect();
@@ -185,26 +104,23 @@ pub fn spec(
     repo: &Path,
     config: &Config,
     baseline: &str,
-    (trusted, own): (&[String], &[String]),
-    environment: Option<&str>,
+    (trusted, imports): (&[String], Option<&[String]>),
+    (environment, driver): (Option<&str>, &dyn Driver),
 ) -> Value {
     let mut command = config.tests.command.clone();
     let mut verification = json!({"trusted": trusted, "runner_config": "review"});
     let mut evidence = Value::Null;
-    if let Ok(pytest) = emi_python::proving::pytest::Command::parse(&config.tests.command) {
+    if let Some(plan) = driver.regression(&config.tests.command) {
         // one outcome line per test, so this run can be compared test by
         // test with the baseline's: a test the baseline already skipped is
         // not a regression, one that stopped running is
-        command = pytest.report_argv();
-        // Two quiet flags make real pytest print counts by file, not ids.
-        // Share the normalizer used by the proving measurement.
-        let inventory = pytest.list_argv();
-        verification["inventory"] = json!({"command": inventory, "format": "pytest", "timeout_s": INVENTORY_TIMEOUT_S,
+        command = plan.run;
+        verification["inventory"] = json!({"command": plan.list, "format": plan.format, "timeout_s": INVENTORY_TIMEOUT_S,
                    "collection_errors": "tolerate"});
-        // The test check runs the same pytest invocation, so its own
-        // report is required too: a passing exit with no readable summary
-        // (an early exit) or with skips is not regression evidence.
-        evidence = json!({"format": "pytest"});
+        // The test check runs the same invocation, so its own report is
+        // required too: a passing exit with no readable summary (an early
+        // exit) or with skips is not regression evidence.
+        evidence = json!({"format": plan.format});
     }
     // the pins, and the import path: relative, so each run resolves it in
     // its own copy of the code (the project's roots, then the pins plugin)
@@ -214,10 +130,9 @@ pub fn spec(
         .into_iter()
         .map(|(k, v)| (k, json!(v)))
         .collect();
-    env.insert(
-        "PYTHONPATH".to_owned(),
-        json!(Pins::python_path(&config.python_path)),
-    );
+    for (key, value) in driver.run_env(&config.python_path) {
+        env.insert(key, json!(value));
+    }
     // which installed code the tests run against: another environment is
     // another task, so the baseline's recorded runs are not reused for it
     if let Some(id) = environment {
@@ -235,16 +150,7 @@ pub fn spec(
         "execution": execution,
     });
     // the tests prove something about the candidate only if they import it
-    if let (Ok(pytest), false) = (
-        emi_python::proving::pytest::Command::parse(&config.tests.command),
-        own.is_empty(),
-    ) {
-        let mut argv = vec![
-            pytest.interpreter().to_owned(),
-            "-c".to_owned(),
-            IMPORT_ORIGINS.to_owned(),
-        ];
-        argv.extend(own.iter().cloned());
+    if let Some(argv) = imports {
         spec["checks"][IMPORTS] =
             json!({"command": argv, "success": {"exit_code": 0}, "timeout_s": 120});
         if let Some(list) = spec["requirements"].as_array_mut() {
@@ -265,9 +171,16 @@ pub fn task_id(spec: &Value) -> String {
 /// The task's store under `authority`, frozen on first use. The linked
 /// dependency directories are pinned then, and again by [`run`] when they
 /// change between checks.
-pub fn open(authority: &Path, repo: &Path, baseline: &str, spec: &Value) -> Result<Store, Error> {
+pub fn open(
+    (authority, repo): (&Path, &Path),
+    baseline: &str,
+    spec: &Value,
+    driver: &'static dyn Driver,
+) -> Result<Store, Error> {
     let task = task_id(spec);
-    let store = Store::open(authority, &task, repo).map_err(Error::Usage)?;
+    let store = Store::open(authority, &task, repo)
+        .map_err(Error::Usage)?
+        .reading(driver);
     if !store.exists() {
         let mut named = spec.clone();
         named["task_id"] = json!(task);
@@ -485,7 +398,13 @@ mod tests {
     fn the_spec_trusts_listed_files_and_validates_as_a_contract() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let trusted = vec!["tests/test_a.py".to_owned()];
-        let spec = spec(dir.path(), &config(), SHA, (&trusted, &[]), None);
+        let spec = spec(
+            dir.path(),
+            &config(),
+            SHA,
+            (&trusted, None),
+            (None, &emi_python::driver::Python),
+        );
         assert_eq!(names(&spec["verification"]["trusted"]), ["tests/test_a.py"]);
         assert_eq!(spec["verification"]["runner_config"], "review");
         let inventory = names(&spec["verification"]["inventory"]["command"]);
@@ -542,8 +461,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let mut c = config();
         c.python_path = vec!["src".into()];
-        let own = vec!["app".to_owned()];
-        let spec = spec(dir.path(), &c, SHA, (&[], &own), None);
+        let files = vec!["src/app/__init__.py".to_owned()];
+        let run = crate::run_of((dir.path(), dir.path()), &c, (SHA, SHA), None);
+        let imports = emi_driver::Driver::import_check(&emi_python::driver::Python, &run, &files);
+        let spec = spec(
+            dir.path(),
+            &c,
+            SHA,
+            (&[], imports.as_deref()),
+            (None, &emi_python::driver::Python),
+        );
         assert_eq!(spec["execution"]["env"]["PYTHONPATH"], "src:.emi-pins");
         assert_eq!(spec["execution"]["env"]["PYTHONHASHSEED"], "0");
         let argv = names(&spec["checks"]["imports"]["command"]);
@@ -556,34 +483,15 @@ mod tests {
         named["task_id"] = json!(task_id(&spec));
         assert!(contract::freeze(&named, &dir.path().to_string_lossy(), SHA).is_ok());
         // without a src layout or known names: the pins alone, no import check
-        let plain = super::spec(dir.path(), &config(), SHA, (&[], &[]), None);
+        let plain = super::spec(
+            dir.path(),
+            &config(),
+            SHA,
+            (&[], None),
+            (None, &emi_python::driver::Python),
+        );
         assert_eq!(plain["execution"]["env"]["PYTHONPATH"], ".emi-pins");
         assert!(plain["checks"].get("imports").is_none());
-    }
-
-    #[test]
-    fn own_names_are_the_packages_and_src_modules_of_the_baseline() {
-        let dir = repo();
-        for name in [
-            "src/app/__init__.py",
-            "src/tool.py",
-            "pkg/__init__.py",
-            "top.py",
-            "setup.py",
-            "tests/__init__.py",
-            "tests/test_a.py",
-            "docs/conf.py",
-        ] {
-            commit_file(dir.path(), name, "x = 1\n", name);
-        }
-        let head = git_out(dir.path(), &["rev-parse", "HEAD"]);
-        let view = emi_git::CleanView::of(dir.path()).unwrap_or_else(|e| panic!("{e}"));
-        let mut c = config();
-        c.source = "src".into();
-        c.python_path = vec!["src".into()];
-        let own = own_names(view.path(), &head, &c).unwrap_or_default();
-        // a module at the repository root is not looked up, nor are tests
-        assert_eq!(own, ["app", "pkg", "tool"]);
     }
 
     #[test]
@@ -592,18 +500,32 @@ mod tests {
         let mut c = config();
         c.tests.command = vec!["python3".into(), "-m".into(), "unittest".into()];
         assert!(
-            spec(dir.path(), &c, SHA, (&[], &[]), None)["verification"]
+            spec(
+                dir.path(),
+                &c,
+                SHA,
+                (&[], None),
+                (None, &emi_python::driver::Python)
+            )["verification"]
                 .get("inventory")
                 .is_none()
         );
-        assert!(!is_pytest(&c.tests.command));
+        assert!(
+            emi_driver::Driver::regression(&emi_python::driver::Python, &c.tests.command).is_none()
+        );
     }
 
     #[test]
     fn the_same_inputs_name_the_same_task_and_any_change_names_another() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let id = |c: &Config, sha: &str, trusted: &[String]| {
-            task_id(&spec(dir.path(), c, sha, (trusted, &[]), None))
+            task_id(&spec(
+                dir.path(),
+                c,
+                sha,
+                (trusted, None),
+                (None, &emi_python::driver::Python),
+            ))
         };
         let files = vec!["tests/a.py".to_owned()];
         let base = id(&config(), SHA, &files);
@@ -642,7 +564,13 @@ mod tests {
         let head = git_out(dir.path(), &["rev-parse", "HEAD"]);
         let view = emi_git::CleanView::of(dir.path()).unwrap_or_else(|e| panic!("{e}"));
         let globs = vec!["tests/*".to_owned()];
-        let all = trusted(view.path(), &head, &globs, &BTreeSet::new()).unwrap_or_default();
+        let all = trusted(
+            (view.path(), &head),
+            &globs,
+            &BTreeSet::new(),
+            &emi_python::driver::Python,
+        )
+        .unwrap_or_default();
         assert_eq!(
             all,
             [
@@ -657,7 +585,13 @@ mod tests {
             assert_eq!(hit, path == "tests/test_[b].py", "{path} against {glob}");
         }
         let approved: BTreeSet<String> = ["tests/test_a.py".to_owned()].into();
-        let less = trusted(view.path(), &head, &globs, &approved).unwrap_or_default();
+        let less = trusted(
+            (view.path(), &head),
+            &globs,
+            &approved,
+            &emi_python::driver::Python,
+        )
+        .unwrap_or_default();
         assert!(!less.contains(&"tests/test_a.py".to_owned()) && less.len() == 3);
     }
 }

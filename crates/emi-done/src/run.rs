@@ -14,43 +14,47 @@ use crate::regression::{self, Regression};
 use crate::state::{self, Approval};
 use crate::{ChangeContext, Error, Outcome, Request, Setting, derived, receipt};
 
-/// The request the proving measurement and the second look share: the
-/// frozen candidate, the configured command, and the same import path as
-/// the regression run, so that all of them run the candidate's code.
-pub fn proving_request(
-    repo: &Path,
-    config: &Config,
-    baseline: &Baseline,
-    cand: &Candidate,
-) -> emi_python::proving::Request {
-    let mut req =
-        emi_python::proving::Request::new(repo, &baseline.sha, config.tests.command.clone());
-    req.candidate = emi_python::proving::Candidate::Ref(cand.rev.clone());
-    req.language = emi_python::proving::Language::from_name(&config.language);
-    req.test_globs.clone_from(&config.tests.globs);
-    req.source.clone_from(&config.source);
-    req.link.clone_from(&config.link);
-    req.env.extend(config.pins.env());
-    req.env.push((
-        "PYTHONPATH".to_owned(),
-        emi_kernel::pins::Pins::python_path(&config.python_path),
-    ));
-    req
+/// What every stage beyond the regression measures: the frozen candidate
+/// against the baseline, with the configured command, the pins and the
+/// project's roots, the same for all of them, so that each runs the
+/// candidate's code.
+pub fn run_of<'a>(
+    (repo, view): (&'a Path, &'a Path),
+    config: &'a Config,
+    (baseline, candidate): (&'a str, &'a str),
+    cache: Option<emi_driver::ListingCache>,
+) -> emi_driver::Run<'a> {
+    emi_driver::Run {
+        repo,
+        view,
+        baseline,
+        candidate,
+        command: &config.tests.command,
+        test_globs: &config.tests.globs,
+        source: &config.source,
+        link: &config.link,
+        pins: config.pins.env(),
+        roots: &config.python_path,
+        cache,
+    }
 }
 
 /// What is kept per repository from baseline runs (listings, laws,
-/// recorded calls), keyed by the environment it was taken in and the EMI
-/// that took it. An environment that could not be identified keeps
-/// nothing: a result from another one could be stale.
+/// recorded calls), keyed by the environment it was taken in and the
+/// driver code that took it. An environment that could not be identified
+/// keeps nothing: a result from another one could be stale.
 pub fn listing_cache(
     repo_dir: &Path,
     environment: Option<&str>,
-) -> Option<emi_python::proving::ListingCache> {
-    environment.map(|e| emi_python::proving::ListingCache::new(&repo_dir.join("listings"), e))
+    driver: &dyn emi_driver::Driver,
+) -> Option<emi_driver::ListingCache> {
+    environment
+        .map(|e| emi_driver::ListingCache::new(&repo_dir.join("listings"), e, &driver.producer()))
 }
 
 /// What a second look needs beside the regression it looks at again.
 struct Second<'a> {
+    driver: &'static dyn emi_driver::Driver,
     repo: &'a Path,
     view: &'a Path,
     config: &'a Config,
@@ -84,8 +88,13 @@ fn confirm(r: Regression, s: &Second) -> Regression {
     if r.status != regression::Status::Broken || r.failed.is_empty() {
         return r;
     }
-    let req = proving_request(s.repo, s.config, s.baseline, s.cand);
-    let alone = match emi_python::proving::passing(&req, s.view, &r.failed) {
+    let run = run_of(
+        (s.repo, s.view),
+        s.config,
+        (&s.baseline.sha, &s.cand.rev),
+        None,
+    );
+    let alone = match s.driver.passing(&run, &r.failed) {
         Ok(alone) if !alone.is_empty() => alone,
         _ => return r,
     };
@@ -132,33 +141,65 @@ fn measured_unknown(why: String) -> Measured {
 /// that later derives another runs its own baseline. Nothing is returned:
 /// the result is in the task's store, and a failure here is found again,
 /// and reported, by the check itself.
-pub fn warm(repo: &Path, view: &Path, req: &Request, config: &Config, baseline: &Baseline) {
-    let Some(interpreter) = derived::interpreter(config) else {
-        return;
-    };
-    let environment = crate::environment::id(repo, &interpreter).ok();
-    let Ok(trusted) = derived::trusted(
-        view,
-        &baseline.sha,
+pub fn warm(
+    repo: &Path,
+    view: &Path,
+    (req, driver): (&Request, &'static dyn emi_driver::Driver),
+    config: &Config,
+    baseline: &Baseline,
+) {
+    let environment = environment_of(repo, config, driver).and_then(Result::ok);
+    let approved = BTreeSet::new();
+    let task = derived_task(
+        (repo, view),
+        (req, config, baseline),
+        &approved,
+        (environment.as_deref(), driver),
+    );
+    if let Ok((store, authority)) = task {
+        let _ = derived::baseline_checks_once_in(&store, view, &baseline.sha, &authority);
+    }
+}
+
+/// The installed environment's identity, when the driver gives one.
+fn environment_of(
+    repo: &Path,
+    config: &Config,
+    driver: &dyn emi_driver::Driver,
+) -> Option<Result<String, String>> {
+    driver.environment(repo, &config.tests.command)
+}
+
+/// The derived task for this configuration and baseline, with `approved`
+/// files running as the candidate left them, and where its store lives.
+fn derived_task(
+    (repo, view): (&Path, &Path),
+    (req, config, baseline): (&Request, &Config, &Baseline),
+    approved: &BTreeSet<String>,
+    (environment, driver): (Option<&str>, &'static dyn emi_driver::Driver),
+) -> Result<(crate::engine::Store, std::path::PathBuf), String> {
+    let trusted = derived::trusted(
+        (view, &baseline.sha),
         &derived::trusted_globs(config),
-        &BTreeSet::new(),
-    ) else {
-        return;
-    };
-    let Ok(own) = derived::own_names(view, &baseline.sha, config) else {
-        return;
-    };
+        approved,
+        driver,
+    )
+    .map_err(|e| e.to_string())?;
+    // the baseline stands for the candidate: the import check names the
+    // project's own code as the baseline has it
+    let at_baseline = run_of((repo, view), config, (&baseline.sha, &baseline.sha), None);
+    let imports = derived::import_check(&at_baseline, driver).map_err(|e| e.to_string())?;
     let spec = derived::spec(
         repo,
         config,
         &baseline.sha,
-        (&trusted, &own),
-        environment.as_deref(),
+        (&trusted, imports.as_deref()),
+        (environment, driver),
     );
     let authority = state::authority(&state::repo_dir(req.state_root, repo));
-    if let Ok(store) = derived::open(&authority, repo, &baseline.sha, &spec) {
-        let _ = derived::baseline_checks_once_in(&store, view, &baseline.sha, &authority);
-    }
+    let store = derived::open((&authority, repo), &baseline.sha, &spec, driver)
+        .map_err(|e| e.to_string())?;
+    Ok((store, authority))
 }
 
 /// The regression evidence from the candidate's run. When that run named
@@ -170,11 +211,11 @@ fn compared(
     (store, authority, view): (&crate::engine::Store, &Path, &Path),
     baseline: &Baseline,
     verified: &derived::Verified,
-    pytest: bool,
+    (reader, driver): (Option<&dyn emi_driver::Driver>, &dyn emi_driver::Driver),
     scope: &regression::Scope,
 ) -> Result<Regression, String> {
     let check = verified.check.as_ref();
-    let (base, unstable) = if pytest {
+    let (base, unstable) = if reader.is_some() {
         let runs = derived::baseline_checks_once_in(store, view, &baseline.sha, authority)?;
         let outcomes: Option<Vec<Outcomes>> = runs.iter().map(|r| Outcomes::of(Some(r))).collect();
         match outcomes.as_deref() {
@@ -187,34 +228,28 @@ fn compared(
     };
     let mut r = match (&base, Outcomes::of(check)) {
         (Some(base), Some(cand)) => {
-            regression::from_outcomes(&verified.decision, check, (base, &cand), scope)
+            regression::from_outcomes(&verified.decision, check, (base, &cand), scope, driver)
         }
-        (Some(base), None) => regression::not_started(check, base)
-            .unwrap_or_else(|| regression::from_decision(&verified.decision, check, pytest, scope)),
-        (None, _) => regression::from_decision(&verified.decision, check, pytest, scope),
+        (Some(base), None) => regression::not_started(check, base, driver)
+            .unwrap_or_else(|| regression::from_decision(&verified.decision, check, reader, scope)),
+        (None, _) => regression::from_decision(&verified.decision, check, reader, scope),
     };
     r.quarantined = unstable.into_iter().collect();
     Ok(r)
 }
 
 fn try_measure(
-    repo: &Path,
-    view: &Path,
-    req: &Request,
+    (repo, view): (&Path, &Path),
+    (req, driver): (&Request, &'static dyn emi_driver::Driver),
     (config, baseline, cand): (&Config, &Baseline, &Candidate),
     (entries, environment): (&[Entry], Option<&str>),
 ) -> Result<Measured, String> {
-    let trusted = derived::trusted(
-        view,
-        &baseline.sha,
-        &derived::trusted_globs(config),
+    let (store, authority) = derived_task(
+        (repo, view),
+        (req, config, baseline),
         &oldtests::approved_paths(entries),
-    )
-    .map_err(|e| e.to_string())?;
-    let own = derived::own_names(view, &baseline.sha, config).map_err(|e| e.to_string())?;
-    let spec = derived::spec(repo, config, &baseline.sha, (&trusted, &own), environment);
-    let authority = state::authority(&state::repo_dir(req.state_root, repo));
-    let store = derived::open(&authority, repo, &baseline.sha, &spec).map_err(|e| e.to_string())?;
+        (environment, driver),
+    )?;
     let verified = derived::run(&store, view, cand, req.setting == Setting::Cooperative)?;
     let isolation = verified.decision["assurance"]["isolation"]
         .as_str()
@@ -237,16 +272,19 @@ fn try_measure(
             isolation,
         });
     }
-    let pytest = derived::is_pytest(&config.tests.command);
+    // a command the driver reads test by test; any other is judged by its
+    // exit status alone, which the receipt states
+    let reader = driver.regression(&config.tests.command).map(|_| driver);
     let scope = oldtests::scope(entries);
     let regression = compared(
         (&store, &authority, view),
         baseline,
         &verified,
-        pytest,
+        (reader, driver),
         &scope,
     )?;
     let second = Second {
+        driver,
         repo,
         view,
         config,
@@ -257,7 +295,7 @@ fn try_measure(
         scope: &scope,
     };
     Ok(Measured {
-        regression: if pytest {
+        regression: if reader.is_some() {
             confirm(regression, &second)
         } else {
             regression
@@ -348,7 +386,7 @@ fn config_note(repo: &Path, req: &Request, config: &Config, baseline: &Baseline)
 /// the kept behaviour when asked for, the mutants when configured, and the
 /// escape-hatch signals.
 struct Beyond {
-    laws: emi_python::proving::laws::LawEvidence,
+    laws: emi_driver::LawEvidence,
     preserved: Option<crate::preserve::Preserved>,
     adequacy: Option<crate::adequacy::Adequacy>,
     /// The signals, or why they could not be looked for.
@@ -361,8 +399,13 @@ fn beyond(
     intent: &crate::preserve::Intent,
     measure_change: impl FnOnce(&ChangeContext) -> ChangeEvidence,
 ) -> (ChangeEvidence, Beyond) {
-    let (repo, view, config, baseline, cand) =
-        (ctx.repo, ctx.view, ctx.config, ctx.baseline, ctx.candidate);
+    let (view, config, driver) = (ctx.view, ctx.config, ctx.driver);
+    let run = run_of(
+        (ctx.repo, view),
+        config,
+        (&ctx.baseline.sha, &ctx.candidate.rev),
+        ctx.listing_cache.clone(),
+    );
     let not_product = |p: &str| {
         crate::oldtests::in_dir(p, &config.laws.dir)
             || config
@@ -373,35 +416,19 @@ fn beyond(
             || emi_kernel::paths::is_test(p)
     };
     let (change, laws, mut preserved, signals) = std::thread::scope(|scope| {
-        let laws_h = scope.spawn(|| {
-            crate::laws::measure(
-                repo,
-                view,
-                (config, baseline, cand),
-                old_tests,
-                ctx.listing_cache.clone(),
-            )
-        });
+        let laws_h = scope.spawn(|| crate::laws::measure(&run, config, old_tests, driver));
         let preserved_h = scope.spawn(|| {
-            intent.preserve.then(|| {
-                crate::preserve::measure(
-                    repo,
-                    view,
-                    (config, baseline, cand),
-                    intent,
-                    ctx.listing_cache.as_ref(),
-                )
-            })
+            intent
+                .preserve
+                .then(|| crate::preserve::measure(&run, config, intent, driver))
         });
-        let signals_h =
-            scope.spawn(|| crate::signals::find(view, (&baseline.sha, &cand.rev), not_product));
+        let signals_h = scope.spawn(|| {
+            crate::signals::find(view, (run.baseline, run.candidate), not_product, driver)
+        });
         let change = measure_change(ctx);
         let laws = laws_h
             .join()
-            .unwrap_or_else(|_| emi_python::proving::laws::LawEvidence {
-                fault: Some("laws measurement panicked".to_owned()),
-                ..Default::default()
-            });
+            .unwrap_or_else(|_| emi_driver::LawEvidence::fault("laws measurement panicked"));
         // a stage that panicked measured nothing: it is said, never read
         // as "not asked for" or "nothing found"
         let preserved = preserved_h.join().unwrap_or_else(|_| {
@@ -417,12 +444,7 @@ fn beyond(
     if let Some(p) = &mut preserved {
         p.exclude_proven(&change, intent);
     }
-    let adequacy = crate::adequacy::measure(
-        repo,
-        view,
-        (config, baseline, cand),
-        (&change.to_value(), &laws),
-    );
+    let adequacy = crate::adequacy::measure(&run, config, (&change.to_value(), &laws), driver);
     (
         change,
         Beyond {
@@ -450,6 +472,7 @@ fn intent(req: &Request, repo_dir: &Path) -> Result<crate::preserve::Intent, Err
 /// What the receipt does not establish: in general, and in this run.
 fn limits(
     (repo, req, config, baseline): (&Path, &Request, &Config, &Baseline),
+    driver: &dyn emi_driver::Driver,
     change: &ChangeEvidence,
     more: &Beyond,
     (approval_fault, environment): (Option<&String>, Option<&Result<String, String>>),
@@ -457,7 +480,10 @@ fn limits(
     let limits = receipt::Limits {
         setting: req.setting,
         link: &config.link,
-        pytest: derived::is_pytest(&config.tests.command),
+        runner: driver
+            .regression(&config.tests.command)
+            .is_none()
+            .then(|| driver.runner()),
         change,
         config_note: config_note(repo, req, config, baseline),
     };
@@ -490,26 +516,24 @@ fn limits(
 pub fn check(
     repo: &Path,
     view: &Path,
-    req: &Request,
+    (req, driver): (&Request, &'static dyn emi_driver::Driver),
     (config, baseline, cand): (&Config, &Baseline, &Candidate),
     change: impl FnOnce(&ChangeContext) -> ChangeEvidence,
 ) -> Result<Outcome, Error> {
     let repo_dir = state::repo_dir(req.state_root, repo);
     let changed = oldtests::find(
-        view,
-        &baseline.sha,
-        &cand.rev,
+        (view, &baseline.sha, &cand.rev),
         (&config.tests.globs, &config.laws.dir),
+        driver,
     )?;
     approve(req, &repo_dir, &changed, baseline)?;
     let (approvals, approval_fault) = approvals(req, &repo_dir, &changed);
     let mut old_tests = oldtests::mark(changed, &approvals, &baseline.sha);
-    let environment = derived::interpreter(config).map(|py| crate::environment::id(repo, &py));
+    let environment = environment_of(repo, config, driver);
     let env_id = environment.as_ref().and_then(|e| e.as_deref().ok());
     let measured = match try_measure(
-        repo,
-        view,
-        req,
+        (repo, view),
+        (req, driver),
         (config, baseline, cand),
         (&old_tests, env_id),
     ) {
@@ -519,6 +543,7 @@ pub fn check(
     oldtests::settle(&mut old_tests, &measured.regression);
     let intent = intent(req, &repo_dir)?;
     let ctx = ChangeContext {
+        driver,
         repo,
         config,
         baseline,
@@ -526,11 +551,12 @@ pub fn check(
         spec: &req.candidate,
         view,
         regression: &measured.regression,
-        listing_cache: listing_cache(&repo_dir, env_id),
+        listing_cache: listing_cache(&repo_dir, env_id, driver),
     };
     let (change, more) = beyond(&ctx, &old_tests, &intent, change);
     let (not_verified, this_run) = limits(
         (repo, req, config, baseline),
+        driver,
         &change,
         &more,
         (approval_fault.as_ref(), environment.as_ref()),
@@ -545,6 +571,7 @@ pub fn check(
             environment: environment.as_ref(),
             laws: more.laws.digest.clone(),
             intent: intent.to_value(),
+            driver: Some(driver),
         }),
         baseline,
         candidate: cand,

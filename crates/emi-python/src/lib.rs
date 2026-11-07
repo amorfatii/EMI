@@ -12,6 +12,7 @@ pub mod coverage;
 pub mod covrun;
 pub mod diffmut;
 pub mod drift;
+pub mod driver;
 pub mod functions;
 pub mod mutate;
 pub mod mutation;

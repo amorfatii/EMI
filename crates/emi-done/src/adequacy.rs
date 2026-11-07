@@ -7,20 +7,10 @@
 //! by default they are reported, not acted on (`adequacy.on_survivors`).
 //! Off unless `adequacy.max_mutants` is set: each mutant is one more run.
 
-use std::path::Path;
-use std::time::Duration;
-
-use emi_python::diffmut::diff_mutation;
-use emi_python::functions::changed_functions;
-use emi_python::mutation::Plan;
-use emi_python::proving::laws::LawEvidence;
-use emi_python::proving::pytest::Command;
-use emi_python::sandbox::Runner;
+use emi_driver::{Driver, LawEvidence};
 use serde_json::{Value, json};
 
 use crate::Config;
-use crate::baseline::Baseline;
-use crate::candidate::Candidate;
 
 /// What the mutants showed; `None` when adequacy is off.
 #[derive(Clone, Debug, Default)]
@@ -57,10 +47,10 @@ fn evidence_ids(change: &Value, laws: &LawEvidence) -> Vec<String> {
 /// Run the mutants of the candidate's added lines against the proving
 /// tests and the passing laws.
 pub fn measure(
-    repo: &Path,
-    view: &Path,
-    (config, baseline, cand): (&Config, &Baseline, &Candidate),
+    run: &emi_driver::Run,
+    config: &Config,
     (change, laws): (&Value, &LawEvidence),
+    driver: &dyn Driver,
 ) -> Option<Adequacy> {
     let max = usize::try_from(config.adequacy.max_mutants).ok()?;
     if max == 0 {
@@ -74,41 +64,15 @@ pub fn measure(
             survivors: Vec::new(),
         });
     }
-    let fail = |why: String| Adequacy {
-        report: json!({"state": "unverified", "reason": why}),
-        survivors: Vec::new(),
+    let mut report = match driver.adequacy(run, &ids, max) {
+        Ok(report) => report,
+        Err(why) => {
+            return Some(Adequacy {
+                report: json!({"state": "unverified", "reason": why.reason()}),
+                survivors: Vec::new(),
+            });
+        }
     };
-    let command = match Command::parse(&config.tests.command) {
-        Ok(c) => c,
-        Err(why) => return Some(fail(why)),
-    };
-    let argv = command.run_argv(&ids, ".emi-proving/adequacy.xml");
-    let mut env = config.pins.env();
-    env.push((
-        "PYTHONPATH".to_owned(),
-        emi_kernel::pins::Pins::python_path(&config.python_path),
-    ));
-    let plan = Plan {
-        runner: Runner {
-            repo,
-            objects: Some(view),
-            rev: &cand.rev,
-            link: &config.link,
-            env: &env,
-            timeout: Duration::from_secs(600),
-            network: false,
-        },
-        command: &argv,
-    };
-    let changed = match changed_functions(view, &baseline.sha, &cand.rev) {
-        Ok(c) => c,
-        Err(why) => return Some(fail(why)),
-    };
-    let result = match diff_mutation(&plan, &baseline.sha, &changed, max) {
-        Ok(r) => r,
-        Err(why) => return Some(fail(why)),
-    };
-    let mut report = result.to_json();
     // the unmutated run's record holds durations: not part of a decision
     if let Some(m) = report.as_object_mut() {
         m.remove("baseline");
@@ -164,14 +128,14 @@ mod tests {
         let change = json!({"proving_tests": [{"id": "tests/t.py::a"}, {"id": "tests/t.py::a"}]});
         let laws = LawEvidence {
             laws: vec![
-                emi_python::proving::laws::Law {
+                emi_driver::Law {
                     id: ".emi/laws/l.py::x".into(),
                     baseline: "passed".into(),
                     candidate: "passed".into(),
                     status: "holds",
                     counterexample: None,
                 },
-                emi_python::proving::laws::Law {
+                emi_driver::Law {
                     id: ".emi/laws/l.py::y".into(),
                     baseline: "failed".into(),
                     candidate: "failed".into(),

@@ -133,8 +133,9 @@ in [CONTEXT.md](CONTEXT.md), and the decisions are in [docs/adr](docs/adr).
 | `emi-git` | The one git runner, with repository config, hooks and replace refs switched off |
 | `emi-tree` | Verified snapshots of commits and working trees; line-level hunks |
 | `emi-exec` | Sandboxed execution: bubblewrap, process groups, verified cleanup |
-| `emi-python` | Python and pytest: function spans and mutants (tree-sitter-python), changed functions, the proving measurement, laws and stand-ins, coverage, behaviour comparison |
-| `emi-done` | The done check: configuration, baseline, the verification engine, regression, laws, preserve, receipts, replay |
+| `emi-driver` | The boundary between the checks and a language: the `Driver` trait and the evidence its stages return (ADR 0009) |
+| `emi-python` | The Python driver: function spans and mutants (tree-sitter-python), changed functions, the proving measurement, laws and stand-ins, coverage, behaviour comparison, pytest's output |
+| `emi-done` | The done check, the same for every language: configuration, baseline, the verification engine, regression, laws, preserve, receipts, replay. It depends on no language crate. |
 | `emi-hook` | Harness adapters (Claude Code, OpenCode V2), repair rounds, the laws lock |
 | `emi-cli` | The `emi` binary |
 

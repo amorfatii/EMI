@@ -180,6 +180,7 @@ dependencies = [
  "anyhow",
  "clap",
  "emi-done",
+ "emi-driver",
  "emi-hook",
  "emi-kernel",
  "emi-python",
@@ -191,6 +192,7 @@ dependencies = [
 name = "emi-done"
 version = "0.1.0"
 dependencies = [
+ "emi-driver",
  "emi-exec",
  "emi-git",
  "emi-kernel",
@@ -199,6 +201,13 @@ dependencies = [
  "rustix",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "emi-driver"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -243,6 +252,7 @@ dependencies = [
 name = "emi-python"
 version = "0.1.0"
 dependencies = [
+ "emi-driver",
  "emi-exec",
  "emi-git",
  "emi-kernel",

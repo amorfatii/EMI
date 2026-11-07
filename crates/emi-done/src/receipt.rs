@@ -34,6 +34,8 @@ pub struct Inputs<'a> {
     pub laws: Option<String>,
     /// What the person declared the change must keep (`preserve`).
     pub intent: Value,
+    /// The language the check ran in; `None` without a configuration.
+    pub driver: Option<&'a dyn emi_driver::Driver>,
 }
 
 /// The receipt's `inputs`.
@@ -48,7 +50,9 @@ pub fn inputs(i: &Inputs) -> Value {
         "pins": i.config.map(|c| c.pins.to_value()),
         // the plugin applies the in-process pins; a change to it changes
         // what a run draws, so it is an input like the pins themselves
-        "pins_plugin": i.config.map(|_| emi_kernel::json::digest("emi-pins-plugin", &json!(emi_python::pins::SOURCE))),
+        // the driver's own code (the pins plugin among it) changes what a
+        // run draws and reports: an input like the pins themselves
+        "driver": i.driver.map(|d| json!({"language": d.language(), "producer": d.producer()})),
         "environment": i.environment.and_then(|e| e.as_ref().ok()),
         "laws": i.laws,
         "intent": i.intent,
@@ -84,7 +88,7 @@ pub struct Parts<'a> {
     pub regression: &'a Regression,
     pub old_tests: &'a [Entry],
     pub change: &'a ChangeEvidence,
-    pub laws: &'a emi_python::proving::laws::LawEvidence,
+    pub laws: &'a emi_driver::LawEvidence,
     /// The behaviour comparison, when the person asked for it.
     pub preserved: Option<&'a crate::preserve::Preserved>,
     /// The mutants of the changed lines, when configured.
@@ -363,7 +367,7 @@ fn repair_lines(p: &Parts) -> Vec<String> {
 
 /// The change evidence with, on each changed function, the laws that
 /// execute what the change wrote in it.
-fn with_laws(mut change: Value, laws: &emi_python::proving::laws::LawEvidence) -> Value {
+fn with_laws(mut change: Value, laws: &emi_driver::LawEvidence) -> Value {
     if let Some(functions) = change["functions"].as_array_mut() {
         for f in functions {
             let key = format!(
@@ -421,7 +425,9 @@ pub fn assemble(p: &Parts) -> (Value, Action) {
 pub struct Limits<'a> {
     pub setting: Setting,
     pub link: &'a [String],
-    pub pytest: bool,
+    /// The test runner, when the command is not one its driver reads test
+    /// by test: no inventory was taken.
+    pub runner: Option<&'static str>,
     pub change: &'a ChangeEvidence,
     /// Why the configuration in use is not the baseline's, if it is not.
     pub config_note: Option<String>,
@@ -464,8 +470,8 @@ fn standing(l: &Limits) -> Vec<String> {
 /// limits: these are what a person should read every time.
 pub fn this_run(l: &Limits) -> Vec<String> {
     let mut out = Vec::new();
-    if !l.pytest {
-        out.push("No test inventory was taken because the test command is not pytest: a command that ends with success before running its tests would count as held.".to_owned());
+    if let Some(runner) = l.runner {
+        out.push(format!("No test inventory was taken because the test command is not {runner}: a command that ends with success before running its tests would count as held."));
     }
     out.extend(l.config_note.clone());
     match l.change {
@@ -543,7 +549,7 @@ mod tests {
             content_id: "b".repeat(40),
             rev: "c".repeat(40),
         };
-        let laws = emi_python::proving::laws::LawEvidence::default();
+        let laws = emi_driver::LawEvidence::default();
         f(&Parts {
             laws: &laws,
             preserved: None,
@@ -791,7 +797,7 @@ mod tests {
             let list = not_verified(&Limits {
                 setting,
                 link: &[],
-                pytest: true,
+                runner: None,
                 change: &change,
                 config_note: None,
             });

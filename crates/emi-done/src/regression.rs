@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 
 use crate::outcomes::Outcomes;
-use emi_python::report as pytest;
+use emi_driver::{Driver, file_of};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -130,7 +130,7 @@ impl Regression {
     /// Whether the baseline version of the test file `path` passes on the
     /// candidate.
     pub fn restored_result(&self, path: &str) -> Restored {
-        let named = self.attributed.iter().any(|id| pytest::file_of(id) == path);
+        let named = self.attributed.iter().any(|id| file_of(id) == path);
         match (named, self.complete) {
             (true, _) => Restored::Fails,
             (false, true) => Restored::Passes,
@@ -159,16 +159,13 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 /// Why the test command's own exit status says nothing about the tests: it
-/// never started, or pytest reports it found nothing to run, could not
+/// never started, or the runner reports it found nothing to run, could not
 /// read its command line, or failed inside itself.
-fn not_about_the_tests(code: Option<i64>, pytest: bool) -> Option<String> {
+fn not_about_the_tests(code: Option<i64>, reader: Option<&dyn Driver>) -> Option<String> {
     match code {
         None => Some("the test command did not exit normally".to_owned()),
         Some(c @ (126 | 127)) => Some(format!("the test command could not be started (exit {c})")),
-        Some(5) if pytest => Some("pytest found no tests to run".to_owned()),
-        Some(4) if pytest => Some("pytest did not understand its command line".to_owned()),
-        Some(3) if pytest => Some("pytest failed internally".to_owned()),
-        Some(_) => None,
+        Some(c) => reader.and_then(|d| d.exit_says(c)),
     }
 }
 
@@ -207,10 +204,10 @@ impl<'a> Run<'a> {
 /// Why there is no result to read: the run's last error line, when it left
 /// one (an import that failed, a plugin that would not load), without the
 /// scratch directory the run happened in, which differs from run to run.
-fn no_summary(errors: &str) -> String {
-    let base = "pytest execution has no complete readable result summary";
+fn no_summary(runner: &str, errors: &str) -> String {
+    let base = format!("{runner} execution has no complete readable result summary");
     let Some(last) = errors.lines().rev().find(|l| !l.trim().is_empty()) else {
-        return base.to_owned();
+        return base;
     };
     let stable: String = last
         .split_whitespace()
@@ -228,12 +225,13 @@ fn counted(n: usize, what: &str) -> Option<String> {
 }
 
 /// The receipt's `regression` from the controller's decision, the recorded
-/// run of the test check (`None` when it left none), whether the test
-/// command is pytest, and which files the run treated as what.
+/// run of the test check (`None` when it left none), the driver that reads
+/// the test command's output (`None` when none can), and which files the
+/// run treated as what.
 pub fn from_decision(
     decision: &Value,
     check: Option<&Value>,
-    pytest: bool,
+    reader: Option<&dyn Driver>,
     scope: &Scope,
 ) -> Regression {
     if !matches!(
@@ -245,32 +243,36 @@ pub fn from_decision(
     let run = Run::of(check);
     let ok = all_verified(decision);
     if let Some(why) = (!ok)
-        .then(|| not_about_the_tests(run.code, pytest))
+        .then(|| not_about_the_tests(run.code, reader))
         .flatten()
     {
         let mut all = vec![why];
         all.extend(strings(&decision["reasons"]));
         return Regression::unknown(all);
     }
-    let summary = run.reliable.then(|| pytest::summary(run.output)).flatten();
-    if pytest {
+    let summary = reader
+        .filter(|_| run.reliable)
+        .and_then(|d| d.summary(run.output));
+    if let Some(d) = reader {
         let Some(summary) = summary else {
-            return Regression::unknown(vec![no_summary(run.errors)]);
+            return Regression::unknown(vec![no_summary(d.runner(), run.errors)]);
         };
         if summary.skipped != 0 || summary.xfailed != 0 || summary.xpassed != 0 {
-            return Regression::unknown(vec!["pytest skipped tests or used expected-failure outcomes; regression execution is not fully established".into()]);
+            return Regression::unknown(vec![format!(
+                "{} skipped tests or used expected-failure outcomes; regression execution is not fully established",
+                d.runner()
+            )]);
         }
     }
-    let seen = if ok {
-        Vec::new()
-    } else {
-        pytest::failures(run.output)
+    let seen = match reader {
+        Some(d) if !ok => d.failures(run.output),
+        _ => Vec::new(),
     };
     let inventory = &decision["gates"]["verification"]["inventory"];
     let missing_all = strings(&inventory["missing"]);
     let complete =
         ok || summary.is_some_and(|s| !seen.is_empty() && s.failed + s.errors == seen.len() as u64);
-    let touched = |id: &String, files: &BTreeSet<String>| files.contains(pytest::file_of(id));
+    let touched = |id: &String, files: &BTreeSet<String>| files.contains(file_of(id));
     let failed: Vec<String> = seen
         .iter()
         .filter(|id| !touched(id, &scope.restored))
@@ -308,14 +310,17 @@ pub fn from_decision(
 /// longer loads). That is a break the proposer repairs, not a measurement
 /// that failed. `None` when the run did not end by itself with a failure
 /// status, or its output is cut or holds a summary after all.
-pub fn not_started(check: Option<&Value>, base: &Outcomes) -> Option<Regression> {
+pub fn not_started(
+    check: Option<&Value>,
+    base: &Outcomes,
+    reader: &dyn Driver,
+) -> Option<Regression> {
     let run = Run::of(check);
     let ended_failing = matches!(run.code, Some(c) if c != 0 && c != 126 && c != 127);
-    if !ended_failing || !run.reliable || base.passed == 0 || pytest::summary(run.output).is_some()
-    {
+    if !ended_failing || !run.reliable || base.passed == 0 || reader.summary(run.output).is_some() {
         return None;
     }
-    let why = no_summary(run.errors);
+    let why = no_summary(reader.runner(), run.errors);
     let detail = why
         .split_once(": ")
         .map_or("no error line was kept", |(_, d)| d);
@@ -368,6 +373,7 @@ pub fn from_outcomes(
     check: Option<&Value>,
     (base, cand): (&Outcomes, &Outcomes),
     scope: &Scope,
+    reader: &dyn Driver,
 ) -> Regression {
     if !matches!(
         decision["decision"].as_str(),
@@ -378,7 +384,9 @@ pub fn from_outcomes(
     let inventory = &decision["gates"]["verification"]["inventory"];
     match unreadable(check, cand, inventory) {
         Some(Unreadable::Why(why)) => return Regression::unknown(vec![why]),
-        Some(Unreadable::NotPerTest) => return from_decision(decision, check, true, scope),
+        Some(Unreadable::NotPerTest) => {
+            return from_decision(decision, check, Some(reader), scope);
+        }
         None => {}
     }
     let added: BTreeSet<String> = strings(&inventory["added"]).into_iter().collect();
@@ -399,7 +407,7 @@ pub fn from_outcomes(
         .chain(stopped.clone())
         .collect();
     let missing_all = strings(&inventory["missing"]);
-    let touched = |id: &String, files: &BTreeSet<String>| files.contains(pytest::file_of(id));
+    let touched = |id: &String, files: &BTreeSet<String>| files.contains(file_of(id));
     let mut attributed: Vec<String> = seen.iter().cloned().chain(missing_all.clone()).collect();
     attributed.sort();
     attributed.dedup();
@@ -564,7 +572,7 @@ mod tests {
     }
 
     fn judge(d: &Value, c: &Value, s: &Scope) -> Regression {
-        from_decision(d, Some(c), true, s)
+        from_decision(d, Some(c), Some(&emi_python::driver::Python), s)
     }
 
     fn outcomes(passed: u64, failed: &[&str], skipped: &[&str]) -> Outcomes {
@@ -577,7 +585,13 @@ mod tests {
     }
 
     fn compare(d: &Value, code: i64, base: &Outcomes, cand: &Outcomes, s: &Scope) -> Regression {
-        from_outcomes(d, Some(&run(code, "")), (base, cand), s)
+        from_outcomes(
+            d,
+            Some(&run(code, "")),
+            (base, cand),
+            s,
+            &emi_python::driver::Python,
+        )
     }
 
     #[test]
@@ -720,7 +734,7 @@ mod tests {
         let base = outcomes(5, &[], &[]);
         let died = json!({"exit_code": 4, "output_truncated": false, "stdout_tail": "",
             "stderr_tail": "Traceback\nImportError: cannot import name 'f' from 'pkg'\n"});
-        let r = not_started(Some(&died), &base);
+        let r = not_started(Some(&died), &base, &emi_python::driver::Python);
         assert_eq!(
             r.as_ref().map(|r| (r.status, r.reasons.clone())),
             Some((
@@ -746,10 +760,21 @@ mod tests {
             code(json!(127)),
             code(json!(0)),
         ] {
-            assert_eq!(not_started(Some(&other), &base), None, "{other}");
+            assert_eq!(
+                not_started(Some(&other), &base, &emi_python::driver::Python),
+                None,
+                "{other}"
+            );
         }
-        assert_eq!(not_started(Some(&died), &outcomes(0, &[], &[])), None);
-        assert_eq!(not_started(None, &base), None);
+        assert_eq!(
+            not_started(
+                Some(&died),
+                &outcomes(0, &[], &[]),
+                &emi_python::driver::Python
+            ),
+            None
+        );
+        assert_eq!(not_started(None, &base, &emi_python::driver::Python), None);
     }
 
     #[test]
@@ -879,7 +904,7 @@ mod tests {
         );
         // a line that names the scratch directory keeps only the file
         assert_eq!(
-            no_summary("x /tmp/emi-verify-1-2/run-0/src/a.py y"),
+            no_summary("pytest", "x /tmp/emi-verify-1-2/run-0/src/a.py y"),
             "pytest execution has no complete readable result summary: x a.py y"
         );
     }
@@ -1014,10 +1039,11 @@ mod tests {
             (1, true, Status::Unknown),
             (5, false, Status::Unknown),
         ] {
+            let reader: Option<&dyn Driver> = pytest.then_some(&emi_python::driver::Python);
             let r = from_decision(
                 &decision("rejected", "failed"),
                 Some(&run(code, "")),
-                pytest,
+                reader,
                 &Scope::default(),
             );
             assert_eq!(r.status, status, "exit {code}, pytest {pytest}");
@@ -1028,7 +1054,12 @@ mod tests {
     fn an_incomplete_decision_is_unknown_with_its_reasons() {
         let mut d = decision("incomplete", "unverified");
         d["reasons"] = json!(["bwrap missing"]);
-        let r = from_decision(&d, None, true, &Scope::default());
+        let r = from_decision(
+            &d,
+            None,
+            Some(&emi_python::driver::Python),
+            &Scope::default(),
+        );
         assert_eq!(
             (r.status, r.reasons.clone(), r.tests_run),
             (Status::Unknown, vec!["bwrap missing".to_owned()], None)

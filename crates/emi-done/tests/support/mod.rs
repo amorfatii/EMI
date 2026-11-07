@@ -137,6 +137,7 @@ impl Fixture {
 
     pub fn request<'a>(&'a self, approve: &'a [String]) -> Request<'a> {
         Request {
+            drivers: &[&emi_python::driver::Python],
             repo: self.path(),
             state_root: self.state.path(),
             baseline: None,

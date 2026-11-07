@@ -13,16 +13,11 @@
 //! changed).
 
 use std::path::Path;
-use std::time::Duration;
 
-use emi_python::drift::{self, InView};
-use emi_python::sandbox::Runner;
 use serde_json::{Value, json};
 
 use crate::Config;
 use crate::Error;
-use crate::baseline::Baseline;
-use crate::candidate::Candidate;
 
 const FILE: &str = "intent.json";
 
@@ -236,53 +231,19 @@ pub fn repair_lines(p: &Preserved) -> Vec<String> {
 /// Compare the functions the change modifies on the baseline and the
 /// candidate.
 pub fn measure(
-    repo: &Path,
-    view: &Path,
-    (config, baseline, cand): (&Config, &Baseline, &Candidate),
+    run: &emi_driver::Run,
+    config: &Config,
     intent: &Intent,
-    cache: Option<&emi_python::proving::ListingCache>,
+    driver: &dyn emi_driver::Driver,
 ) -> Preserved {
-    let mut env = config.pins.env();
-    env.push((
-        "PYTHONPATH".to_owned(),
-        emi_kernel::pins::Pins::python_path(&config.python_path),
-    ));
-    let runner = |rev| Runner {
-        repo,
-        objects: Some(view),
-        rev,
-        link: &config.link,
-        env: &env,
-        timeout: Duration::from_secs(1800),
-        network: false,
-    };
-    let (base, head) = (
-        InView {
-            runner: runner(&baseline.sha),
-            objects: view,
-        },
-        InView {
-            runner: runner(&cand.rev),
-            objects: view,
-        },
-    );
-    let commands = [config.tests.command.clone()];
-    let req = drift::Request {
-        repo: view,
-        base: baseline.sha.clone(),
-        head: cand.rev.clone(),
-        commands: &commands,
-        call_timeout_s: f64::from(config.preserve.call_timeout_s),
-        base_side: &base,
-        head_side: &head,
-        generated_examples: config.preserve.generated_examples,
-        module_roots: &config.python_path,
+    let ask = emi_driver::PreserveAsk {
         paths: &intent.paths,
-        cache,
+        call_timeout_s: f64::from(config.preserve.call_timeout_s),
+        generated_examples: config.preserve.generated_examples,
     };
-    match drift::measure(&req) {
+    match driver.preserve(run, &ask) {
         Ok(report) => read_report(&report, intent),
-        Err(why) => not_compared(&why),
+        Err(why) => not_compared(why.reason()),
     }
 }
 

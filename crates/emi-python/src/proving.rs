@@ -53,7 +53,7 @@ mod proof;
 pub mod pytest;
 mod rerun;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 pub use classify::BaselineResult;
@@ -125,27 +125,7 @@ pub struct Request {
     pub listing_cache: Option<ListingCache>,
 }
 
-/// A directory for the baseline's test listing, kept between checks: the
-/// baseline is fixed, so its listing is the same until the command, the
-/// pins or the environment change, which are all in the key.
-#[derive(Clone, Debug)]
-pub struct ListingCache {
-    pub dir: PathBuf,
-    /// The installed environment's identity (interpreter and packages).
-    pub environment: String,
-}
-
-impl ListingCache {
-    /// A cache under `root` for results taken in `environment`, kept apart
-    /// per [`crate::producer::producer`]: what EMI's own scripts produced
-    /// is not read by an EMI whose scripts differ.
-    pub fn new(root: &Path, environment: &str) -> Self {
-        Self {
-            dir: root.join(crate::producer::producer()),
-            environment: environment.to_owned(),
-        }
-    }
-}
+pub use emi_driver::ListingCache;
 
 impl Request {
     /// A request with the defaults: the working tree is the candidate, no

@@ -13,10 +13,11 @@ rustix.workspace = true
 emi-tree.workspace = true
 emi-exec.workspace = true
 emi-git.workspace = true
-emi-python.workspace = true
+emi-driver.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+emi-python.workspace = true
 tempfile.workspace = true
 
 [lints]

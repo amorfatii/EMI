@@ -141,19 +141,25 @@ pub fn init(a: &InitArgs) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// The languages this build checks (ADR 0009). A project's configuration
+/// names one of them.
+pub static DRIVERS: &[&dyn emi_driver::Driver] = &[&emi_python::driver::Python];
+
 /// Measure the same frozen candidate as the regression check, not a second
 /// snapshot of a working tree that the proposer may have edited meanwhile.
 fn change_evidence(context: &ChangeContext) -> ChangeEvidence {
-    let mut req = emi_done::proving_request(
-        context.repo,
+    let run = emi_done::run_of(
+        (context.repo, context.view),
         context.config,
-        context.baseline,
-        context.candidate,
+        (&context.baseline.sha, &context.candidate.rev),
+        context.listing_cache.clone(),
     );
-    req.listing_cache.clone_from(&context.listing_cache);
-    match emi_python::proving::measure_in(&req, context.view) {
-        Ok(evidence) => ChangeEvidence::Measured(evidence.to_json()),
-        Err(why) => ChangeEvidence::Failed(format!("change evidence could not be measured: {why}")),
+    match context.driver.change(&run) {
+        Ok(evidence) => ChangeEvidence::Measured(evidence),
+        Err(emi_driver::Unmeasured::Unsupported(why)) => ChangeEvidence::NotMeasured(why),
+        Err(emi_driver::Unmeasured::Failed(why)) => {
+            ChangeEvidence::Failed(format!("change evidence could not be measured: {why}"))
+        }
     }
 }
 
@@ -169,6 +175,7 @@ pub fn done(a: &DoneArgs) -> anyhow::Result<u8> {
         (b, how)
     });
     let request = Request {
+        drivers: DRIVERS,
         repo: &a.repo,
         state_root: &state_root,
         baseline: given,
@@ -230,7 +237,8 @@ pub fn replay(a: &ReplayArgs) -> anyhow::Result<u8> {
     let original = emi_kernel::strict::loads(&text)
         .map_err(|e| anyhow::anyhow!("{}: {e}", a.receipt.display()))?;
     let state_root = emi_done::state::root_from_env()?;
-    let replayed = emi_done::replay::replay(&a.repo, &state_root, &original, change_evidence)?;
+    let replayed =
+        emi_done::replay::replay((&a.repo, &state_root), &original, DRIVERS, change_evidence)?;
     let mut json = String::new();
     emi_kernel::json::canonical(&replayed.to_value(), &mut json);
     writeln!(std::io::stdout().lock(), "{json}")?;

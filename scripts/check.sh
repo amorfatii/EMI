@@ -25,6 +25,7 @@ esac
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 scripts/kernel-is-pure.sh
+scripts/emi-done-has-no-language.sh
 
 if $fast; then
     # tests that need no real pytest: unit tests, and integration tests

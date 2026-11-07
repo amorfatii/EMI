@@ -13,6 +13,9 @@ use crate::engine::contract::{self, Result};
 
 pub struct Store {
     pub dir: PathBuf,
+    /// The language whose test output the checks print, when one reads
+    /// it; the engine itself reads only the forms every driver shares.
+    pub driver: Option<&'static dyn emi_driver::Driver>,
 }
 
 /// An exclusive lock on a task's store, released when dropped. Appends to
@@ -53,7 +56,15 @@ impl Store {
         }
         Ok(Store {
             dir: authority.join(task_id),
+            driver: None,
         })
+    }
+
+    /// The store, reading test output with `driver`.
+    #[must_use]
+    pub fn reading(mut self, driver: &'static dyn emi_driver::Driver) -> Store {
+        self.driver = Some(driver);
+        self
     }
 
     pub fn exists(&self) -> bool {

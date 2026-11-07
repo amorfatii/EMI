@@ -89,10 +89,14 @@ impl Changed {
 /// Which sort of file a changed path is, if it needs a decision. A file
 /// that is both a test and runner configuration (`tests/conftest.py`) is
 /// runner configuration.
-fn classify(path: &str, globs: &[String], laws: &str) -> Option<What> {
+fn classify(
+    path: &str,
+    (globs, laws): (&[String], &str),
+    driver: &dyn emi_driver::Driver,
+) -> Option<What> {
     if in_dir(path, laws) {
         Some(What::Law)
-    } else if crate::engine::runner_config::matches(path) {
+    } else if driver.is_runner_config(path) {
         Some(What::RunnerConfig)
     } else if globs.iter().any(|g| emi_kernel::glob::fnmatch(path, g)) {
         Some(What::OldTest)
@@ -138,10 +142,9 @@ fn only_adds(view: &Path, baseline: &str, rev: &str, path: &str) -> bool {
 /// configuration it modified, deleted or added, and any change in the laws
 /// directory `laws`. `view` is a clean view of the repository holding `rev`.
 pub fn find(
-    view: &Path,
-    baseline: &str,
-    rev: &str,
+    (view, baseline, rev): (&Path, &str, &str),
     (globs, laws): (&[String], &str),
+    driver: &dyn emi_driver::Driver,
 ) -> Result<Vec<Changed>, Error> {
     let changes = crate::engine::verify::changes(view, baseline, rev).map_err(|e| {
         Error::Usage(format!(
@@ -150,7 +153,7 @@ pub fn find(
     })?;
     let mut out = Vec::new();
     for (path, change) in changes {
-        let Some(what) = classify(&path, globs, laws) else {
+        let Some(what) = classify(&path, (globs, laws), driver) else {
             continue;
         };
         let Some(kind) = kind_of(what, change) else {
@@ -307,10 +310,9 @@ mod tests {
         let head = git_out(dir.path(), &["rev-parse", "HEAD"]);
         let view = emi_git::CleanView::of(dir.path()).unwrap_or_else(|e| panic!("{e}"));
         let found = find(
-            view.path(),
-            &baseline,
-            &head,
+            (view.path(), &baseline, &head),
             (&["tests/*".to_owned()], ".emi/laws"),
+            &emi_python::driver::Python,
         )
         .unwrap_or_else(|e| panic!("{e}"));
         let shown: Vec<(&str, What, Kind)> = found

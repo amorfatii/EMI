@@ -18,6 +18,8 @@
 
 use std::collections::BTreeSet;
 
+use emi_driver::Driver;
+
 /// The version of this reader, recorded with what it read: a record kept
 /// from an older reader may name tests differently and is not comparable.
 pub const READER: u64 = 5;
@@ -117,19 +119,9 @@ fn parse_line(line: &str) -> Option<(&str, Outcome)> {
     Some((line[..at].trim_end(), outcome))
 }
 
-/// The file named by a short-summary line for a test file that could not
-/// be collected (`ERROR tests/test_a.py - ImportError: ...`): none of its
-/// tests ran. A test's own error line names an id with `::` and is read
-/// from its outcome line instead.
-fn collection_error(line: &str) -> Option<&str> {
-    let file = emi_python::report::id_of(line.strip_prefix("ERROR ")?);
-    (!file.contains("::") && !file.contains(char::is_whitespace) && file.ends_with(".py"))
-        .then_some(file)
-}
-
 /// Per-test outcomes in `stdout`, or `None` when it holds no per-test
 /// line at all (a collection listing names ids with no outcome).
-fn parse_lines(stdout: &str) -> Option<Evidence> {
+fn parse_lines(stdout: &str, driver: Option<&dyn Driver>) -> Option<Evidence> {
     let mut ev = Evidence {
         kind: Kind::Lines,
         ..Evidence::default()
@@ -137,7 +129,9 @@ fn parse_lines(stdout: &str) -> Option<Evidence> {
     // an id observed both passing and otherwise did not cleanly pass
     let mut bad: BTreeSet<String> = BTreeSet::new();
     for line in stdout.lines() {
-        if let Some(file) = collection_error(line.trim()) {
+        // a test file the runner could not load at all: none of its tests
+        // ran
+        if let Some(file) = driver.and_then(|d| d.uncollected_file(line.trim())) {
             ev.errored.insert(file.to_owned());
             continue;
         }
@@ -181,8 +175,8 @@ fn parse_lines(stdout: &str) -> Option<Evidence> {
 /// Pytest-summary evidence in `stdout`, or `None` when it holds no
 /// summary line. Failures the tail cut off still count through the
 /// summary's own numbers, even unnamed.
-fn parse_summary(stdout: &str) -> Option<Evidence> {
-    let summary = emi_python::report::summary(stdout)?;
+fn parse_summary(stdout: &str, driver: &dyn Driver) -> Option<Evidence> {
+    let summary = driver.summary(stdout)?;
     let mut ev = Evidence {
         kind: Kind::Summary,
         summary_passed: summary.passed,
@@ -192,7 +186,7 @@ fn parse_summary(stdout: &str) -> Option<Evidence> {
         summary_skipped: summary.skipped + summary.xfailed + summary.xpassed,
         ..Evidence::default()
     };
-    for id in emi_python::report::failures(stdout) {
+    for id in driver.failures(stdout) {
         ev.failed.insert(id);
     }
     Some(ev)
@@ -240,17 +234,52 @@ fn parse_listing(stdout: &str) -> Option<Result<Evidence, String>> {
 /// of a reporter when there is one, else per-test lines when it printed
 /// any, else its pytest summary. `Err` names why the output is not test
 /// evidence at all.
-pub fn parse(stdout: &str) -> Result<Evidence, String> {
+pub fn parse(stdout: &str, driver: Option<&dyn Driver>) -> Result<Evidence, String> {
     if let Some(listing) = parse_listing(stdout) {
         return listing;
     }
-    if let Some(ev) = parse_lines(stdout) {
+    if let Some(ev) = driver.and_then(|d| own_lines(stdout, d)) {
         return Ok(ev);
     }
-    if let Some(ev) = parse_summary(stdout) {
+    if let Some(ev) = parse_lines(stdout, driver) {
         return Ok(ev);
     }
-    Err("the run printed no per-test outcome and no pytest summary, so its exit status alone says whether the tests ran".into())
+    if let Some(ev) = driver.and_then(|d| parse_summary(stdout, d)) {
+        return Ok(ev);
+    }
+    let runner = driver.map_or("test runner", |d| d.runner());
+    Err(format!(
+        "the run printed no per-test outcome and no {runner} summary, so its exit status alone says whether the tests ran"
+    ))
+}
+
+/// Per-test outcomes in the driver's own form of output.
+fn own_lines(stdout: &str, driver: &dyn Driver) -> Option<Evidence> {
+    let lines = driver.outcome_lines(stdout)?;
+    let mut ev = Evidence {
+        kind: Kind::Lines,
+        ..Evidence::default()
+    };
+    for (id, outcome) in lines {
+        let bucket = match outcome {
+            "passed" => &mut ev.passed,
+            "failed" => &mut ev.failed,
+            "error" => &mut ev.errored,
+            // a skip, an expected failure or an unexpected pass did not
+            // run to its written expectation
+            _ => &mut ev.skipped,
+        };
+        bucket.insert(id);
+    }
+    let not_clean: BTreeSet<String> = ev
+        .failed
+        .iter()
+        .chain(&ev.errored)
+        .chain(&ev.skipped)
+        .cloned()
+        .collect();
+    ev.passed.retain(|id| !not_clean.contains(id));
+    Some(ev)
 }
 
 /// Whether the evidence establishes passing tests: no failure, no error,
@@ -298,7 +327,8 @@ mod tests {
     use super::*;
 
     fn parsed(out: &str) -> Evidence {
-        parse(out).unwrap_or_else(|e| panic!("evidence for {out:?}: {e}"))
+        parse(out, Some(&emi_python::driver::Python))
+            .unwrap_or_else(|e| panic!("evidence for {out:?}: {e}"))
     }
 
     #[test]
@@ -317,7 +347,7 @@ mod tests {
 
     #[test]
     fn an_early_exit_with_no_outcome_is_no_evidence() {
-        assert!(parse("").is_err());
+        assert!(parse("", Some(&emi_python::driver::Python)).is_err());
         let ev = parsed("....\nno tests ran in 0.01s\n");
         assert!(matches!(judge(&ev), Verdict::Fail(_)));
     }
@@ -368,8 +398,14 @@ mod tests {
         assert!(ev.skipped.contains("tests/t.py::test_p[a b]"));
         assert!(ev.errored.contains("tests/broken.py"));
         // cut before its closing count, or a count that disagrees: nothing
-        assert!(parse("EMI-OUTCOME passed tests/t.py::test_a\n").is_err());
-        assert!(parse("EMI-OUTCOME passed tests/t.py::test_a\nEMI-OUTCOMES 2\n").is_err());
+        assert!(parse("EMI-OUTCOME passed tests/t.py::test_a\n", None).is_err());
+        assert!(
+            parse(
+                "EMI-OUTCOME passed tests/t.py::test_a\nEMI-OUTCOMES 2\n",
+                None
+            )
+            .is_err()
+        );
         // an empty run is a listing of nothing, which establishes nothing
         let none = parsed("EMI-OUTCOMES 0\n");
         assert!(matches!(judge(&none), Verdict::Fail(_)));
@@ -387,6 +423,6 @@ mod tests {
     #[test]
     fn collection_listings_alone_are_no_evidence() {
         let out = "tests/test_app.py::test_one\ntests/test_app.py::test_two\n3 tests collected in 0.01s\n";
-        assert!(parse(out).is_err());
+        assert!(parse(out, Some(&emi_python::driver::Python)).is_err());
     }
 }

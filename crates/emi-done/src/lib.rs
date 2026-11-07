@@ -20,7 +20,6 @@ pub mod config;
 pub mod derived;
 pub mod detect;
 pub mod engine;
-pub mod environment;
 pub mod laws;
 pub mod oldtests;
 pub mod outcomes;
@@ -40,7 +39,7 @@ pub use baseline::{Baseline, Given};
 pub use change::ChangeEvidence;
 pub use config::Config;
 pub use emi_kernel::decide::Action;
-pub use run::proving_request;
+pub use run::run_of;
 
 /// The candidate id of the working tree.
 pub const WORKTREE: &str = "worktree";
@@ -88,6 +87,9 @@ impl Setting {
 
 /// One run of the done check.
 pub struct Request<'a> {
+    /// The languages this build can check (ADR 0009); the configuration's
+    /// `language` picks one.
+    pub drivers: &'static [&'static dyn emi_driver::Driver],
     pub repo: &'a Path,
     /// The user's state directory for EMI (see [`state::root_from_env`]).
     pub state_root: &'a Path,
@@ -106,6 +108,7 @@ pub struct Request<'a> {
 
 /// What a change measurer is told about the run.
 pub struct ChangeContext<'a> {
+    pub driver: &'static dyn emi_driver::Driver,
     pub repo: &'a Path,
     pub config: &'a Config,
     pub baseline: &'a Baseline,
@@ -116,7 +119,7 @@ pub struct ChangeContext<'a> {
     pub view: &'a Path,
     pub regression: &'a regression::Regression,
     /// Where the baseline's test listing may be kept between checks.
-    pub listing_cache: Option<emi_python::proving::ListingCache>,
+    pub listing_cache: Option<emi_driver::ListingCache>,
 }
 
 /// The receipt and the action it leads to.
@@ -218,7 +221,31 @@ pub fn done(
     let Some(config) = config else {
         return Ok(unconfigured(&repo, req, &baseline, &cand));
     };
-    run::check(&repo, view.path(), req, (&config, &baseline, &cand), change)
+    let driver = driver_for(req, &config)?;
+    run::check(
+        &repo,
+        view.path(),
+        (req, driver),
+        (&config, &baseline, &cand),
+        change,
+    )
+}
+
+/// The driver for the configuration's language, among those of this build.
+fn driver_for(req: &Request, config: &Config) -> Result<&'static dyn emi_driver::Driver, Error> {
+    let wanted = config.language.trim().to_ascii_lowercase();
+    req.drivers
+        .iter()
+        .find(|d| d.language() == wanted)
+        .copied()
+        .ok_or_else(|| {
+            let known: Vec<&str> = req.drivers.iter().map(|d| d.language()).collect();
+            Error::Config(format!(
+                "no driver for language {:?}; this build checks {}",
+                config.language,
+                known.join(", ")
+            ))
+        })
 }
 
 /// Run the baseline's tests ahead of the first check (see `run::warm`).
@@ -233,7 +260,8 @@ pub fn warm(req: &Request) -> Result<(), Error> {
     let view = emi_git::CleanView::of(&repo).map_err(Error::Usage)?;
     let config = config::read_file(&repo)?;
     let baseline = resolve_baseline(&repo, req, Some(&config))?;
-    run::warm(&repo, view.path(), req, &config, &baseline);
+    let driver = driver_for(req, &config)?;
+    run::warm(&repo, view.path(), (req, driver), &config, &baseline);
     Ok(())
 }
 
@@ -255,11 +283,11 @@ fn unconfigured(
     let limits = receipt::Limits {
         setting: req.setting,
         link: &[],
-        pytest: true,
+        runner: None,
         change: &change,
         config_note: None,
     };
-    let laws = emi_python::proving::laws::LawEvidence::default();
+    let laws = emi_driver::LawEvidence::default();
     let parts = receipt::Parts {
         laws: &laws,
         preserved: None,
@@ -274,6 +302,7 @@ fn unconfigured(
             environment: None,
             laws: None,
             intent: serde_json::Value::Null,
+            driver: None,
         }),
         baseline,
         candidate: cand,

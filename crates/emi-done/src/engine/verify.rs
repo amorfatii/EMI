@@ -119,15 +119,15 @@ fn globs(v: &Value) -> Vec<String> {
 /// sources, which a sandbox mounts back read-only inside the hidden
 /// repository.
 fn materialize(
-    objects: &Path,
-    repo: &Path,
+    (objects, repo): (&Path, &Path),
     candidate: &str,
     dest: &Path,
     contract: &Value,
+    driver: &dyn emi_driver::Driver,
 ) -> Result<Vec<PathBuf>> {
     snapshot::materialize(objects, candidate, dest)?;
     let linked = snapshot::link_dependencies(repo, dest, &globs(&contract["execution"]["link"]))?;
-    emi_python::pins::install(dest)?;
+    driver.install_pins(dest)?;
     Ok(linked)
 }
 
@@ -223,6 +223,8 @@ struct RunSetup<'a> {
     trusted_files: Vec<String>,
     /// Host paths a run must not read: the authority and the repository.
     hidden: Vec<PathBuf>,
+    /// The language whose pins the runs need and whose output they print.
+    driver: &'static dyn emi_driver::Driver,
 }
 
 /// What a run's sandbox mounts besides its workspace.
@@ -236,7 +238,13 @@ impl RunSetup<'_> {
     /// A fresh workspace at `dest`: the candidate, trusted files restored,
     /// held-out files injected.
     fn prepare(&self, dest: &Path) -> Result<Mounts> {
-        let linked = materialize(self.objects, self.repo, self.candidate, dest, self.contract)?;
+        let linked = materialize(
+            (self.objects, self.repo),
+            self.candidate,
+            dest,
+            self.contract,
+            self.driver,
+        )?;
         let v = &self.contract["verification"];
         restore_trusted(
             self.objects,
@@ -268,7 +276,13 @@ impl RunSetup<'_> {
 
     /// The baseline, for its test inventory (nothing restored or injected).
     fn prepare_baseline(&self, dest: &Path) -> Result<Mounts> {
-        let linked = materialize(self.objects, self.repo, self.baseline, dest, self.contract)?;
+        let linked = materialize(
+            (self.objects, self.repo),
+            self.baseline,
+            dest,
+            self.contract,
+            self.driver,
+        )?;
         Ok(Mounts {
             read_only: linked,
             hidden: self.hidden.clone(),
@@ -347,7 +361,7 @@ fn sandbox_required(execution: &Value) -> bool {
 
 /// Test ids the inventory command lists in `workspace`, or why it could not.
 fn inventory_ids(
-    inv: &Value,
+    (inv, driver): (&Value, &dyn emi_driver::Driver),
     workspace: &Path,
     execution: &Value,
     mounts: Mounts,
@@ -382,7 +396,10 @@ fn inventory_ids(
             o.stdout_bytes, spec.output_limit
         ));
     }
-    let ids = parse_inventory(&o.stdout, inv["format"] == "pytest")?;
+    let ids = match driver.listed(&o.stdout) {
+        Some(listed) => listed?,
+        None => parse_inventory(&o.stdout, inv["format"] == "pytest")?,
+    };
     Ok(ids.iter().map(|id| portable(id, workspace)).collect())
 }
 
@@ -462,10 +479,13 @@ fn reporter_inventory(
 /// Test-runner configuration the candidate added: restoring only undoes
 /// changes to files the baseline had, and a new conftest.py's hooks run in
 /// every check.
-fn added_runner_config(changed: &[(String, &'static str)]) -> Vec<String> {
+fn added_runner_config(
+    changed: &[(String, &'static str)],
+    driver: &dyn emi_driver::Driver,
+) -> Vec<String> {
     changed
         .iter()
-        .filter(|(p, kind)| *kind == "add" && crate::engine::runner_config::matches(p))
+        .filter(|(p, kind)| *kind == "add" && driver.is_runner_config(p))
         .map(|(p, _)| p.clone())
         .collect()
 }
@@ -484,7 +504,7 @@ fn verification_gate(
 ) -> Value {
     let contract = setup.contract;
     let spec = &contract["verification"];
-    let added_config = added_runner_config(setup.changed);
+    let added_config = added_runner_config(setup.changed, setup.driver);
     if spec.is_null() {
         return if added_config.is_empty() {
             json!({"state": "not_required"})
@@ -591,7 +611,7 @@ fn baseline_inventory(
         let base_ws = scratch.0.join("baseline");
         setup.prepare_baseline(&base_ws).and_then(|mounts| {
             inventory_ids(
-                &contract["verification"]["inventory"],
+                (&contract["verification"]["inventory"], setup.driver),
                 &base_ws,
                 &contract["execution"],
                 mounts,
@@ -635,7 +655,7 @@ fn run_check(
     id: &str,
     def: &Value,
     workspace: &Path,
-    execution: &Value,
+    execution: (&Value, &dyn emi_driver::Driver),
     mounts: Mounts,
 ) -> (String, String, Value) {
     let timeout = def["timeout_s"].as_f64().unwrap_or(120.0);
@@ -648,7 +668,7 @@ fn run_check_within(
     def: &Value,
     timeout: f64,
     workspace: &Path,
-    execution: &Value,
+    (execution, driver): (&Value, &dyn emi_driver::Driver),
     mounts: Mounts,
     with_evidence: bool,
 ) -> (String, String, Value) {
@@ -689,12 +709,12 @@ fn run_check_within(
     // but the retained output is the first bytes: say when it is not all
     let limit = spec.output_limit as u64;
     let (status, attribution, mut evidence) = if with_evidence {
-        apply_evidence(def, &o, limit, status, attribution)
+        apply_evidence(def, &o, (limit, driver), status, attribution)
     } else {
         (status.to_owned(), attribution.to_owned(), Value::Null)
     };
     if evidence.is_object() {
-        evidence["outcomes"] = outcomes(&o, limit, workspace);
+        evidence["outcomes"] = outcomes(&o, (limit, driver), workspace);
         evidence["reader"] = json!(crate::engine::evidence::READER);
     }
     let record = json!({
@@ -717,7 +737,7 @@ fn run_check_within(
 fn apply_evidence(
     def: &Value,
     o: &emi_exec::Outcome,
-    limit: u64,
+    (limit, driver): (u64, &dyn emi_driver::Driver),
     status: &str,
     attribution: &str,
 ) -> (String, String, Value) {
@@ -744,7 +764,7 @@ fn apply_evidence(
                    "reason": "the run's output was cut at the kept limit, so its test report is partial"}),
         );
     }
-    match crate::engine::evidence::parse(&o.stdout) {
+    match crate::engine::evidence::parse(&o.stdout, Some(driver)) {
         Ok(ev) => match crate::engine::evidence::judge(&ev) {
             crate::engine::evidence::Verdict::Pass => (
                 status.to_owned(),
@@ -772,11 +792,15 @@ const EVIDENCE_OUTPUT_LIMIT: usize = 32 << 20;
 /// status: what a caller needs to compare one run with another (a test
 /// already skipped at the baseline is not a regression). `null` unless the
 /// whole output was kept and it holds one outcome line per test.
-fn outcomes(o: &emi_exec::Outcome, limit: u64, workspace: &Path) -> Value {
+fn outcomes(
+    o: &emi_exec::Outcome,
+    (limit, driver): (u64, &dyn emi_driver::Driver),
+    workspace: &Path,
+) -> Value {
     if o.stdout_bytes > limit || o.stderr_bytes > limit {
         return Value::Null;
     }
-    match crate::engine::evidence::parse(&o.stdout) {
+    match crate::engine::evidence::parse(&o.stdout, Some(driver)) {
         Ok(ev) if ev.kind == crate::engine::evidence::Kind::Lines => {
             let failed: std::collections::BTreeSet<String> = ev
                 .failed
@@ -1097,7 +1121,13 @@ fn run_checks(
         // earlier check left behind
         let dir = scratch.join(format!("run-{n}"));
         let mounts = setup.prepare(&dir)?;
-        let (status, _, mut record) = run_check(id, def, &dir, &contract["execution"], mounts);
+        let (status, _, mut record) = run_check(
+            id,
+            def,
+            &dir,
+            (&contract["execution"], setup.driver),
+            mounts,
+        );
         let _ = std::fs::remove_dir_all(&dir);
         record["candidate_id"] = json!(candidate_id);
         record["contract_id"] = contract["contract_id"].clone();
@@ -1158,6 +1188,9 @@ fn run_verified(
         changed,
         trusted_files: files_matching(&subject.objects, &subject.baseline, &trusted)?,
         hidden: vec![subject.authority.clone(), subject.repo.clone()],
+        driver: store
+            .driver
+            .ok_or("the task's store names no language driver to run its checks with")?,
     };
     let restored = trusted_changes(&trusted, changed);
     let held_out: Vec<String> = vspec["held_out"]
@@ -1175,7 +1208,7 @@ fn run_verified(
         let dir = scratch.0.join("inventory");
         let mounts = setup.prepare(&dir)?;
         Some(inventory_ids(
-            &vspec["inventory"],
+            (&vspec["inventory"], setup.driver),
             &dir,
             &contract["execution"],
             mounts,
