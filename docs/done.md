@@ -143,8 +143,18 @@ of them (`not_verified`), with this run's under `this_run`.
   had that the candidate edited or deleted (`type: old-test`, item
   `old-test:PATH`), and every test-runner configuration file it edited,
   deleted or added (`type: runner-config`, item `runner-config:PATH`,
-  `kind: added` possible). Each needs an approval with
-  `emi done --approve ITEM`.
+  `kind: added` possible), and every agent-instruction file it edited,
+  deleted or added (`type: instructions`, item `instructions:PATH`). Each
+  needs an approval with `emi done --approve ITEM`.
+  - Agent instructions are the files coding agents read as instructions or
+    that register their hooks: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`,
+    `.cursorrules`, `copilot-instructions.md` and the like anywhere, and
+    anything under `.claude/`, `.cursor/`, `.opencode/`, `.gemini/`,
+    `.codex/` or `.windsurf/`. No test reads them, so they are not restored
+    and their `restored_result` is `not_run`. They wait for a person
+    because every later agent follows them: a note that a failing test may
+    be skipped, or a removed hook (the one that runs EMI, say), outlives
+    the change that wrote it.
   - Until approved, a touched old test runs in its baseline form. If that
     form fails, the entry says `restored_result: fails` (the proposer
     rewrote a test that fails as it was) and the action is `ask_person`, not
@@ -188,7 +198,7 @@ of them (`not_verified`), with this run's under `this_run`.
 |---|---|---|
 | 0 | `stop` | Regression held, no failing added test, no unapproved changed old test/runner configuration. It lets the proposer stop; it is not a statement that the task is done. |
 | 3 | `repair` | Something the proposer can fix; `repair` names every item of the first failing kind (up to five, then a count), each with what to do. |
-| 4 | `ask_person` | A changed old test or runner configuration file waits for an approval, or something else is a person's to decide; the receipt's `ask` lists it. One such case: the checks ran without a sandbox because bubblewrap is not available on this machine. A failure there still sends the change back; a pass is not the proposer's to accept. |
+| 4 | `ask_person` | A changed old test, runner configuration or agent-instruction file waits for an approval, or something else is a person's to decide; the receipt's `ask` lists it. One such case: the checks ran without a sandbox because bubblewrap is not available on this machine. A failure there still sends the change back; a pass is not the proposer's to accept. |
 | 5 | `incomplete` | EMI could not measure (no sandbox, no pytest, config absent at the baseline). Not a pass. An old test or law that held at the baseline and fails reproducibly is `repair` even then: the break is established whatever else could not be measured. |
 | 2 | | Usage or configuration error. |
 

@@ -42,7 +42,7 @@ The action and the exit status:
 |---|---|---|
 | 0 | `stop` | The evidence in the receipt holds. Not a statement that the task is done. |
 | 3 | `repair` | Something the agent can fix, named with what to do. |
-| 4 | `ask_person` | A changed old test, runner configuration or law waits for a person's approval, or the checks ran without a sandbox. |
+| 4 | `ask_person` | A changed old test, runner configuration, law or agent-instruction file waits for a person's approval, or the checks ran without a sandbox. |
 | 5 | `incomplete` | Something could not be measured, or did not reproduce. Never a pass. |
 | 2 | | Usage or configuration error. |
 

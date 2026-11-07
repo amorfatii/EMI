@@ -325,26 +325,38 @@ fn with_property(values: &[&str]) -> String {
     )
 }
 
+/// What the report made from `values` says test_a ran on.
+fn read_examples(values: &[&str]) -> Option<Result<emi_driver::Examples, String>> {
+    parse(&with_property(values))
+        .unwrap_or_else(|e| panic!("{e}"))
+        .examples("t.py::test_a")
+}
+
+fn read_one(value: &str) -> emi_driver::Examples {
+    match read_examples(&[value]) {
+        Some(Ok(e)) => e,
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn the_inputs_a_property_ran_on_are_read_from_its_report() {
     let every = "{&quot;events&quot;: {&quot;neg at 0x7f3a&quot;: 3}, &quot;failing&quot;: 0, &quot;invalid&quot;: 2, &quot;stopped&quot;: [&quot;nothing left to do&quot;], &quot;valid&quot;: 20}";
-    let report = parse(&with_property(&[every])).expect("report");
-    let e = report.examples("t.py::test_a").expect("recorded").expect("read");
-    assert_eq!((e.valid, e.invalid, e.failing, e.every_input), (20, 2, 0, true));
+    let e = read_one(every);
+    assert_eq!(
+        (e.valid, e.invalid, e.failing, e.every_input),
+        (20, 2, 0, true)
+    );
     assert_eq!(e.events.get("neg at 0x…"), Some(&3));
-
     let sampled = every.replace("nothing left to do", "settings.max_examples=100");
-    let report = parse(&with_property(&[&sampled])).expect("report");
-    let e = report.examples("t.py::test_a").expect("recorded").expect("read");
-    assert!(!e.every_input);
-
+    assert!(!read_one(&sampled).every_input);
     // recorded twice, by EMI and by someone else: neither is read
-    let report = parse(&with_property(&[every, every])).expect("report");
-    assert!(report.examples("t.py::test_a").expect("recorded").is_err());
+    assert!(matches!(read_examples(&[every, every]), Some(Err(_))));
     // missing a count: an error, never a zero
-    let report = parse(&with_property(&["{&quot;valid&quot;: 3}"])).expect("report");
-    assert!(report.examples("t.py::test_a").expect("recorded").is_err());
+    assert!(matches!(
+        read_examples(&["{&quot;valid&quot;: 3}"]),
+        Some(Err(_))
+    ));
     // a test that recorded nothing draws no inputs
-    let report = parse(&with_property(&[])).expect("report");
-    assert!(report.examples("t.py::test_a").is_none());
+    assert!(read_examples(&[]).is_none());
 }

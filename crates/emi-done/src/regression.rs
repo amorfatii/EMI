@@ -40,6 +40,8 @@ pub enum Restored {
     Passes,
     Fails,
     Unknown,
+    /// The file is not one the tests run.
+    NotRun,
 }
 
 impl Restored {
@@ -48,6 +50,7 @@ impl Restored {
             Restored::Passes => "passes",
             Restored::Fails => "fails",
             Restored::Unknown => "unknown",
+            Restored::NotRun => "not_run",
         }
     }
 }

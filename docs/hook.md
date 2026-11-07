@@ -47,7 +47,7 @@ intent clear`.
 An unchanged tree after a completed check is skipped. Repair checks are not
 cached as successful. When rounds run out the agent may stop, but the person
 sees **NOT VERIFIED**. Environment faults are **INCOMPLETE**, never a pass.
-Changes to old tests or runner configuration ask the person once per exact
+Changes to old tests, runner configuration or agent instructions ask the person once per exact
 file version. Nothing auto-approves those changes or merges a branch.
 
 The product checks the adapters with a scripted proposer and real pytest.

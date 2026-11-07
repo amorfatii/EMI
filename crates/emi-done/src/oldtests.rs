@@ -4,6 +4,13 @@
 //! shown to a person for an approval, bound to the exact version the
 //! candidate holds. Until approved, the file runs in its baseline form;
 //! once approved, the candidate's version runs and counts as evidence.
+//!
+//! The files that tell coding agents how to work (`CLAUDE.md`,
+//! `AGENTS.md`, `.claude/settings.json` and the like) are shown the same
+//! way. They do not change what the tests show, but every later agent
+//! reads them as instructions, and the hooks that run EMI are registered
+//! in them: a note that a failing test can be ignored, or a hook removed,
+//! outlives the change that wrote it.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -29,6 +36,9 @@ pub enum What {
     /// code must do. Any change to one, an added law included, changes the
     /// specification and waits for a person.
     Law,
+    /// A file that tells coding agents how to work, or registers their
+    /// hooks. Any change to one, an added one included, waits for a person.
+    Instructions,
 }
 
 impl What {
@@ -37,6 +47,7 @@ impl What {
             What::OldTest => "old-test",
             What::RunnerConfig => "runner-config",
             What::Law => "law",
+            What::Instructions => "instructions",
         }
     }
 }
@@ -45,8 +56,8 @@ impl What {
 pub enum Kind {
     Modified,
     Deleted,
-    /// Only test-runner configuration and laws can be added: an added
-    /// test is new.
+    /// Only test-runner configuration, laws and agent instructions can be
+    /// added: an added test is new.
     Added,
 }
 
@@ -71,7 +82,8 @@ pub struct Changed {
 }
 
 impl Changed {
-    /// The name `--approve` takes: `old-test:PATH` or `runner-config:PATH`.
+    /// The name `--approve` takes: `old-test:PATH`, `runner-config:PATH`,
+    /// `law:PATH` or `instructions:PATH`.
     pub fn item(&self) -> String {
         format!("{}:{}", self.what.as_str(), self.path)
     }
@@ -86,6 +98,38 @@ impl Changed {
     }
 }
 
+/// File names coding agents read as instructions, wherever they are.
+const INSTRUCTION_FILES: &[&str] = &[
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "AGENTS.md",
+    "AGENT.md",
+    "GEMINI.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    "copilot-instructions.md",
+];
+
+/// Directories that hold an agent harness's settings, hooks, commands,
+/// skills and memory, wherever they are.
+const INSTRUCTION_DIRS: &[&str] = &[
+    ".claude",
+    ".cursor",
+    ".opencode",
+    ".gemini",
+    ".codex",
+    ".windsurf",
+    ".clinerules",
+];
+
+/// Whether `path` is a file coding agents read as instructions.
+pub fn is_instructions(path: &str) -> bool {
+    let mut parts = path.split('/');
+    let name = parts.next_back().unwrap_or(path);
+    INSTRUCTION_FILES.contains(&name) || parts.any(|dir| INSTRUCTION_DIRS.contains(&dir))
+}
+
 /// Which sort of file a changed path is, if it needs a decision. A file
 /// that is both a test and runner configuration (`tests/conftest.py`) is
 /// runner configuration.
@@ -96,6 +140,8 @@ fn classify(
 ) -> Option<What> {
     if in_dir(path, laws) {
         Some(What::Law)
+    } else if is_instructions(path) {
+        Some(What::Instructions)
     } else if driver.is_runner_config(path) {
         Some(What::RunnerConfig)
     } else if globs.iter().any(|g| emi_kernel::glob::fnmatch(path, g)) {
@@ -115,7 +161,7 @@ fn kind_of(what: What, change: &str) -> Option<Kind> {
     match (what, change) {
         (_, "delete") => Some(Kind::Deleted),
         (_, "modify") => Some(Kind::Modified),
-        (What::RunnerConfig | What::Law, "add") => Some(Kind::Added),
+        (What::RunnerConfig | What::Law | What::Instructions, "add") => Some(Kind::Added),
         _ => None,
     }
 }
@@ -220,6 +266,8 @@ pub fn scope(entries: &[Entry]) -> Scope {
             (false, What::RunnerConfig, _) => {
                 scope.restored_runner.insert(path);
             }
+            // nothing a test runs reads them
+            (false, What::Instructions, _) => {}
         }
     }
     scope
@@ -243,6 +291,7 @@ pub fn settle(entries: &mut [Entry], regression: &Regression) {
             (false, What::OldTest) => regression.restored_result(&e.changed.path),
             // how a law fares is the laws' evidence, not the regression's
             (false, What::Law) => Restored::Unknown,
+            (false, What::Instructions) => Restored::NotRun,
             (false, What::RunnerConfig) if regression.status == Status::Unknown => {
                 Restored::Unknown
             }
@@ -337,6 +386,29 @@ mod tests {
         assert_eq!(found[2].content, DELETED);
         assert_eq!(found[1].item(), "runner-config:pyproject.toml");
         assert_eq!(found[4].item(), "old-test:tests/test_a.py");
+    }
+
+    #[test]
+    fn agent_instructions_are_known_wherever_they_are() {
+        for path in [
+            "CLAUDE.md",
+            "docs/AGENTS.md",
+            ".claude/settings.json",
+            ".claude/agents/reviewer.md",
+            "sub/.cursor/rules/style.mdc",
+            ".github/copilot-instructions.md",
+            ".opencode/plugins/emi/index.js",
+        ] {
+            assert!(is_instructions(path), "{path}");
+        }
+        for path in [
+            "README.md",
+            "claude.py",
+            "docs/agents.md",
+            "src/.claudeish/x",
+        ] {
+            assert!(!is_instructions(path), "{path}");
+        }
     }
 
     #[test]

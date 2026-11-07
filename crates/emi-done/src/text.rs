@@ -149,6 +149,11 @@ fn old_test_line(t: &Value) -> String {
     if t["type"] == "runner-config" {
         return format!("  {path} ({kind} test-runner configuration): needs approval: {ask}");
     }
+    if t["type"] == "instructions" {
+        return format!(
+            "  {path} ({kind} agent instructions, which later agents read): needs approval: {ask}"
+        );
+    }
     match t["restored_result"].as_str() {
         Some("fails") => format!(
             "  {path} ({kind}): this old test fails as it was at the baseline; the proposer \
@@ -166,7 +171,7 @@ fn old_test_line(t: &Value) -> String {
 fn old_test_lines(tests: &[Value]) -> Vec<String> {
     let mut out = Vec::new();
     if !tests.is_empty() {
-        out.push("Changed old tests and test-runner configuration:".to_owned());
+        out.push("Changed old tests, test-runner configuration and agent instructions:".to_owned());
     }
     out.extend(tests.iter().map(old_test_line));
     out
