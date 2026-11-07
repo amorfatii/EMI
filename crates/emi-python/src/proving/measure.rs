@@ -76,7 +76,7 @@ pub fn measure_in(req: &Request, objects: &Path) -> Result<ChangeEvidence, Strin
         },
     };
     let mut evidence = ctx.run();
-    if req.strict {
+    if req.strict && evidence.proving_tests.is_empty() {
         evidence.not_measured.push(STRICT_NOT_MEASURED.to_owned());
     }
     Ok(evidence.sorted())
@@ -215,7 +215,7 @@ impl Context<'_> {
         let mut evidence = match self.found_tests(&session, &changed) {
             Ok(classified) => {
                 let classified = companions(self.refine(&session, &changed, classified));
-                self.judge(&changed, classified)
+                self.judge(&session, &changed, classified)
             }
             Err(why) => self.unmeasured(&changed, vec![why]),
         };
@@ -454,6 +454,7 @@ impl Context<'_> {
     /// The evidence once the added tests are classified.
     fn judge(
         &self,
+        session: &Session,
         changed: &Result<ChangedFunctions, String>,
         classified: Classified,
     ) -> ChangeEvidence {
@@ -480,7 +481,13 @@ impl Context<'_> {
             }
         };
         let scope = self.scope(changed);
-        let verdicts = self.verdicts(&scope, &ids, unclassified, classified.coverage.as_ref());
+        let verdicts = self.verdicts(
+            session,
+            &scope,
+            &ids,
+            unclassified,
+            classified.coverage.as_ref(),
+        );
         let mut statuses = Vec::new();
         for (f, (status, why)) in scope.functions.iter().zip(verdicts) {
             statuses.push(status);
@@ -700,6 +707,7 @@ impl Context<'_> {
     /// One verdict per measured function, in order.
     fn verdicts(
         &self,
+        session: &Session,
         scope: &Scope,
         proving: &[String],
         unclassified: usize,
@@ -715,7 +723,7 @@ impl Context<'_> {
                 .map(|_| (FnStatus::Unexercised, None))
                 .collect()
         } else {
-            self.covered(scope, proving, coverage)
+            self.covered(session, scope, proving, coverage)
         };
         if unclassified == 0 {
             return judged;
@@ -741,6 +749,7 @@ impl Context<'_> {
     /// Verdicts from a coverage run of the proving tests on the candidate.
     fn covered(
         &self,
+        session: &Session,
         scope: &Scope,
         proving: &[String],
         cached: Option<&(Copy, crate::proving::exec::Coverage)>,
@@ -764,7 +773,7 @@ impl Context<'_> {
             Ok(report) => report,
             Err(why) => return all_unknown(why),
         };
-        scope
+        let mut out: Verdicts = scope
             .functions
             .iter()
             .map(|f| match std::fs::read_to_string(tree.dir.join(&f.file)) {
@@ -780,7 +789,41 @@ impl Context<'_> {
                     )),
                 ),
             })
-            .collect()
+            .collect();
+        if self.req.strict {
+            for (idx, f) in scope.functions.iter().enumerate() {
+                if out[idx].0 != FnStatus::Exercised || f.kind != ChangeKind::Modified {
+                    continue;
+                }
+                if let (Some((old_start, _)), Some((new_start, _))) = (f.old, f.new)
+                    && let Some(old_src) = hunks::file_at(self.objects, Some(&self.base), &f.file)
+                    && let Ok(new_src) = std::fs::read(tree.dir.join(&f.file))
+                    && let Some(reverted) = crate::syntax::revert_function(
+                        old_src.as_bytes(),
+                        &new_src,
+                        old_start,
+                        new_start,
+                    )
+                    && let Ok(trial) = session.tree(&format!("strict-{idx}"), &self.cand)
+                    && std::fs::write(trial.dir.join(&f.file), reverted).is_ok()
+                {
+                    let seen = session.observe(&trial, proving, &format!("strict-{idx}"));
+                    if proving
+                        .iter()
+                        .all(|id| seen.get(id) == Some(&Observed::Passed))
+                    {
+                        out[idx] = (
+                            FnStatus::Unexercised,
+                            Some(format!(
+                                "{}: {}: under the stricter rule, the proving tests still pass when this function is reverted to the baseline",
+                                f.file, f.name
+                            )),
+                        );
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Directories coverage must report on even when no test imports

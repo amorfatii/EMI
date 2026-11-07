@@ -357,22 +357,13 @@ struct Beyond {
 }
 
 fn beyond(
-    repo: &Path,
-    view: &Path,
-    (config, baseline, cand): (&Config, &Baseline, &Candidate),
-    (old_tests, change): (&[Entry], &ChangeEvidence),
+    ctx: &ChangeContext,
+    old_tests: &[Entry],
     intent: &crate::preserve::Intent,
-) -> Beyond {
-    let laws = crate::laws::measure(repo, view, (config, baseline, cand), old_tests);
-    let preserved = intent
-        .preserve
-        .then(|| crate::preserve::measure(repo, view, (config, baseline, cand), intent));
-    let adequacy = crate::adequacy::measure(
-        repo,
-        view,
-        (config, baseline, cand),
-        (&change.to_value(), &laws),
-    );
+    measure_change: impl FnOnce(&ChangeContext) -> ChangeEvidence,
+) -> (ChangeEvidence, Beyond) {
+    let (repo, view, config, baseline, cand) =
+        (ctx.repo, ctx.view, ctx.config, ctx.baseline, ctx.candidate);
     let not_product = |p: &str| {
         crate::oldtests::in_dir(p, &config.laws.dir)
             || config
@@ -382,13 +373,45 @@ fn beyond(
                 .any(|g| emi_kernel::glob::fnmatch(p, g))
             || emi_kernel::paths::is_test(p)
     };
-    let signals = crate::signals::find(view, (&baseline.sha, &cand.rev), not_product);
-    Beyond {
-        laws,
-        preserved,
-        adequacy,
-        signals,
+    let (change, laws, mut preserved, signals) = std::thread::scope(|scope| {
+        let laws_h =
+            scope.spawn(|| crate::laws::measure(repo, view, (config, baseline, cand), old_tests));
+        let preserved_h = scope.spawn(|| {
+            intent
+                .preserve
+                .then(|| crate::preserve::measure(repo, view, (config, baseline, cand), intent))
+        });
+        let signals_h =
+            scope.spawn(|| crate::signals::find(view, (&baseline.sha, &cand.rev), not_product));
+        let change = measure_change(ctx);
+        let laws = laws_h
+            .join()
+            .unwrap_or_else(|_| emi_python::proving::laws::LawEvidence {
+                fault: Some("laws measurement panicked".to_owned()),
+                ..Default::default()
+            });
+        let preserved = preserved_h.join().unwrap_or(None);
+        let signals = signals_h.join().unwrap_or_default();
+        (change, laws, preserved, signals)
+    });
+    if let Some(p) = &mut preserved {
+        p.exclude_proven(&change, intent);
     }
+    let adequacy = crate::adequacy::measure(
+        repo,
+        view,
+        (config, baseline, cand),
+        (&change.to_value(), &laws),
+    );
+    (
+        change,
+        Beyond {
+            laws,
+            preserved,
+            adequacy,
+            signals,
+        },
+    )
 }
 
 /// What the person declared about the change: the request's, or, in the
@@ -474,7 +497,8 @@ pub fn check(
         Err(e) => measured_unknown(e),
     };
     oldtests::settle(&mut old_tests, &measured.regression);
-    let change = change(&ChangeContext {
+    let intent = intent(req, &repo_dir)?;
+    let ctx = ChangeContext {
         repo,
         config,
         baseline,
@@ -483,15 +507,8 @@ pub fn check(
         view,
         regression: &measured.regression,
         listing_cache: listing_cache(&repo_dir, env_id),
-    });
-    let intent = intent(req, &repo_dir)?;
-    let more = beyond(
-        repo,
-        view,
-        (config, baseline, cand),
-        (&old_tests, &change),
-        &intent,
-    );
+    };
+    let (change, more) = beyond(&ctx, &old_tests, &intent, change);
     let (not_verified, this_run) = limits(
         (repo, req, config, baseline),
         &change,

@@ -30,7 +30,7 @@ use crate::Result;
 use crate::sandbox::{Copy, Runner};
 
 pub const NOTE: &str = "inputs come from the test run on the base commit; drift on inputs the tests never pass is not seen";
-const LIMITS: &str = "Python only; module-level functions, static methods, class methods and instance methods are replayed; nested and async functions are counted, not replayed; pinned is not measured yet";
+const LIMITS: &str = "Python only; module-level functions, static methods, class methods and instance methods are replayed; nested and async functions are counted, not replayed";
 
 /// A tree the commands of one side run in; removed when dropped.
 pub trait Tree {
@@ -219,11 +219,40 @@ impl Report {
     }
 }
 
-/// Whether a test would notice the drift. Answering it means reverting the
-/// function to its base version on the head commit and rerunning the tests;
-/// until that exists the answer is unknown, never a guess.
-fn pinned(_file: &str, _qualname: &str) -> &'static str {
-    "unknown"
+/// Whether the head side's tests notice the drift when `t` is reverted to
+/// its base version on a fresh copy of the head commit.
+fn pinned<S: Side>(r: &Request<S>, old_dir: &Path, new_dir: &Path, t: &Target) -> &'static str {
+    let (Ok(old_src), Ok(new_src)) = (
+        std::fs::read(old_dir.join(&t.file)),
+        std::fs::read(new_dir.join(&t.file)),
+    ) else {
+        return "unknown";
+    };
+    let Some(reverted) = crate::syntax::revert_function(&old_src, &new_src, t.old_line, t.new_line)
+    else {
+        return "unknown";
+    };
+    let Ok(trial) = r.head_side.tree(&format!("drift-pin-{}", t.id)) else {
+        return "unknown";
+    };
+    if std::fs::write(trial.dir().join(&t.file), reverted).is_err() {
+        return "unknown";
+    }
+    if r.commands.is_empty() {
+        return "unknown";
+    }
+    for cmd in r.commands {
+        let o = r
+            .head_side
+            .run(&trial, cmd, r.head_side.env(), r.head_side.timeout());
+        if o.status == emi_exec::Status::NotLaunched || !o.receipt.verified_clean {
+            return "unknown";
+        }
+        if o.status != emi_exec::Status::Exited || o.exit_code != Some(0) {
+            return "yes";
+        }
+    }
+    "no"
 }
 
 /// The modified Python functions; added and removed ones are counted, and
@@ -289,6 +318,8 @@ fn targets<S: Side>(
             file: f.file.clone(),
             qualname: name.to_owned(),
             kind,
+            old_line: f.old.map_or(0, |s| s.0),
+            new_line: f.new.map_or(0, |s| s.0),
         });
     }
     Ok(out)
@@ -460,14 +491,14 @@ fn replayable<'a>(
                 report.counts.no_inputs += 1;
                 report
                     .functions
-                    .insert(t.id, entry(t, "no_inputs", 0, &Tally::default()));
+                    .insert(t.id, entry(t, "no_inputs", 0, &Tally::default(), "unknown"));
             }
         }
     }
     out
 }
 
-fn entry(t: &Target, status: &str, inputs: usize, tally: &Tally) -> Value {
+fn entry(t: &Target, status: &str, inputs: usize, tally: &Tally, is_pinned: &str) -> Value {
     json!({
         "file": t.file,
         "name": t.qualname,
@@ -478,7 +509,7 @@ fn entry(t: &Target, status: &str, inputs: usize, tally: &Tally) -> Value {
         "drifts": tally.drifts,
         "more_drifts": tally.more_drifts,
         "unstable": tally.unstable,
-        "pinned": pinned(&t.file, &t.qualname),
+        "pinned": is_pinned,
     })
 }
 
@@ -512,10 +543,10 @@ fn replay_all<S: Side>(
     let head = python::replay(r.head_side, &new, &items, &settings(&pythons[1], 1));
     match (base, head) {
         (Ok(b), Ok(h)) => {
-            for r in &items {
-                let id = &r.target.id;
+            for item in &items {
+                let id = &item.target.id;
                 let at = |m: &BTreeMap<usize, Value>| m.get(id).cloned().unwrap_or(Value::Null);
-                record(report, r, &at(&b), &at(&h));
+                record(report, r, (old.dir(), new.dir()), item, &at(&b), &at(&h));
             }
         }
         (b, h) => {
@@ -524,10 +555,16 @@ fn replay_all<S: Side>(
                     .reasons
                     .extend(e.map(|e| format!("replay on {side}: {e}")));
             }
-            for r in &items {
-                report.counts.not_replayed += r.inputs.len() as u64;
-                let e = entry(r.target, "not_replayed", r.inputs.len(), &Tally::default());
-                report.functions.insert(r.target.id, e);
+            for item in &items {
+                report.counts.not_replayed += item.inputs.len() as u64;
+                let e = entry(
+                    item.target,
+                    "not_replayed",
+                    item.inputs.len(),
+                    &Tally::default(),
+                    "unknown",
+                );
+                report.functions.insert(item.target.id, e);
             }
         }
     }
@@ -539,7 +576,14 @@ fn outcomes(v: &Value) -> Option<&[Value]> {
 }
 
 /// Fold one target's two replays into the report.
-fn record(report: &mut Report, r: &Replay, base: &Value, head: &Value) {
+fn record<S: Side>(
+    report: &mut Report,
+    req: &Request<S>,
+    (old_dir, new_dir): (&Path, &Path),
+    r: &Replay,
+    base: &Value,
+    head: &Value,
+) {
     let t = r.target;
     let failed: Vec<String> = [("base", base), ("head", head)]
         .into_iter()
@@ -553,7 +597,13 @@ fn record(report: &mut Report, r: &Replay, base: &Value, head: &Value) {
             t.qualname,
             failed.join("; ")
         ));
-        let e = entry(t, "import_failed", r.inputs.len(), &Tally::default());
+        let e = entry(
+            t,
+            "import_failed",
+            r.inputs.len(),
+            &Tally::default(),
+            "unknown",
+        );
         report.functions.insert(t.id, e);
         return;
     };
@@ -576,7 +626,12 @@ fn record(report: &mut Report, r: &Replay, base: &Value, head: &Value) {
     } else {
         "not_compared"
     };
+    let is_pinned = if tally.drift_count() > 0 {
+        pinned(req, old_dir, new_dir, t)
+    } else {
+        "unknown"
+    };
     report
         .functions
-        .insert(t.id, entry(t, status, r.inputs.len(), &tally));
+        .insert(t.id, entry(t, status, r.inputs.len(), &tally, is_pinned));
 }

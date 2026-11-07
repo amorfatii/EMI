@@ -533,24 +533,66 @@ fn propose(run: &Run, file: &str, p: &mut Proposal, budget: &mut usize) -> Resul
             targets.insert((f_file.clone(), f.start), (f_file, f));
         }
     }
+    let mut trials = Vec::new();
     for (f_file, f) in targets.into_values() {
         let src = std::fs::read(copy.dir.join(&f_file)).map_err(|e| e.to_string())?;
         for stand_in in stand_ins(&src, &f) {
             if *budget == 0 {
                 p.notes
                     .push("the stand-in budget ran out before every function was tried".into());
-                return Ok(());
+                break;
             }
             *budget -= 1;
-            let trial = run.laid("laws-standin", &base, &only)?;
-            std::fs::write(trial.dir.join(&f_file), &stand_in.source).map_err(|e| e.to_string())?;
-            let seen = run.session.observe(&trial, &passing, "standin");
-            if passing
+            trials.push((f_file.clone(), f.name.clone(), stand_in));
+        }
+        if *budget == 0 && !p.notes.is_empty() {
+            break;
+        }
+    }
+    run_stand_ins(run, (&base, &only, &passing), &trials, p)
+}
+
+fn run_stand_ins(
+    run: &Run,
+    (base_ref, only_ref, passing_ref): (&Copy, &BTreeSet<String>, &[String]),
+    trials: &[(String, String, crate::standins::StandIn)],
+    p: &mut Proposal,
+) -> Result<(), String> {
+    let workers = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(4);
+    for (chunk_idx, chunk) in trials.chunks(workers).enumerate() {
+        let results: Vec<Result<Option<String>, String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
                 .iter()
-                .all(|id| seen.get(id) == Some(&Observed::Passed))
-            {
-                p.vacuous_for
-                    .push(format!("{f_file}::{} {}", f.name, stand_in.label));
+                .enumerate()
+                .map(|(i, (f_file, f_name, stand_in))| {
+                    let n = chunk_idx * workers + i;
+                    s.spawn(move || {
+                        let trial = run.laid(&format!("laws-standin-{n}"), base_ref, only_ref)?;
+                        std::fs::write(trial.dir.join(f_file), &stand_in.source)
+                            .map_err(|e| e.to_string())?;
+                        let seen =
+                            run.session
+                                .observe(&trial, passing_ref, &format!("standin-{n}"));
+                        Ok(passing_ref
+                            .iter()
+                            .all(|id| seen.get(id) == Some(&Observed::Passed))
+                            .then(|| format!("{f_file}::{f_name} {}", stand_in.label)))
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("stand-in thread panicked".into()))
+                })
+                .collect()
+        });
+        for res in results {
+            if let Some(vac) = res? {
+                p.vacuous_for.push(vac);
             }
         }
     }

@@ -165,3 +165,28 @@ fn instance_methods_and_in_place_mutations_are_compared_under_preserve() {
         "{receipt}"
     );
 }
+
+#[test]
+fn a_mixed_commit_with_a_proven_fix_and_a_refactoring_guards_only_the_unproven_refactoring() {
+    let p = project();
+    // Fix `add` (handling None) with a proving test AND refactor `sign` cleanly in the same commit
+    p.write(
+        "app.py",
+        "def add(a, b):\n    if a is None:\n        return b\n    return a + b\n\n\ndef sign(n: int) -> str:\n    return \"negative\" if n < 0 else (\"zero\" if n == 0 else \"positive\")\n",
+    );
+    p.write(
+        "tests/test_add.py",
+        "from app import add\n\n\ndef test_add_none():\n    assert add(None, 4) == 4\n",
+    );
+    let (code, receipt) = done(&p, &["--preserve"]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(
+        receipt["preserve"]["divergences"],
+        serde_json::json!([]),
+        "{receipt}"
+    );
+    assert_eq!(
+        receipt["preserve"]["functions"][0]["function"], "sign",
+        "{receipt}"
+    );
+}

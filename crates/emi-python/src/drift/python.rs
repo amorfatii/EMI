@@ -131,6 +131,8 @@ pub struct Target {
     pub file: String,
     pub qualname: String,
     pub kind: String,
+    pub old_line: u32,
+    pub new_line: u32,
 }
 
 /// What the test run recorded for one target, merged over its processes.

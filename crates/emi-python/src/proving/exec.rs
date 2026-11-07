@@ -4,10 +4,10 @@
 //! unless asked, the live repository hidden, dependency directories
 //! read-only, the process group cleaned up and the cleanup verified.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::covrun::{self, CoverageRun};
@@ -30,7 +30,7 @@ pub struct Session<'a> {
     /// The repository that holds the commits (a clean view of the live one).
     pub objects: &'a Path,
     pub command: &'a Command,
-    isolations: RefCell<BTreeSet<String>>,
+    isolations: Mutex<BTreeSet<String>>,
 }
 
 /// What the test command lists at one revision.
@@ -158,7 +158,7 @@ impl<'a> Session<'a> {
             runner,
             objects,
             command,
-            isolations: RefCell::new(BTreeSet::new()),
+            isolations: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -173,9 +173,9 @@ impl<'a> Session<'a> {
 
     fn run_with(&self, runner: &Runner, copy: &Copy, argv: &[String]) -> Outcome {
         let o = runner.run(copy, argv, runner.timeout);
-        self.isolations
-            .borrow_mut()
-            .insert(o.receipt.isolation.clone());
+        if let Ok(mut seen) = self.isolations.lock() {
+            seen.insert(o.receipt.isolation.clone());
+        }
         o
     }
 
@@ -183,7 +183,7 @@ impl<'a> Session<'a> {
     /// used instead (never claimed stronger than it was). `None` when
     /// nothing ran.
     pub fn isolation(&self) -> Option<String> {
-        let seen = self.isolations.borrow();
+        let seen = self.isolations.lock().ok()?;
         match seen.len() {
             0 => None,
             _ if seen.iter().all(|i| i == "bwrap") => Some("bwrap".into()),
@@ -353,8 +353,10 @@ impl<'a> Session<'a> {
         let (resolved, record) = covrun::measure_in(&self.runner, copy, &run, &files);
         let steps = record["steps"].as_array().map_or(&[][..], Vec::as_slice);
         for step in steps {
-            if let Some(isolation) = step["isolation"].as_str() {
-                self.isolations.borrow_mut().insert(isolation.to_owned());
+            if let Some(isolation) = step["isolation"].as_str()
+                && let Ok(mut seen) = self.isolations.lock()
+            {
+                seen.insert(isolation.to_owned());
             }
         }
         // the step that failed is the last one recorded; its last error

@@ -750,3 +750,33 @@ fn the_strict_rule_is_declared_not_measured() {
         "{v}"
     );
 }
+
+#[test]
+fn the_strict_rule_downgrades_a_function_whose_change_the_proving_tests_do_not_depend_on() {
+    let fx = Fixture::new();
+    fx.write(&[
+        (
+            "src/calc.py",
+            "def add(a, b):\n    if a is None:\n        return b\n    return a + b\n\n\ndef sub(a, b):\n    x = a - b\n    return x\n",
+        ),
+        (
+            "tests/test_calc.py",
+            "from calc import add, sub\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\ndef test_add_none():\n    sub(3, 1)\n    assert add(None, 5) == 5\n",
+        ),
+    ]);
+    fx.commit("handle None and touch sub");
+    let mut req = fx.request();
+    // Under plain coverage, test_add_none executes the modified line in sub(3, 1)
+    let plain = change(&req).to_json();
+    assert_eq!(plain["status"], "exercised", "{plain}");
+
+    // Under strict causal ablation, reverting sub to baseline still lets test_add_none pass
+    req.strict = true;
+    let strict = change(&req).to_json();
+    assert_eq!(strict["status"], "partly_exercised", "{strict}");
+    let fns = strict["functions"].as_array().expect("functions");
+    assert_eq!(fns[0]["function"], "add");
+    assert_eq!(fns[0]["status"], "exercised");
+    assert_eq!(fns[1]["function"], "sub");
+    assert_eq!(fns[1]["status"], "unexercised");
+}

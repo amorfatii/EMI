@@ -160,6 +160,24 @@ fn failing_line(t: &crate::change::Failing) -> String {
     }
 }
 
+fn unexercised(p: &Parts, change: &crate::change::Facts) -> Vec<String> {
+    let Some(preserved) = p.preserved else {
+        return change.unexercised.clone();
+    };
+    change
+        .unexercised
+        .iter()
+        .filter(|entry| {
+            let head = entry.split(" (line ").next().unwrap_or(entry.as_str());
+            let Some((file, function)) = head.split_once(':') else {
+                return true;
+            };
+            !preserved.verified(file, function)
+        })
+        .cloned()
+        .collect()
+}
+
 fn facts(p: &Parts) -> decide::Facts {
     let change = p.change.facts();
     decide::Facts {
@@ -167,7 +185,7 @@ fn facts(p: &Parts) -> decide::Facts {
         regression_broken: p.regression.status == Status::Broken,
         failing_tests: failing(p).len(),
         redundant_tests: change.redundant.len(),
-        unexercised_functions: change.unexercised.len(),
+        unexercised_functions: unexercised(p, &change).len(),
         nondeterministic: p.regression.nondeterministic.len() + p.laws.count("nondeterministic"),
         laws_broken: p.laws.count("broken"),
         laws_unmet: p.laws.count("unmet"),
@@ -289,8 +307,9 @@ fn repair_lines(p: &Parts) -> Vec<String> {
     if p.on_redundant == OnRedundant::Repair && !change.redundant.is_empty() {
         return itemize(&change.redundant, redundant_line);
     }
-    if p.on_unproven == OnUnproven::Repair && !change.unexercised.is_empty() {
-        return itemize(&change.unexercised, |f| {
+    let unproven = unexercised(p, &change);
+    if p.on_unproven == OnUnproven::Repair && !unproven.is_empty() {
+        return itemize(&unproven, |f| {
             format!("No proving test runs {f}; add a test that fails without your change.")
         });
     }

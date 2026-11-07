@@ -18,6 +18,8 @@ pub struct Function {
     pub body_start: u32,
     /// Byte range of the body, for replacing it.
     pub body: (usize, usize),
+    /// Byte range of the entire definition, decorators included.
+    pub span: (usize, usize),
 }
 
 /// 1-based line of a byte offset, from the source's newline offsets.
@@ -99,7 +101,8 @@ pub fn functions(src: &[u8]) -> Option<Vec<Function>> {
                 node.child_by_field_name("body"),
             )
         {
-            let (start, end) = lines.span(outer(node));
+            let outer_node = outer(node);
+            let (start, end) = lines.span(outer_node);
             found.push(Function {
                 name: text(name, src),
                 scope: enclosing_scope(node, src),
@@ -107,6 +110,7 @@ pub fn functions(src: &[u8]) -> Option<Vec<Function>> {
                 end,
                 body_start: lines.line(body.start_byte()),
                 body: (body.start_byte(), body.end_byte()),
+                span: (outer_node.start_byte(), outer_node.end_byte()),
             });
         }
         let mut cursor = node.walk();
@@ -114,6 +118,40 @@ pub fn functions(src: &[u8]) -> Option<Vec<Function>> {
     }
     found.sort_by_key(|f| (f.body.0, f.body.1));
     Some(found)
+}
+
+/// Splice the baseline version of the function at `old_start` in `old_src`
+/// over the candidate version at `new_start` in `new_src`. Returns `None`
+/// if either function cannot be located, the spliced bytes equal `new_src`,
+/// or the result does not parse.
+pub fn revert_function(
+    old_src: &[u8],
+    new_src: &[u8],
+    old_start: u32,
+    new_start: u32,
+) -> Option<Vec<u8>> {
+    let old_fns = functions(old_src)?;
+    let new_fns = functions(new_src)?;
+    let old_fn = old_fns.iter().find(|f| f.start == old_start)?;
+    let new_fn = new_fns.iter().find(|f| f.start == new_start)?;
+    let splice = |old_range: (usize, usize), new_range: (usize, usize)| -> Vec<u8> {
+        let mut out = Vec::with_capacity(
+            new_src.len() - (new_range.1 - new_range.0) + (old_range.1 - old_range.0),
+        );
+        out.extend_from_slice(&new_src[..new_range.0]);
+        out.extend_from_slice(&old_src[old_range.0..old_range.1]);
+        out.extend_from_slice(&new_src[new_range.1..]);
+        out
+    };
+    let by_body = splice(old_fn.body, new_fn.body);
+    if by_body != new_src && parses(&by_body) {
+        return Some(by_body);
+    }
+    let by_span = splice(old_fn.span, new_fn.span);
+    if by_span != new_src && parses(&by_span) {
+        return Some(by_span);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -148,6 +186,17 @@ mod tests {
             .map(|f| (f.scope.as_str(), f.name.as_str()))
             .collect();
         assert_eq!(names, [("A", "m"), ("A.m", "inner")]);
+    }
+
+    #[test]
+    fn revert_function_restores_only_the_target_function() {
+        let old_src = b"def f(x):\n    return x + 1\n\ndef g(y):\n    return y * 2\n";
+        let new_src = b"def f(x):\n    return x + 10\n\ndef g(y):\n    return y * 20\n";
+        let reverted = revert_function(old_src, new_src, 4, 4).unwrap_or_default();
+        assert_eq!(
+            reverted,
+            b"def f(x):\n    return x + 10\n\ndef g(y):\n    return y * 2\n"
+        );
     }
 
     #[test]

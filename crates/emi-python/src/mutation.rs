@@ -150,11 +150,35 @@ pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
         return Ok(results);
     }
     let timeout = mutant_timeout(plan.runner.timeout, took);
-    let mut n = 1;
     for t in targets {
-        let tally = results.tallies.entry(t.key.clone()).or_default();
-        for m in &t.mutants {
-            match run_mutant(plan, &t.key, m, n, timeout) {
+        results.tallies.entry(t.key.clone()).or_default();
+    }
+    let jobs: Vec<(&FunctionKey, &Mutant, usize)> = targets
+        .iter()
+        .flat_map(|t| t.mutants.iter().map(move |m| (&t.key, m)))
+        .enumerate()
+        .map(|(i, (key, m))| (key, m, i + 1))
+        .collect();
+    let workers = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(4);
+    for chunk in jobs.chunks(workers) {
+        let outcomes: Vec<(&FunctionKey, &Mutant, Verdict)> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|&(key, m, n)| s.spawn(move || (key, m, run_mutant(plan, key, m, n, timeout))))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| (chunk[0].0, chunk[0].1, Verdict::Error))
+                })
+                .collect()
+        });
+        for (key, m, v) in outcomes {
+            let tally = results.tallies.entry(key.clone()).or_default();
+            match v {
                 Verdict::Killed => tally.killed += 1,
                 Verdict::TimedOut => tally.timed_out += 1,
                 Verdict::Error => tally.errors += 1,
@@ -163,7 +187,6 @@ pub fn run(plan: &Plan, targets: &[Target]) -> Result<Results> {
                     tally.survivors.push(m.clone());
                 }
             }
-            n += 1;
         }
     }
     Ok(results)

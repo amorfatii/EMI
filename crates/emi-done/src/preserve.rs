@@ -129,6 +129,58 @@ impl Preserved {
         self.divergences.len() + usize::try_from(self.more).unwrap_or(usize::MAX)
     }
 
+    /// Exclude functions whose behavioural change is already proven by a
+    /// proving test (`status == "exercised"` in `change`), when the intent
+    /// applies to the whole change rather than an explicit path list.
+    pub fn exclude_proven(&mut self, change: &crate::change::ChangeEvidence, intent: &Intent) {
+        if !intent.paths.is_empty() {
+            return;
+        }
+        let crate::change::ChangeEvidence::Measured(v) = change else {
+            return;
+        };
+        if v["proving_tests"].as_array().is_none_or(Vec::is_empty) {
+            return;
+        }
+        let proven: std::collections::BTreeSet<(&str, &str)> = v["functions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|f| f["status"] == "exercised")
+            .filter_map(|f| Some((f["file"].as_str()?, f["function"].as_str()?)))
+            .collect();
+        if proven.is_empty() {
+            return;
+        }
+        self.divergences
+            .retain(|d| !proven.contains(&(d.file.as_str(), d.function.as_str())));
+        self.functions.retain(|f| {
+            let file = f["file"].as_str().unwrap_or("");
+            let func = f["function"].as_str().unwrap_or("");
+            !proven.contains(&(file, func))
+        });
+    }
+
+    /// Whether `(file, function)` was compared on at least one input,
+    /// answered deterministically, and had no divergence.
+    pub fn verified(&self, file: &str, function: &str) -> bool {
+        if self.more > 0
+            || self
+                .divergences
+                .iter()
+                .any(|d| d.file == file && d.function == function)
+        {
+            return false;
+        }
+        self.functions.iter().any(|f| {
+            f["file"].as_str() == Some(file)
+                && f["function"].as_str() == Some(function)
+                && f["status"].as_str() == Some("compared")
+                && f["compared"].as_u64().unwrap_or(0) > 0
+                && f["deterministic"].as_bool() == Some(true)
+        })
+    }
+
     pub fn to_value(&self) -> Value {
         json!({
             "divergences": self.divergences.iter().map(|d| json!({
