@@ -17,7 +17,7 @@ comparisons.
 | `TZ` | `UTC` | `pins.tz` |
 | `LC_ALL` | `C.UTF-8` | `pins.locale` |
 | `random` and numpy seeded before each test from a hash of the test's id | on | `pins.seed_random` |
-| Hypothesis: derandomized, no example database, no deadline | on | `pins.hypothesis` (`derandomize` or `off`) |
+| Hypothesis: derandomized, no example database, no deadline, and no literals drawn from other modules imported in the run | on | `pins.hypothesis` (`derandomize` or `off`) |
 | no bytecode written, pytest-randomly and the cache provider off | always | — |
 
 The in-process pins are applied by a small pytest plugin, `emi_pins`, which
@@ -25,14 +25,24 @@ EMI places in every copy it runs in and loads with `-p emi_pins`. A test
 command that runs tests in parallel (`-n`, `--numprocesses`, `--dist`) is
 refused, because the order and what the processes share cannot be pinned.
 
-The pins are recorded in the receipt's `inputs`.
+The plugin sets these on every collected Hypothesis test, `@given`
+functions and state machines alike, over whatever else the test set. A
+profile alone would not reach them: `@given` takes the default settings
+when its module is imported, before any plugin hook after collection, and
+a state machine's `TestCase` carries its own. Hypothesis also draws
+integers and strings found in the project modules imported so far; that
+would make a test's inputs depend on which tests ran before it, so the
+plugin turns it off.
+
+The pins, and the digest of the plugin that applies them
+(`pins_plugin`), are recorded in the receipt's `inputs`.
 
 ## What a decision is a function of
 
 The receipt (`emi-done-receipt-1.0`) names its inputs:
 
 - the baseline commit and the candidate's tree;
-- the configuration's digest and the pins;
+- the configuration's digest, the pins and the pins plugin's digest;
 - the Python environment's digest: the interpreter, the architecture, and
   every installed distribution with its version;
 - the laws' digest;
