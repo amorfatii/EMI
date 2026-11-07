@@ -136,7 +136,7 @@ pub struct Target {
 }
 
 /// What the test run recorded for one target, merged over its processes.
-#[derive(Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Recorded {
     /// Module name and import root the tests used; `None` when the tests
     /// never imported the file.
@@ -149,6 +149,7 @@ pub struct Recorded {
 }
 
 /// The harvest: inputs per target id and how the test run went.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Harvest {
     pub recorded: BTreeMap<usize, Recorded>,
     /// The interpreter the tests ran under.

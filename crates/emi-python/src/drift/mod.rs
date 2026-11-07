@@ -109,6 +109,10 @@ pub struct Request<'a, S: Side> {
     /// Directories the project's modules are imported from, repository
     /// relative, for a function the tests never imported.
     pub module_roots: &'a [String],
+    /// Paths to restrict drift analysis to; empty means check all modified files.
+    pub paths: &'a [String],
+    /// Optional cache for invariant baseline data across repair rounds.
+    pub cache: Option<&'a crate::proving::ListingCache>,
 }
 
 /// A side whose trees are copies of `runner.rev` read from `objects`: a
@@ -255,16 +259,30 @@ fn pinned<S: Side>(r: &Request<S>, old_dir: &Path, new_dir: &Path, t: &Target) -
     "no"
 }
 
+fn covers(paths: &[String], file: &str) -> bool {
+    paths.is_empty()
+        || paths
+            .iter()
+            .any(|p| file == p || file.starts_with(&format!("{}/", p.trim_end_matches('/'))))
+}
+
 /// The modified Python functions; added and removed ones are counted, and
 /// Python files that did not parse leave the comparison incomplete.
-fn modified(report: &mut Report, repo: &Path) -> Result<Vec<ChangedFn>> {
+fn modified(report: &mut Report, repo: &Path, paths: &[String]) -> Result<Vec<ChangedFn>> {
     let changed = changed_functions(repo, &report.base, &report.head)?;
-    for file in changed.unparsed.iter().filter(|f| f.ends_with(".py")) {
+    for file in changed
+        .unparsed
+        .iter()
+        .filter(|f| f.ends_with(".py") && covers(paths, f))
+    {
         report.reasons.push(format!(
             "{file} did not parse on one side; its functions are unknown"
         ));
     }
-    let python = changed.functions.into_iter();
+    let python = changed
+        .functions
+        .into_iter()
+        .filter(|f| covers(paths, &f.file));
     let (modified, other): (Vec<_>, Vec<_>) = python.partition(|f| f.kind == ChangeKind::Modified);
     report.counts.added_or_removed = other.len() as u64;
     report.counts.targets = modified.len() as u64;
@@ -296,9 +314,8 @@ fn targets<S: Side>(
     for (id, (f, (kind, qualname))) in modified.iter().zip(kinds).enumerate() {
         let name = qualname.as_deref().unwrap_or(&f.name);
         let counter = match kind.as_str() {
-            "function" | "static" | "class" | "instance" => None,
+            "function" | "static" | "class" | "instance" | "async" => None,
             "nested" => Some(&mut report.counts.skipped_nested),
-            "async" => Some(&mut report.counts.skipped_async),
             _ => Some(&mut report.counts.unresolved),
         };
         if let Some(n) = counter {
@@ -325,6 +342,31 @@ fn targets<S: Side>(
     Ok(out)
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedBaseDrift {
+    harvest: Harvest,
+    harvest_dir: String,
+    generated: u64,
+    base_outcomes: BTreeMap<usize, Value>,
+}
+
+fn read_base_drift(path: &Path) -> Option<CachedBaseDrift> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+fn write_base_drift(path: &Path, cached: &CachedBaseDrift) {
+    let Ok(text) = serde_json::to_string(cached) else {
+        return;
+    };
+    let part = path.with_extension("part");
+    let written = std::fs::create_dir_all(path.parent().unwrap_or(path))
+        .and_then(|()| std::fs::write(&part, text))
+        .and_then(|()| std::fs::rename(&part, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+}
+
 /// The drift report for `r.base..r.head`. `Err` only when the change or a
 /// tree could not be read at all; everything that went wrong on the way
 /// is in the report, which is then `unverified`.
@@ -337,7 +379,7 @@ pub fn measure<S: Side>(r: &Request<S>) -> Result<Value> {
         skipped: Vec::new(),
         counts: Counts::default(),
     };
-    let modified = modified(&mut report, r.repo)?;
+    let modified = modified(&mut report, r.repo, r.paths)?;
     if modified.is_empty() {
         return Ok(report.finish());
     }
@@ -357,12 +399,52 @@ pub fn measure<S: Side>(r: &Request<S>) -> Result<Value> {
             return Ok(report.finish());
         }
     };
+    let cache_path = r.cache.map(|c| {
+        let key = json!({
+            "base": r.base,
+            "commands": r.commands,
+            "call_timeout_s": r.call_timeout_s,
+            "generated_examples": r.generated_examples,
+            "module_roots": r.module_roots,
+            "env": r.base_side.env(),
+            "environment": c.environment,
+            "targets": targets.iter().map(|t| json!({
+                "id": t.id, "file": t.file, "qualname": t.qualname,
+                "kind": t.kind, "old_line": t.old_line,
+            })).collect::<Vec<_>>(),
+        });
+        c.dir.join(format!(
+            "drift-base-{}.json",
+            emi_kernel::json::digest("emi-drift-base", &key)
+        ))
+    });
+    if let Some(cached) = cache_path.as_deref().and_then(read_base_drift) {
+        report.counts.generated += cached.generated;
+        replay_all(
+            &mut report,
+            r,
+            Path::new(&cached.harvest_dir),
+            &targets,
+            &cached.harvest,
+            Some(cached.base_outcomes),
+            None,
+        )?;
+        return Ok(report.finish());
+    }
     match python::harvest(r.base_side, &tree, r.commands, &targets) {
         Ok(mut h) => {
             if r.generated_examples > 0 {
                 augment(&mut report, r, (&tree, &targets), &mut h)?;
             }
-            replay_all(&mut report, r, &tree, &targets, &h)?;
+            replay_all(
+                &mut report,
+                r,
+                tree.dir(),
+                &targets,
+                &h,
+                None,
+                cache_path.as_deref(),
+            )?;
         }
         Err(e) => report.reasons.push(e),
     }
@@ -516,9 +598,11 @@ fn entry(t: &Target, status: &str, inputs: usize, tally: &Tally, is_pinned: &str
 fn replay_all<S: Side>(
     report: &mut Report,
     r: &Request<S>,
-    harvested: &S::Tree,
+    harvested_dir: &Path,
     targets: &[Target],
     harvest: &Harvest,
+    cached_base: Option<BTreeMap<usize, Value>>,
+    cache_path: Option<&Path>,
 ) -> Result<()> {
     if let Some(why) = &harvest.incomplete {
         report
@@ -532,14 +616,31 @@ fn replay_all<S: Side>(
     // fresh trees: the test run may have changed files in its own
     let old = r.base_side.tree("drift-base")?;
     let new = r.head_side.tree("drift-head")?;
-    let pythons = [old.dir(), new.dir()].map(|c| python::interpreter(harvest, harvested.dir(), c));
+    let pythons = [old.dir(), new.dir()].map(|c| python::interpreter(harvest, harvested_dir, c));
     let settings = |python, repeat| ReplaySettings {
         python,
         sys_path: &harvest.sys_path,
         call_timeout_s: r.call_timeout_s,
         repeat,
     };
-    let base = python::replay(r.base_side, &old, &items, &settings(&pythons[0], 2));
+    let base = match cached_base {
+        Some(b) => Ok(b),
+        None => {
+            let res = python::replay(r.base_side, &old, &items, &settings(&pythons[0], 2));
+            if let (Ok(b), None, Some(path)) = (&res, &harvest.incomplete, cache_path) {
+                write_base_drift(
+                    path,
+                    &CachedBaseDrift {
+                        harvest: harvest.clone(),
+                        harvest_dir: harvested_dir.to_string_lossy().into_owned(),
+                        generated: report.counts.generated,
+                        base_outcomes: b.clone(),
+                    },
+                );
+            }
+            res
+        }
+    };
     let head = python::replay(r.head_side, &new, &items, &settings(&pythons[1], 1));
     match (base, head) {
         (Ok(b), Ok(h)) => {

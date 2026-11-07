@@ -63,6 +63,9 @@ pub struct State {
     pub last_checked: Option<String>,
     /// HEAD when the session's first user message arrived.
     pub baseline: Option<String>,
+    /// Working tree content IDs that already triggered a repair block during
+    /// this turn. Used to detect stagnation or oscillation.
+    pub rejected_trees: Vec<String>,
 }
 
 /// Why nothing was said.
@@ -123,10 +126,15 @@ fn clip(line: &str) -> String {
     format!("{head}…")
 }
 
-fn repair_reason(done: &DoneResult, round: u32, limit: u32) -> String {
-    let mut text = format!(
-        "EMI: this change is not done (repair round {round} of {limit}). Fix this, then finish again:"
-    );
+fn repair_reason(done: &DoneResult, round: u32, limit: u32, repeated: bool) -> String {
+    let note = if repeated {
+        format!(
+            " (repair round {round} of {limit}; this working tree already failed an earlier check)"
+        )
+    } else {
+        format!(" (repair round {round} of {limit})")
+    };
+    let mut text = format!("EMI: this change is not done{note}. Fix this, then finish again:");
     for line in done.repair.iter().take(MAX_REPAIR_LINES) {
         text.push_str("\n- ");
         text.push_str(&clip(line));
@@ -192,7 +200,11 @@ pub fn on_stop(
         // not recorded as checked: stopping again on the same tree must
         // run the check again instead of passing unseen
         next.rounds_used += 1;
-        let reason = repair_reason(&done, next.rounds_used, input.rounds_limit);
+        let repeated = state.rejected_trees.iter().any(|t| t == input.content_id);
+        if !repeated {
+            next.rejected_trees.push(input.content_id.to_owned());
+        }
+        let reason = repair_reason(&done, next.rounds_used, input.rounds_limit, repeated);
         return (Decision::Block { reason }, next);
     }
     next.last_checked = Some(input.content_id.to_owned());
@@ -213,6 +225,7 @@ pub fn on_stop(
 pub fn on_user_message(state: &State, head: Option<&str>) -> State {
     let mut next = state.clone();
     next.rounds_used = 0;
+    next.rejected_trees.clear();
     if next.baseline.is_none() {
         next.baseline = head.map(str::to_owned);
     }
@@ -249,6 +262,7 @@ mod tests {
             rounds_used: rounds,
             last_checked: last.map(str::to_owned),
             baseline: Some("base".into()),
+            rejected_trees: Vec::new(),
         }
     }
 
@@ -425,5 +439,41 @@ mod tests {
     fn an_unresolvable_head_records_no_baseline() {
         let s = on_user_message(&State::default(), None);
         assert_eq!(s.baseline, None);
+    }
+
+    #[test]
+    fn oscillating_or_stagnant_tree_is_flagged_in_repair_reason() {
+        let s0 = State::default();
+        // First failure on tree A: not repeated
+        let (d1, s1, _) = stop(&s0, "treeA", Action::Repair);
+        let Decision::Block { reason: r1 } = d1 else {
+            panic!("expected block");
+        };
+        assert!(r1.contains("repair round 1 of 3"));
+        assert!(!r1.contains("already failed an earlier check"));
+        assert_eq!(s1.rejected_trees, vec!["treeA"]);
+
+        // Second failure on tree B: not repeated
+        let (d2, s2, _) = stop(&s1, "treeB", Action::Repair);
+        let Decision::Block { reason: r2 } = d2 else {
+            panic!("expected block");
+        };
+        assert!(r2.contains("repair round 2 of 3"));
+        assert!(!r2.contains("already failed an earlier check"));
+        assert_eq!(s2.rejected_trees, vec!["treeA", "treeB"]);
+
+        // Third failure oscillating back to tree A: repeated!
+        let (d3, s3, _) = stop(&s2, "treeA", Action::Repair);
+        let Decision::Block { reason: r3 } = d3 else {
+            panic!("expected block");
+        };
+        assert!(
+            r3.contains("repair round 3 of 3; this working tree already failed an earlier check")
+        );
+        assert_eq!(s3.rejected_trees, vec!["treeA", "treeB"]);
+
+        // New user message clears rejected_trees
+        let s4 = on_user_message(&s3, Some("head"));
+        assert!(s4.rejected_trees.is_empty());
     }
 }

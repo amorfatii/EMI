@@ -199,13 +199,18 @@ fn shown(v: &Value) -> String {
     match (
         v.get("returned"),
         v.get("self"),
+        v.get("mutated"),
         v.get("raised"),
         v.get("timeout"),
     ) {
-        (Some(r), Some(s), _, _) => format!("returned {r} (leaving self = {s})"),
-        (Some(r), None, _, _) => format!("returned {r}"),
-        (_, _, Some(e), _) => format!("raised {}", e.as_str().unwrap_or("?")),
-        (_, _, _, Some(t)) => format!("did not finish within {t} s"),
+        (Some(r), Some(s), Some(m), _, _) => {
+            format!("returned {r} (leaving self = {s}, mutated = {m})")
+        }
+        (Some(r), Some(s), None, _, _) => format!("returned {r} (leaving self = {s})"),
+        (Some(r), None, Some(m), _, _) => format!("returned {r} (leaving mutated = {m})"),
+        (Some(r), None, None, _, _) => format!("returned {r}"),
+        (_, _, _, Some(e), _) => format!("raised {}", e.as_str().unwrap_or("?")),
+        (_, _, _, _, Some(t)) => format!("did not finish within {t} s"),
         _ => v.to_string(),
     }
 }
@@ -235,6 +240,7 @@ pub fn measure(
     view: &Path,
     (config, baseline, cand): (&Config, &Baseline, &Candidate),
     intent: &Intent,
+    cache: Option<&emi_python::proving::ListingCache>,
 ) -> Preserved {
     let mut env = config.pins.env();
     env.push((
@@ -271,6 +277,8 @@ pub fn measure(
         head_side: &head,
         generated_examples: config.preserve.generated_examples,
         module_roots: &config.python_path,
+        paths: &intent.paths,
+        cache,
     };
     match drift::measure(&req) {
         Ok(report) => read_report(&report, intent),

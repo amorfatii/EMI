@@ -23,6 +23,8 @@ struct Stored {
     rounds_used: u32,
     last_checked: Option<String>,
     baseline: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rejected_trees: Vec<String>,
 }
 
 /// Where the state of one (repository, session) pair lives.
@@ -102,6 +104,7 @@ impl Store {
             rounds_used: stored.rounds_used,
             last_checked: stored.last_checked,
             baseline: stored.baseline,
+            rejected_trees: stored.rejected_trees,
         })
     }
 
@@ -115,6 +118,7 @@ impl Store {
             rounds_used: state.rounds_used,
             last_checked: state.last_checked.clone(),
             baseline: state.baseline.clone(),
+            rejected_trees: state.rejected_trees.clone(),
         };
         let text = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())? + "\n";
         let fail = |what: &str, e: std::io::Error| {
@@ -164,6 +168,7 @@ mod tests {
             rounds_used: 2,
             last_checked: Some("abc".into()),
             baseline: Some("def".into()),
+            rejected_trees: vec!["t1".into(), "t2".into()],
         };
         s.save(&state).expect("save");
         assert_eq!(s.load(), Ok(state));

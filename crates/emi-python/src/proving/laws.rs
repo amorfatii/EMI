@@ -275,13 +275,28 @@ pub fn measure_laws(req: &Request, objects: &Path, files: &LawFiles) -> LawEvide
             timeout: resolved.timeout,
             network: resolved.network,
         };
+        let cache_path = resolved.listing_cache.as_ref().map(|c| {
+            let key = json!({
+                "baseline": base,
+                "dir": files.dir,
+                "command": resolved.test_command,
+                "env": resolved.env,
+                "link": resolved.link,
+                "network": resolved.network,
+                "environment": c.environment,
+            });
+            c.dir.join(format!(
+                "laws-base-{}.json",
+                emi_kernel::json::digest("emi-laws-base", &key)
+            ))
+        });
         let run = Run {
             session: Session::new(runner, objects, &command),
             files,
             base: base.to_owned(),
             cand: cand.to_owned(),
         };
-        let mut evidence = held_to(&run)?;
+        let mut evidence = held_to(&run, cache_path.as_deref())?;
         evidence.proposals = proposals(&run);
         evidence.isolation = run.session.isolation();
         Ok(evidence)
@@ -294,8 +309,89 @@ pub fn measure_laws(req: &Request, objects: &Path, files: &LawFiles) -> LawEvide
     }
 }
 
+type BaseLawsCache = (
+    Vec<String>,
+    BTreeMap<String, String>,
+    BTreeMap<String, Observed>,
+);
+
+fn read_base_laws(path: &Path) -> Option<BaseLawsCache> {
+    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let ids: Vec<String> = v["ids"]
+        .as_array()?
+        .iter()
+        .map(|i| i.as_str().map(str::to_owned))
+        .collect::<Option<_>>()?;
+    let broken: BTreeMap<String, String> = v["broken"]
+        .as_object()?
+        .iter()
+        .map(|(k, val)| Some((k.clone(), val.as_str()?.to_owned())))
+        .collect::<Option<_>>()?;
+    let mut at_base = BTreeMap::new();
+    for (k, val) in v["observed"].as_object()? {
+        let obs = match val.as_str()? {
+            "passed" => Observed::Passed,
+            "failed" => Observed::Failed,
+            "errored" => Observed::Errored,
+            "skipped" => Observed::Skipped,
+            _ => return None,
+        };
+        at_base.insert(k.clone(), obs);
+    }
+    Some((ids, broken, at_base))
+}
+
+fn write_base_laws(
+    path: &Path,
+    ids: &[String],
+    broken: &BTreeMap<String, String>,
+    at_base: &BTreeMap<String, Observed>,
+) {
+    let mut obs = serde_json::Map::new();
+    for (k, v) in at_base {
+        let s = match v {
+            Observed::Passed => "passed",
+            Observed::Failed => "failed",
+            Observed::Errored => "errored",
+            Observed::Skipped => "skipped",
+            Observed::Unknown(_) => return,
+        };
+        obs.insert(k.clone(), json!(s));
+    }
+    let payload = json!({"ids": ids, "broken": broken, "observed": obs});
+    let part = path.with_extension("part");
+    let written = std::fs::create_dir_all(path.parent().unwrap_or(path))
+        .and_then(|()| std::fs::write(&part, payload.to_string()))
+        .and_then(|()| std::fs::rename(&part, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+}
+
+type BaseLaws = (
+    Vec<String>,
+    BTreeMap<String, String>,
+    BTreeMap<String, Observed>,
+);
+
+fn resolve_base_laws(
+    run: &Run,
+    base: &crate::sandbox::Copy,
+    cache_path: Option<&Path>,
+) -> Result<BaseLaws, String> {
+    if let Some((ids, broken, obs)) = cache_path.and_then(read_base_laws) {
+        return Ok((ids, broken, obs));
+    }
+    let (base_ids, base_broken) = run.listed(base, "baseline's laws")?;
+    let (obs, _) = run.session.observe_explained(base, &base_ids, "laws-base");
+    if let Some(path) = cache_path {
+        write_base_laws(path, &base_ids, &base_broken, &obs);
+    }
+    Ok((base_ids, base_broken, obs))
+}
+
 /// The laws the candidate is held to, and the functions they check.
-fn held_to(run: &Run) -> Result<LawEvidence, String> {
+fn held_to(run: &Run, cache_path: Option<&Path>) -> Result<LawEvidence, String> {
     let base = run.session.tree("laws-baseline", &run.base)?;
     let none = BTreeSet::new();
     let cand = run.laid("laws-candidate", &base, &none)?;
@@ -303,7 +399,7 @@ fn held_to(run: &Run) -> Result<LawEvidence, String> {
         digest: digest(&cand, run.files.dir)?,
         ..LawEvidence::default()
     };
-    let (base_ids, base_broken) = run.listed(&base, "baseline's laws")?;
+    let (_base_ids, base_broken, mut at_base) = resolve_base_laws(run, &base, cache_path)?;
     let (cand_ids, cand_broken) = run.listed(&cand, "laws on the candidate")?;
     // a law file the candidate cannot collect is one unmet law, named
     // after the file, whatever its laws are
@@ -324,7 +420,6 @@ fn held_to(run: &Run) -> Result<LawEvidence, String> {
     if cand_ids.is_empty() {
         return Ok(evidence);
     }
-    let (mut at_base, _) = run.session.observe_explained(&base, &base_ids, "laws-base");
     // laws in a file the baseline cannot collect errored there
     for id in &cand_ids {
         if base_broken.contains_key(crate::proving::pytest::file_of(id)) {

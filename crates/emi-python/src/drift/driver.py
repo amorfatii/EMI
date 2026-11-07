@@ -21,8 +21,10 @@ without an exact JSON encoding are counted and left out.
 """
 
 import ast
+import asyncio
 import enum
 import importlib
+import inspect
 import json
 import math
 import os
@@ -34,7 +36,11 @@ import types
 TUPLE = "$tuple"
 OBJECT = "$object"
 ENUM = "$enum"
-RESERVED_TAGS = (TUPLE, OBJECT, ENUM)
+BYTES = "$bytes"
+SET = "$set"
+FROZENSET = "$frozenset"
+NAMEDTUPLE = "$namedtuple"
+RESERVED_TAGS = (TUPLE, OBJECT, ENUM, BYTES, SET, FROZENSET, NAMEDTUPLE)
 NON_VALUE_TYPES = (
     type,
     types.ModuleType,
@@ -63,15 +69,12 @@ DEFS = (ast.FunctionDef, ast.AsyncFunctionDef)
 def kind_of(node, scope):
     """`scope` holds the enclosing function and class definitions."""
     if not scope:
-        kind = "function"
-    elif len(scope) == 1 and isinstance(scope[0], ast.ClassDef):
+        return "async" if isinstance(node, ast.AsyncFunctionDef) else "function"
+    if len(scope) == 1 and isinstance(scope[0], ast.ClassDef):
         names = {d.id for d in node.decorator_list if isinstance(d, ast.Name)}
         found = [REPLAYABLE[n] for n in names if n in REPLAYABLE]
-        kind = found[0] if len(found) == 1 else "instance"
-    else:
-        return "nested"
-    # a coroutine function returns a coroutine, never its result
-    return "async" if isinstance(node, ast.AsyncFunctionDef) else kind
+        return found[0] if len(found) == 1 else "instance"
+    return "nested"
 
 
 def start_line(node):
@@ -120,9 +123,19 @@ def decode(data):
     if isinstance(data, dict):
         if list(data) == [TUPLE]:
             return tuple(decode(v) for v in data[TUPLE])
+        if list(data) == [BYTES]:
+            return bytes.fromhex(data[BYTES])
+        if list(data) == [SET]:
+            return {decode(v) for v in data[SET]}
+        if list(data) == [FROZENSET]:
+            return frozenset(decode(v) for v in data[FROZENSET])
         if list(data) == [ENUM]:
             mod, qn, name = data[ENUM]
             return getattr(_resolve_qualname(mod, qn), name)
+        if list(data) == [NAMEDTUPLE]:
+            spec = data[NAMEDTUPLE]
+            cls = _resolve_qualname(spec["module"], spec["qualname"])
+            return cls(**{k: decode(v) for k, v in spec["fields"].items()})
         if list(data) == [OBJECT]:
             spec = data[OBJECT]
             cls = _resolve_qualname(spec["module"], spec["qualname"])
@@ -185,6 +198,10 @@ def _encode_object(value, kind, depth):
     }
 
 
+def _canonical(data):
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
 def encode(value, depth=0):
     """The recorder's encoding, applied to a return value or instance state."""
     if depth > 20:
@@ -196,10 +213,16 @@ def encode(value, depth=0):
         return value
     if kind is float and math.isfinite(value):
         return value
+    if kind is bytes:
+        return {BYTES: value.hex()}
     if kind is list:
         return [encode(v, depth + 1) for v in value]
     if kind is tuple:
         return {TUPLE: [encode(v, depth + 1) for v in value]}
+    if kind in (set, frozenset):
+        items = [encode(v, depth + 1) for v in value]
+        items.sort(key=_canonical)
+        return {SET if kind is set else FROZENSET: items}
     if kind is dict:
         if (len(value) == 1 and next(iter(value)) in RESERVED_TAGS) or not all(
             type(k) is str for k in value
@@ -210,6 +233,19 @@ def encode(value, depth=0):
         if _valid_type_origin(kind):
             return {ENUM: [kind.__module__, kind.__qualname__, value.name]}
         raise Unencodable()
+    if (
+        isinstance(value, tuple)
+        and kind is not tuple
+        and hasattr(kind, "_fields")
+        and _valid_type_origin(kind)
+    ):
+        return {
+            NAMEDTUPLE: {
+                "module": kind.__module__,
+                "qualname": kind.__qualname__,
+                "fields": {f: encode(getattr(value, f), depth + 1) for f in kind._fields},
+            }
+        }
     return _encode_object(value, kind, depth)
 
 
@@ -234,7 +270,8 @@ def call(fn, data, seconds, kind="function"):
     try:
         args = decode(data["args"])
         kwargs = decode(data["kwargs"])
-        value = fn(*args, **kwargs)
+        res = fn(*args, **kwargs)
+        value = asyncio.run(res) if inspect.iscoroutine(res) else res
     except CallTimeout:
         return {"timeout": seconds}
     except BaseException as e:
@@ -242,15 +279,34 @@ def call(fn, data, seconds, kind="function"):
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
     out = returned(value)
-    if "returned" in out and kind == "instance" and args:
+    if "returned" in out:
         try:
-            after = encode(args[0])
-            if after != data["args"][0]:
-                out["self"] = after
-                if len(json.dumps(out, allow_nan=False)) > MAX_TEXT:
-                    return {"unencodable_result": type_name(type(args[0]))}
+            if kind == "instance" and args:
+                after = encode(args[0])
+                if after != data["args"][0]:
+                    out["self"] = after
+            start_idx = 1 if kind == "instance" else 0
+            mut_args = {}
+            for i in range(start_idx, len(args)):
+                after = encode(args[i])
+                if after != data["args"][i]:
+                    mut_args[str(i)] = after
+            mut_kwargs = {}
+            for k, v in kwargs.items():
+                after = encode(v)
+                if after != data["kwargs"][k]:
+                    mut_kwargs[k] = after
+            if mut_args or mut_kwargs:
+                mutated = {}
+                if mut_args:
+                    mutated["args"] = mut_args
+                if mut_kwargs:
+                    mutated["kwargs"] = mut_kwargs
+                out["mutated"] = mutated
+            if len(json.dumps(out, allow_nan=False)) > MAX_TEXT:
+                return {"unencodable_result": "mutated_state"}
         except (Unencodable, RecursionError, ValueError):
-            return {"unencodable_result": type_name(type(args[0]))}
+            return {"unencodable_result": "mutated_state"}
     return out
 
 

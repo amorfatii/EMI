@@ -30,7 +30,11 @@ INT_BOUND = 2**63
 TUPLE = "$tuple"
 OBJECT = "$object"
 ENUM = "$enum"
-RESERVED_TAGS = (TUPLE, OBJECT, ENUM)
+BYTES = "$bytes"
+SET = "$set"
+FROZENSET = "$frozenset"
+NAMEDTUPLE = "$namedtuple"
+RESERVED_TAGS = (TUPLE, OBJECT, ENUM, BYTES, SET, FROZENSET, NAMEDTUPLE)
 NON_VALUE_TYPES = (
     type,
     types.ModuleType,
@@ -96,6 +100,10 @@ def _encode_object(value, kind, depth):
     }
 
 
+def canonical(data):
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
 def encode(value, depth=0):
     """The value as JSON data, or Unencodable."""
     if depth > 20:
@@ -111,11 +119,17 @@ def encode(value, depth=0):
         if math.isfinite(value):
             return value
         raise Unencodable()
+    if kind is bytes:
+        return {BYTES: value.hex()}
     if kind is list:
         return [encode(v, depth + 1) for v in value]
     if kind is tuple:
         # a tuple and a list behave differently, so the tag keeps them apart
         return {TUPLE: [encode(v, depth + 1) for v in value]}
+    if kind in (set, frozenset):
+        items = [encode(v, depth + 1) for v in value]
+        items.sort(key=canonical)
+        return {SET if kind is set else FROZENSET: items}
     if kind is dict:
         if (len(value) == 1 and next(iter(value)) in RESERVED_TAGS) or not all(
             type(k) is str for k in value
@@ -126,11 +140,20 @@ def encode(value, depth=0):
         if _valid_type_origin(kind):
             return {ENUM: [kind.__module__, kind.__qualname__, value.name]}
         raise Unencodable()
+    if (
+        isinstance(value, tuple)
+        and kind is not tuple
+        and hasattr(kind, "_fields")
+        and _valid_type_origin(kind)
+    ):
+        return {
+            NAMEDTUPLE: {
+                "module": kind.__module__,
+                "qualname": kind.__qualname__,
+                "fields": {f: encode(getattr(value, f), depth + 1) for f in kind._fields},
+            }
+        }
     return _encode_object(value, kind, depth)
-
-
-def canonical(data):
-    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 class Target:
@@ -210,7 +233,7 @@ def install(target, module):
         for part in owner.split("."):
             holder = getattr(holder, part)
     raw = holder.__dict__.get(name) if owner else getattr(module, name, None)
-    if target.kind in ("function", "instance") and callable(raw):
+    if target.kind in ("function", "instance", "async") and callable(raw):
         setattr(holder, name, recording(target, raw, False))
     elif target.kind == "static" and isinstance(raw, staticmethod):
         setattr(holder, name, staticmethod(recording(target, raw.__func__, False)))

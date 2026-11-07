@@ -374,12 +374,25 @@ fn beyond(
             || emi_kernel::paths::is_test(p)
     };
     let (change, laws, mut preserved, signals) = std::thread::scope(|scope| {
-        let laws_h =
-            scope.spawn(|| crate::laws::measure(repo, view, (config, baseline, cand), old_tests));
+        let laws_h = scope.spawn(|| {
+            crate::laws::measure(
+                repo,
+                view,
+                (config, baseline, cand),
+                old_tests,
+                ctx.listing_cache.clone(),
+            )
+        });
         let preserved_h = scope.spawn(|| {
-            intent
-                .preserve
-                .then(|| crate::preserve::measure(repo, view, (config, baseline, cand), intent))
+            intent.preserve.then(|| {
+                crate::preserve::measure(
+                    repo,
+                    view,
+                    (config, baseline, cand),
+                    intent,
+                    ctx.listing_cache.as_ref(),
+                )
+            })
         });
         let signals_h =
             scope.spawn(|| crate::signals::find(view, (&baseline.sha, &cand.rev), not_product));

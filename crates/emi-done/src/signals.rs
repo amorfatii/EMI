@@ -154,4 +154,28 @@ mod tests {
         ];
         assert!(!always_equal(&real, 0));
     }
+
+    #[test]
+    fn ast_signals_ignore_string_literals_and_catch_multiline_escapes() {
+        let src = br#"
+msg1 = "never call eval(x) or exec(y)"
+msg2 = "use # type: ignore if needed"
+msg3 = "PYTEST_CURRENT_TEST in strings is fine"
+from pytest import fixture
+
+class Sneaky:
+    def __eq__(
+        self,
+        other: object,
+    ) -> bool:
+        """Always equal."""
+        return True
+"#;
+        let added: std::collections::BTreeSet<u32> = (1..=14).collect();
+        let found: Vec<(u32, &str)> = emi_python::syntax::ast_signals(src, &added)
+            .into_iter()
+            .map(|(l, k, _)| (l, k))
+            .collect();
+        assert_eq!(found, vec![(5, "test_sniffing"), (8, "always_equal")]);
+    }
 }

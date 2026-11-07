@@ -190,3 +190,102 @@ fn a_mixed_commit_with_a_proven_fix_and_a_refactoring_guards_only_the_unproven_r
         "{receipt}"
     );
 }
+
+#[test]
+fn argument_in_place_mutations_are_compared_under_preserve() {
+    let p = Project::new();
+    git(p.path(), &["switch", "-q", "main"]);
+    p.write(
+        "app.py",
+        "def append_positive(items: list[int], x: int) -> None:\n    if x > 0:\n        items.append(x)\n",
+    );
+    p.write(
+        "tests/test_app.py",
+        "from app import append_positive\n\ndef test_append():\n    lst = [1]\n    append_positive(lst, 2)\n    assert lst == [1, 2]\n",
+    );
+    p.commit("arg mutation baseline");
+    git(p.path(), &["switch", "-q", "-C", "task"]);
+    // Candidate appends non-zero instead of positive (e.g. on negative numbers)
+    p.write(
+        "app.py",
+        "def append_positive(items: list[int], x: int) -> None:\n    if x != 0:\n        items.append(x)\n",
+    );
+    let (code, receipt) = done(&p, &["--preserve"]);
+    assert_eq!(code, 3, "{receipt}");
+    let d = &receipt["preserve"]["divergences"][0];
+    assert_eq!(d["function"], "append_positive", "{receipt}");
+    assert!(
+        receipt["repair"][0].as_str().is_some_and(|r| r
+            .contains("app.py::append_positive answers differently")
+            && r.contains("leaving mutated =")),
+        "{receipt}"
+    );
+}
+
+#[test]
+fn async_def_and_rich_types_are_compared_under_preserve() {
+    let p = Project::new();
+    git(p.path(), &["switch", "-q", "main"]);
+    p.write(
+        "app.py",
+        "import asyncio\nfrom typing import NamedTuple\n\nclass Point(NamedTuple):\n    x: int\n    y: int\n\nasync def process(pt: Point, tags: set[str], payload: bytes) -> int:\n    await asyncio.sleep(0)\n    if b'skip' in payload:\n        return 0\n    return pt.x + pt.y + len(tags)\n",
+    );
+    p.write(
+        "tests/test_app.py",
+        "import asyncio\nfrom app import Point, process\n\ndef test_process():\n    res = asyncio.run(process(Point(1, 2), {'a', 'b'}, b'hello'))\n    assert res == 5\n",
+    );
+    p.commit("async and rich types baseline");
+    git(p.path(), &["switch", "-q", "-C", "task"]);
+    // Candidate refactors cleanly keeping behavior
+    p.write(
+        "app.py",
+        "import asyncio\nfrom typing import NamedTuple\n\nclass Point(NamedTuple):\n    x: int\n    y: int\n\nasync def process(pt: Point, tags: set[str], payload: bytes) -> int:\n    if b'skip' in payload:\n        return 0\n    await asyncio.sleep(0)\n    return (pt.x + pt.y) + len(tags)\n",
+    );
+    let (code, receipt) = done(&p, &["--preserve"]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(
+        receipt["preserve"]["divergences"],
+        serde_json::json!([]),
+        "{receipt}"
+    );
+}
+
+#[test]
+fn path_filtering_restricts_drift_to_specified_files() {
+    let p = Project::new();
+    git(p.path(), &["switch", "-q", "main"]);
+    p.write(
+        "app.py",
+        "def f(n: int) -> str:\n    if n < 0:\n        return 'neg'\n    return 'pos'\n",
+    );
+    p.write("other.py", "def g(n: int) -> int:\n    return n * 2\n");
+    p.write(
+        "tests/test_all.py",
+        "from app import f\nfrom other import g\n\ndef test_all():\n    assert f(5) == 'pos'\n    assert g(2) == 4\n",
+    );
+    p.commit("two files baseline");
+    git(p.path(), &["switch", "-q", "-C", "task"]);
+    // Modify both app.py and other.py
+    // app.py has a breaking change on untested input 0
+    p.write(
+        "app.py",
+        "def f(n: int) -> str:\n    if n <= 0:\n        return 'neg'\n    return 'pos'\n",
+    );
+    // other.py refactors cleanly keeping behavior
+    p.write("other.py", "def g(n: int) -> int:\n    return n + n\n");
+    // If we asked to preserve all, app.py would fail on 0
+    let (code_all, receipt_all) = done(&p, &["--preserve"]);
+    assert_eq!(code_all, 3, "{receipt_all}");
+
+    // But asking to preserve only other.py restricts check to other.py: passes!
+    let (code, receipt) = done(&p, &["--preserve", "other.py"]);
+    assert_eq!(code, 0, "{receipt}");
+    assert_eq!(
+        receipt["preserve"]["divergences"],
+        serde_json::json!([]),
+        "{receipt}"
+    );
+    let funcs = receipt["preserve"]["functions"].as_array().expect("array");
+    assert_eq!(funcs.len(), 1);
+    assert_eq!(funcs[0]["function"], "g");
+}

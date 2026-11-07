@@ -154,6 +154,227 @@ pub fn revert_function(
     None
 }
 
+fn node_text<'a>(node: Node, src: &'a [u8]) -> &'a str {
+    std::str::from_utf8(&src[node.start_byte()..node.end_byte()]).unwrap_or("")
+}
+
+fn unquote(s: &str) -> &str {
+    let s = s.trim_start_matches(['r', 'b', 'f', 'u', 'R', 'B', 'F', 'U']);
+    for quote in ["\"\"\"", "'''", "\"", "'"] {
+        if let Some(inner) = s
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    s
+}
+
+fn imports_test_runner(node: Node, src: &[u8]) -> bool {
+    let is_runner = |m: &str| {
+        let root = m.trim().split('.').next().unwrap_or("");
+        matches!(root, "pytest" | "hypothesis")
+    };
+    if node.kind() == "import_from_statement"
+        && let Some(m) = node.child_by_field_name("module_name")
+        && is_runner(node_text(m, src))
+    {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "dotted_name" if is_runner(node_text(child, src)) => return true,
+            "aliased_import" => {
+                if let Some(name) = child.child_by_field_name("name")
+                    && is_runner(node_text(name, src))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn sniffs_sys_modules(node: Node, src: &[u8]) -> bool {
+    match node.kind() {
+        "comparison_operator" => {
+            let mut cursor = node.walk();
+            let children: Vec<Node> = node.named_children(&mut cursor).collect();
+            let has_sys_modules = children
+                .iter()
+                .any(|c| node_text(*c, src).trim() == "sys.modules");
+            let has_runner_str = children.iter().any(|c| {
+                c.kind() == "string"
+                    && matches!(unquote(node_text(*c, src)), "pytest" | "hypothesis")
+            });
+            has_sys_modules && has_runner_str
+        }
+        "call" => {
+            let Some(func) = node.child_by_field_name("function") else {
+                return false;
+            };
+            if node_text(func, src).trim() != "sys.modules.get" {
+                return false;
+            }
+            let Some(args) = node.child_by_field_name("arguments") else {
+                return false;
+            };
+            let mut cursor = args.walk();
+            args.named_children(&mut cursor).any(|c| {
+                c.kind() == "string"
+                    && matches!(unquote(node_text(c, src)), "pytest" | "hypothesis")
+            })
+        }
+        _ => false,
+    }
+}
+
+fn is_always_equal_def(node: Node, src: &[u8]) -> bool {
+    if node.kind() != "function_definition" {
+        return false;
+    }
+    let Some(name) = node.child_by_field_name("name") else {
+        return false;
+    };
+    if node_text(name, src) != "__eq__" {
+        return false;
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    let stmts: Vec<Node> = body
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() != "comment")
+        .enumerate()
+        .filter(|(i, c)| {
+            if *i == 0 && c.kind() == "expression_statement" {
+                let mut inner = c.walk();
+                let mut children = c.named_children(&mut inner);
+                if let (Some(first), None) = (children.next(), children.next())
+                    && first.kind() == "string"
+                {
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|(_, c)| c)
+        .collect();
+    if stmts.len() != 1 || stmts[0].kind() != "return_statement" {
+        return false;
+    }
+    let mut ret_cursor = stmts[0].walk();
+    let mut exprs = stmts[0].named_children(&mut ret_cursor);
+    matches!(
+        (exprs.next(), exprs.next()),
+        (Some(val), None) if val.kind() == "true" || node_text(val, src).trim() == "True"
+    )
+}
+
+fn node_signal(
+    node: Node,
+    src: &[u8],
+    lines: &LineIndex,
+    added_lines: &std::collections::BTreeSet<u32>,
+) -> Option<(u32, usize)> {
+    let (start, end) = lines.span(node);
+    if node.kind() == "function_definition" {
+        if is_always_equal_def(node, src) && (start..=end).any(|l| added_lines.contains(&l)) {
+            let report_line = (start..=end)
+                .find(|l| added_lines.contains(l))
+                .unwrap_or(start);
+            return Some((report_line, 3));
+        }
+        return None;
+    }
+    if !added_lines.contains(&start) {
+        return None;
+    }
+    match node.kind() {
+        "comment" => {
+            let text = node_text(node, src);
+            if text.contains("# type: ignore")
+                || text.contains("# noqa")
+                || text.contains("pragma: no cover")
+            {
+                Some((start, 2))
+            } else {
+                None
+            }
+        }
+        "call" => {
+            if let Some(func) = node.child_by_field_name("function") {
+                let fname = node_text(func, src).trim();
+                if matches!(
+                    fname,
+                    "eval" | "exec" | "compile" | "builtins.eval" | "builtins.exec"
+                ) {
+                    return Some((start, 1));
+                }
+            }
+            if sniffs_sys_modules(node, src) {
+                Some((start, 0))
+            } else {
+                None
+            }
+        }
+        "import_statement" | "import_from_statement" => {
+            imports_test_runner(node, src).then_some((start, 0))
+        }
+        "comparison_operator" => sniffs_sys_modules(node, src).then_some((start, 0)),
+        "string" => (unquote(node_text(node, src)) == "PYTEST_CURRENT_TEST").then_some((start, 0)),
+        _ => None,
+    }
+}
+
+/// Escape-hatch signals in `src` on lines in `added_lines`:
+/// `(1-based line, kind, meaning)` in source order without duplicates.
+pub fn ast_signals(
+    src: &[u8],
+    added_lines: &std::collections::BTreeSet<u32>,
+) -> Vec<(u32, &'static str, &'static str)> {
+    let Some(tree) = parse(src) else {
+        return Vec::new();
+    };
+    let lines = LineIndex::new(src);
+    let mut found: std::collections::BTreeSet<(u32, usize)> = std::collections::BTreeSet::new();
+    const KINDS: [(&str, &str); 4] = [
+        (
+            "test_sniffing",
+            "asks whether a test runner is loaded: product code can then behave one way under test",
+        ),
+        (
+            "dynamic_code",
+            "runs code built at run time, which no reading of the source covers",
+        ),
+        ("suppression", "switches a checker off for this line"),
+        (
+            "always_equal",
+            "an __eq__ that returns True whatever it compares: every equality law holds",
+        ),
+    ];
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if let Some(sig) = node_signal(node, src, &lines, added_lines) {
+            found.insert(sig);
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    found
+        .into_iter()
+        .map(|(line, idx)| (line, KINDS[idx].0, KINDS[idx].1))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

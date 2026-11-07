@@ -27,6 +27,7 @@ pub fn measure(
     view: &Path,
     (config, baseline, cand): (&Config, &Baseline, &Candidate),
     entries: &[Entry],
+    listing_cache: Option<emi_python::proving::ListingCache>,
 ) -> LawEvidence {
     let laws: Vec<&Entry> = entries
         .iter()
@@ -47,7 +48,8 @@ pub fn measure(
         proposed: &proposed,
         max_stand_in_runs: MAX_STAND_IN_RUNS,
     };
-    let req = crate::run::proving_request(repo, config, baseline, cand);
+    let mut req = crate::run::proving_request(repo, config, baseline, cand);
+    req.listing_cache = listing_cache;
     measure_laws(&req, view, &files)
 }
 

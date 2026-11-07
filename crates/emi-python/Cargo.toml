@@ -13,6 +13,7 @@ emi-tree.workspace = true
 emi-exec.workspace = true
 emi-git.workspace = true
 roxmltree.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
 tree-sitter-python.workspace = true

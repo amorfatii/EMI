@@ -248,6 +248,7 @@ dependencies = [
  "emi-kernel",
  "emi-tree",
  "roxmltree",
+ "serde",
  "serde_json",
  "tempfile",
  "tree-sitter",
