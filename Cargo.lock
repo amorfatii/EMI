@@ -184,6 +184,7 @@ dependencies = [
  "emi-hook",
  "emi-kernel",
  "emi-python",
+ "emi-rust",
  "serde_json",
  "tempfile",
 ]
@@ -263,6 +264,16 @@ dependencies = [
  "tempfile",
  "tree-sitter",
  "tree-sitter-python",
+]
+
+[[package]]
+name = "emi-rust"
+version = "0.1.0"
+dependencies = [
+ "emi-driver",
+ "emi-exec",
+ "emi-kernel",
+ "serde_json",
 ]
 
 [[package]]

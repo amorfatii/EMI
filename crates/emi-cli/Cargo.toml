@@ -16,6 +16,7 @@ emi-kernel.workspace = true
 emi-done.workspace = true
 emi-python.workspace = true
 emi-driver.workspace = true
+emi-rust.workspace = true
 emi-hook = { path = "../emi-hook" }
 anyhow.workspace = true
 clap.workspace = true

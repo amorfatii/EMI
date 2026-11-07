@@ -17,6 +17,7 @@ emi-git = { path = "crates/emi-git" }
 emi-tree = { path = "crates/emi-tree" }
 emi-done = { path = "crates/emi-done" }
 emi-driver = { path = "crates/emi-driver" }
+emi-rust = { path = "crates/emi-rust" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

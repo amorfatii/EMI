@@ -336,12 +336,12 @@ fn adequacy(v: &Value) -> Result<Adequacy, Error> {
     })
 }
 
+/// The language, which picks a driver of the build (ADR 0009); one no
+/// driver knows is refused when the check starts.
 fn language(v: &Value) -> Result<String, Error> {
-    match v.as_str() {
-        Some("python") => Ok("python".to_owned()),
-        Some(other) => Err(Error::Config(format!(
-            "{PATH}: language {other} is unsupported for now (only python)"
-        ))),
+    match v.as_str().map(str::trim) {
+        Some(name) if !name.is_empty() => Ok(name.to_ascii_lowercase()),
+        Some(_) => Err(bad("language", "must name a language")),
         None => Err(bad("language", "must be a string")),
     }
 }
@@ -551,7 +551,7 @@ mod tests {
             "unknown key tests.cmd",
         ),
         ("schema", "/schema", "\"emi-config-9\"", "schema must be"),
-        ("language", "/language", "\"rust\"", "unsupported for now"),
+        ("language", "/language", "\"\"", "must name a language"),
         (
             "language type",
             "/language",

@@ -15,6 +15,9 @@ Python with pytest, on Linux. It needs bubblewrap (without it, a passing
 check goes to a person instead of letting the agent stop), and pytest and coverage.py
 (7.9 or newer) in the project's environment; Hypothesis for property laws
 and for generated inputs. Claude Code and OpenCode V2 adapters are included.
+Rust with `cargo test` is checked for regressions only (`"language":
+"rust"`, written by hand: `emi init` detects Python); the receipt says
+which stages it did not measure.
 
 ```sh
 emi init                                   # confirm the detected configuration
@@ -134,6 +137,7 @@ in [CONTEXT.md](CONTEXT.md), and the decisions are in [docs/adr](docs/adr).
 | `emi-tree` | Verified snapshots of commits and working trees; line-level hunks |
 | `emi-exec` | Sandboxed execution: bubblewrap, process groups, verified cleanup |
 | `emi-driver` | The boundary between the checks and a language: the `Driver` trait and the evidence its stages return (ADR 0009) |
+| `emi-rust` | The Rust driver, regression first: `cargo test` run and read test by test; every other stage is reported as not measured |
 | `emi-python` | The Python driver: function spans and mutants (tree-sitter-python), changed functions, the proving measurement, laws and stand-ins, coverage, behaviour comparison, pytest's output |
 | `emi-done` | The done check, the same for every language: configuration, baseline, the verification engine, regression, laws, preserve, receipts, replay. It depends on no language crate. |
 | `emi-hook` | Harness adapters (Claude Code, OpenCode V2), repair rounds, the laws lock |

@@ -22,6 +22,11 @@ pub fn find(
     is_test: impl Fn(&str) -> bool,
     driver: &dyn emi_driver::Driver,
 ) -> Result<Vec<Value>, String> {
+    // a driver that does not look gives no file it reads: "none found"
+    // would then be a search that never happened
+    driver
+        .signals("", &[])
+        .map_err(|why| why.reason().to_owned())?;
     let files = emi_tree::hunks::changes(view, baseline, Some(rev))
         .map_err(|e| format!("the change's files could not be read: {e}"))?;
     let mut out = Vec::new();

@@ -102,6 +102,14 @@ const MAX_EXIT_STATUS: u64 = 255;
 /// frozen without it keep their meaning (a check passes on its exit code
 /// alone, and the decision says so in `limits` when there is no test
 /// inventory).
+/// A format name a driver gives its output: lowercase words joined by `-`.
+fn driver_format(format: &str) -> bool {
+    !format.is_empty()
+        && format
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 fn evidence(id: &str, def: &Value) -> Result<Option<String>> {
     let Some(ev) = def.get("evidence").filter(|v| !v.is_null()) else {
         return Ok(None);
@@ -110,10 +118,12 @@ fn evidence(id: &str, def: &Value) -> Result<Option<String>> {
         return Err(format!("check {id} evidence must be an object"));
     };
     known_keys("check.evidence", fields, &format!("check {id}: evidence"))?;
+    // the format a language driver reads (ADR 0009): `pytest`,
+    // `cargo-test`
     match fields.get("format").and_then(Value::as_str) {
-        Some("pytest") => Ok(Some("pytest".into())),
+        Some(format) if driver_format(format) => Ok(Some(format.to_owned())),
         _ => Err(format!(
-            "check {id} evidence.format must be pytest (the only execution report the controller reads)"
+            "check {id} evidence.format must name the output format of a language driver"
         )),
     }
 }
@@ -346,20 +356,22 @@ fn inventory(v: Option<&Value>) -> Result<Value> {
             "verification.inventory.timeout_s must be a number of seconds in (0, {MAX_TIMEOUT_S}]"
         ));
     }
-    if !matches!(format, "lines" | "pytest") {
-        return Err("verification.inventory.format must be lines or pytest".into());
+    if !driver_format(format) {
+        return Err(
+            "verification.inventory.format must be lines or a language driver's format".into(),
+        );
     }
     let mut out = json!({"command": command, "format": format,
                "timeout_s": inv.get("timeout_s").and_then(Value::as_f64).unwrap_or(300.0)});
     // absent unless stated, so contracts frozen without it keep their id
     match inv.get("collection_errors").filter(|v| !v.is_null()) {
         None => {}
-        Some(Value::String(s)) if s == "tolerate" && format == "pytest" => {
+        Some(Value::String(s)) if s == "tolerate" && format != "lines" => {
             out["collection_errors"] = json!("tolerate");
         }
         Some(_) => {
             return Err(
-                "verification.inventory.collection_errors must be tolerate, with format pytest"
+                "verification.inventory.collection_errors must be tolerate, with a driver's format"
                     .into(),
             );
         }

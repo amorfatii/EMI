@@ -4,7 +4,7 @@
 # dev-dependency is out of reach of the library's own code.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-languages="emi-python"
+languages="emi-python emi-rust"
 deps=$(cargo metadata --format-version 1 --no-deps |
   python3 -c 'import json, sys
 m = json.load(sys.stdin)

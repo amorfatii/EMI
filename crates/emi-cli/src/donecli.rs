@@ -143,7 +143,7 @@ pub fn init(a: &InitArgs) -> anyhow::Result<u8> {
 
 /// The languages this build checks (ADR 0009). A project's configuration
 /// names one of them.
-pub static DRIVERS: &[&dyn emi_driver::Driver] = &[&emi_python::driver::Python];
+pub static DRIVERS: &[&dyn emi_driver::Driver] = &[&emi_python::driver::Python, &emi_rust::Rust];
 
 /// Measure the same frozen candidate as the regression check, not a second
 /// snapshot of a working tree that the proposer may have edited meanwhile.
