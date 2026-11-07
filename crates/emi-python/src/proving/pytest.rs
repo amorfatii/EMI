@@ -195,9 +195,14 @@ impl Command {
     /// Everything before the ids of a run of chosen tests.
     fn run_prefix(&self, junit: &str) -> Vec<String> {
         let mut argv: Vec<String> = Vec::new();
-        argv.extend(self.without(&[STOP_EARLY, &["--maxfail"]]));
+        argv.extend(self.without(&[STOP_EARLY, &["--maxfail", "--tb"]]));
         // a file that cannot be imported must not stop the other files
         argv.push("--continue-on-collection-errors".to_owned());
+        // Python's own traceback, which folds a frame repeated by deep
+        // recursion into one line: pytest's styles render every frame, and
+        // a failure 50,000 frames deep took 48 s to report instead of 2. The
+        // assertion explanation and Hypothesis's example are in it alike.
+        argv.push("--tb=native".to_owned());
         argv.extend(Pins::pytest_args());
         argv.push(format!("--junitxml={junit}"));
         argv

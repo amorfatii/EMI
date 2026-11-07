@@ -168,7 +168,11 @@ impl<'a> Session<'a> {
     }
 
     fn run(&self, copy: &Copy, argv: &[String]) -> Outcome {
-        let o = self.runner.run(copy, argv, self.runner.timeout);
+        self.run_with(&self.runner, copy, argv)
+    }
+
+    fn run_with(&self, runner: &Runner, copy: &Copy, argv: &[String]) -> Outcome {
+        let o = runner.run(copy, argv, runner.timeout);
         self.isolations
             .borrow_mut()
             .insert(o.receipt.isolation.clone());
@@ -248,10 +252,38 @@ impl<'a> Session<'a> {
         self.observe_explained(copy, ids, tag).0
     }
 
+    /// [`Session::observe`] for a run that only confirms failures: whether
+    /// each fails is all it is asked, so Hypothesis is not made to shrink
+    /// again what it shrank the first time.
+    pub fn observe_confirming(
+        &self,
+        copy: &Copy,
+        ids: &[String],
+        tag: &str,
+    ) -> BTreeMap<String, Observed> {
+        let mut env = self.runner.env.to_vec();
+        env.push((emi_kernel::pins::CONFIRM_ENV.to_owned(), "1".to_owned()));
+        let runner = Runner {
+            env: &env,
+            ..self.runner
+        };
+        self.observe_with(&runner, copy, ids, tag).0
+    }
+
     /// [`Session::observe`], with what each failing test said (its
     /// counterexample), the copy's path taken out.
     pub fn observe_explained(
         &self,
+        copy: &Copy,
+        ids: &[String],
+        tag: &str,
+    ) -> (BTreeMap<String, Observed>, BTreeMap<String, String>) {
+        self.observe_with(&self.runner, copy, ids, tag)
+    }
+
+    fn observe_with(
+        &self,
+        runner: &Runner,
         copy: &Copy,
         ids: &[String],
         tag: &str,
@@ -264,16 +296,16 @@ impl<'a> Session<'a> {
             // a file committed there would be read as this run's if the
             // run died before writing its own
             let _ = std::fs::remove_file(copy.dir.join(&rel));
-            let o = self.run(copy, &self.command.run_argv(batch, &rel));
-            let mut exit = exit_of(&o, self.runner.timeout);
+            let o = self.run_with(runner, copy, &self.command.run_argv(batch, &rel));
+            let mut exit = exit_of(&o, runner.timeout);
             // pytest cannot select every test by its id (parameters with
             // escapes in them, say) and then runs nothing. The file run
             // whole reports the same tests, the named ones among them.
             if matches!(exit, RunExit::Code(4)) {
                 let _ = std::fs::remove_file(copy.dir.join(&rel));
                 let file = [pytest::file_of(&batch[0]).to_owned()];
-                let whole = self.run(copy, &self.command.run_argv(&file, &rel));
-                exit = exit_of(&whole, self.runner.timeout);
+                let whole = self.run_with(runner, copy, &self.command.run_argv(&file, &rel));
+                exit = exit_of(&whole, runner.timeout);
             }
             let report = read_report(&copy.dir, &rel);
             if let Ok(r) = &report {

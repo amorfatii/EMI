@@ -40,7 +40,7 @@ pub fn passing(req: &Request, objects: &Path, ids: &[String]) -> Result<BTreeSet
     sorted.sort();
     sorted.dedup();
     Ok(session
-        .observe(&tree, &sorted, "rerun")
+        .observe_confirming(&tree, &sorted, "rerun")
         .into_iter()
         .filter(|(_, seen)| *seen == Observed::Passed)
         .map(|(id, _)| id)

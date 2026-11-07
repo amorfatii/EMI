@@ -66,8 +66,9 @@ fn project(dir: &Path) {
     emi_python::pins::install(dir).expect("install the plugin");
 }
 
-/// What the pinned laws drew when pytest ran `selection`.
-fn drawn(dir: &Path, selection: &[&str]) -> String {
+/// What the pinned laws drew when pytest ran `selection`, and what pytest
+/// printed. `extra` is added to the run's environment.
+fn pinned_run(dir: &Path, selection: &[&str], extra: &[(&str, &str)]) -> (bool, String, String) {
     let log = dir.join("drawn.log");
     let _ = std::fs::remove_file(&log);
     let out = Command::new(venv().join("bin/python"))
@@ -75,18 +76,78 @@ fn drawn(dir: &Path, selection: &[&str]) -> String {
         .args(Pins::pytest_args())
         .args(selection)
         .envs(Pins::default().env())
+        .envs(extra.iter().copied())
         .env("PYTHONPATH", Pins::python_path(&[]))
         .env("DRAWN", &log)
         .current_dir(dir)
         .output()
         .expect("run pytest");
-    assert!(
-        out.status.success(),
+    let printed = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    std::fs::read_to_string(&log).expect("the laws drew something")
+    let log = std::fs::read_to_string(&log).expect("the laws drew something");
+    (out.status.success(), log, printed)
+}
+
+/// What the pinned laws drew when pytest ran `selection`; they all pass.
+fn drawn(dir: &Path, selection: &[&str]) -> String {
+    let (passed, log, printed) = pinned_run(dir, selection, &[]);
+    assert!(passed, "{printed}");
+    log
+}
+
+/// A law that fails for every x of 10 and more, logging each x it is
+/// called with.
+const FAILING: &str = r#"import os
+
+from hypothesis import given, strategies as st
+
+
+@given(st.integers(0, 10**6))
+def test_small(x):
+    with open(os.environ["DRAWN"], "a") as f:
+        f.write(f"{x}\n")
+    assert x < 10
+"#;
+
+#[test]
+fn a_failure_is_shrunk_unexplained_and_only_confirmed_when_confirming() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    project(tmp.path());
+    std::fs::write(tmp.path().join("test_failing.py"), FAILING).expect("law");
+    let (passed, shrunk, printed) = pinned_run(tmp.path(), &["test_failing.py"], &[]);
+    assert!(!passed, "{printed}");
+    assert!(
+        printed.contains("x=10,"),
+        "shrunk to the smallest: {printed}"
+    );
+    assert!(!printed.contains("Explanation"), "{printed}");
+    let confirm = [(emi_kernel::pins::CONFIRM_ENV, "1")];
+    let (passed, confirmed, printed) = pinned_run(tmp.path(), &["test_failing.py"], &confirm);
+    assert!(!passed, "{printed}");
+    let calls: Vec<i64> = confirmed
+        .lines()
+        .map(|l| l.parse().expect("a number"))
+        .collect();
+    // it stops at the first failure: the calls before it passed, and the
+    // only calls after it run that same input again, to report it
+    let first = calls.iter().position(|x| *x >= 10).expect("a failure");
+    assert!(
+        calls[first..].iter().all(|x| *x == calls[first]),
+        "{calls:?}"
+    );
+    // and it is the same first failure the shrinking run started from
+    let up_to_first: String = confirmed
+        .lines()
+        .take(first + 1)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert!(
+        shrunk.starts_with(&up_to_first),
+        "{shrunk}\n---\n{confirmed}"
+    );
 }
 
 #[test]

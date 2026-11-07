@@ -345,7 +345,8 @@ fn held_to(run: &Run) -> Result<LawEvidence, String> {
         BTreeMap::new()
     } else {
         let copy = run.laid("laws-again", &base, &none)?;
-        run.session.observe(&copy, &suspects, "laws-again")
+        run.session
+            .observe_confirming(&copy, &suspects, "laws-again")
     };
     for id in &cand_ids {
         let unknown = Observed::Unknown("the run did not report the law".into());
