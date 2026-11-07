@@ -56,6 +56,9 @@ const EXAMPLE_HEADS: [&str; 3] = [
     "Failing test case",
 ];
 
+/// The first line of a traceback in Python's own style.
+const TRACEBACK: &str = "Traceback (most recent call last)";
+
 /// The point of a failure: Hypothesis's falsifying example when there is
 /// one (the input that breaks the property), else the failure's message.
 /// Nothing in it depends on where the run happened, once the caller has
@@ -67,7 +70,9 @@ pub fn counterexample(message: &str, text: &str) -> String {
             let l = l.trim_start();
             !EXAMPLE_HEADS.iter().any(|h| l.starts_with(h))
         })
-        .take_while(|l| !l.trim().is_empty())
+        // the example ends at a blank line, or where a traceback starts:
+        // Python's own style puts one straight after it
+        .take_while(|l| !l.trim().is_empty() && !l.trim_start().starts_with(TRACEBACK))
         .collect();
     let point = if falsifying.is_empty() {
         message.trim().to_owned()

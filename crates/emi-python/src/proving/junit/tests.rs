@@ -296,3 +296,12 @@ fn a_counterexample_holds_no_object_address() {
     // text that only looks like the start of an address is kept
     assert_eq!(counterexample("seen at 0xg", ""), "seen at 0xg");
 }
+
+#[test]
+fn an_example_ends_where_a_native_traceback_starts() {
+    let text = "Failing test case: test_never_negative(\n    x=-1,\n)\nTraceback (most recent call last):\n  File \"runner.py\", line 344, in from_call\nAssertionError: assert -1 >= 0";
+    assert_eq!(
+        counterexample("assert -1 >= 0", text),
+        "Failing test case: test_never_negative( x=-1, )"
+    );
+}
